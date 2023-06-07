@@ -96,7 +96,7 @@ async def start(message: Message, state: FSMContext, chat: Chat, agc: AsyncioGsp
         """Пожалуйста, создайте свежий Google Sheets документ, и поделитесь им со мной, \
 указав в качестве почты <pre>telegrind-bot@telegrind.iam.gserviceaccount.com</pre> и назначив роль редактора.
 
-Затем скопируйте ссылку и пришлите её мне, чтобы я смог управлять этим документом.
+Затем скопируйте ссылку и пришлите её мне, чтобы я смогла управлять этим документом.
 """
     )
 
@@ -136,7 +136,7 @@ async def record_outcome(message: Message, ags: AsyncioGspreadSpreadsheet, match
         data = match.groups()
         data = (message.message_id,) + data
         await Outcome.record(ags, data)
-        return await message.reply('Записал')
+        return await message.reply('Записала!')
 
 
 @router.message(F.text.regexp(Loan.pattern).as_("match"))
@@ -145,9 +145,9 @@ async def record_outcome(message: Message, ags: AsyncioGspreadSpreadsheet, match
         data = match.groups()
         data = (message.message_id,) + data
         await Loan.record(ags, data)
-        return await message.reply('Записал')
+        return await message.reply('Записала!')
 
 
 @router.message()
 async def catchall(message: Message):
-    return await message.answer(f'Не понял... \n\n{TIP_TEXT}')
+    return await message.answer(f'Не поняла... \n\n{TIP_TEXT}')
