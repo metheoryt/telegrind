@@ -113,7 +113,7 @@ class Loan(Outcome):
         agw = await cls.get_ws(ags)
         mid, who, direction, amount, curr, date, desc = data
         who = who.strip() if who else "Неизвестно"
-        direction = 1 if direction in ('-', None) else -1  # -100 and 100 both mean loan, +100 means payback
+        direction = -1 if direction in ('-', None) else 1  # -100 and 100 both mean loan, +100 means payback
         amount = float(amount.replace(',', '.')) * direction
         curr = curr or cls.default_currency
         date = datetime.strptime(date, '%d.%m.%Y') if date else datetime.now()
