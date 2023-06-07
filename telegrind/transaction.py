@@ -2,12 +2,27 @@ import re
 from datetime import datetime
 from typing import Pattern
 
-from gspread.utils import ValueInputOption
-from gspread_asyncio import AsyncioGspreadWorksheet
+from gspread import WorksheetNotFound
+from gspread.utils import ValueInputOption, rowcol_to_a1
+from gspread_asyncio import AsyncioGspreadWorksheet, AsyncioGspreadSpreadsheet
 
 
 class Transaction:
     pattern: Pattern
+    ws_name: str
+    headers: list
+    default_currency: str = 'KZT'
+
+    @classmethod
+    async def get_ws(cls, ags: AsyncioGspreadSpreadsheet):
+        try:
+            return await ags.worksheet(cls.ws_name)
+        except WorksheetNotFound:
+            agw = await ags.add_worksheet(cls.ws_name, rows=100, cols=100)
+            await agw.append_row(cls.headers, table_range='A1')
+            r_col = re.sub(r'\d+', '', rowcol_to_a1(1, len(cls.headers)))
+            await agw.set_basic_filter(f'A:{r_col}')
+            return agw
 
     @classmethod
     def parse(cls, text: str) -> tuple:
@@ -17,98 +32,95 @@ class Transaction:
         return match.groups()
 
     @classmethod
-    async def record(cls, agw: AsyncioGspreadWorksheet, data: tuple):
-        aa = await agw.get_values('A:A')
-        next_row = len(aa) + 1
-        return await cls._record(agw, data, next_row)
-
-    @classmethod
-    async def _record(cls, agw: AsyncioGspreadWorksheet, data: tuple, next_row: int) -> None:
+    async def record(cls, agw: AsyncioGspreadWorksheet, data: tuple) -> None:
         pass
 
 
 _amount = r'(\d+(?:[\.,]\d+)?)'
 _curr = r'([A-z]{3})'
+_date = r'(\d{2}\.\d{2}\.\d{4})'
 
 
 class Conversion(Transaction):
     pattern = re.compile(rf'^{_amount}\s+{_curr}\s+>\s+{_amount}\s+{_curr}(?:\s+(.*))?$')
+    ws_name = 'Base'
+    headers = ['#', 'Сумма', 'Назначение', 'Валюта', 'Тип', 'Дата']
 
     @classmethod
-    async def _record(cls, agw: AsyncioGspreadWorksheet, data: tuple, next_row: int) -> None:
-        fa, fc, ta, tc, desc = data
+    async def record(cls, ags: AsyncioGspreadSpreadsheet, data: tuple) -> None:
+        agw = await cls.get_ws(ags)
+        mid, fa, fc, ta, tc, desc = data
         # desc = desc or ''
         fc, tc = fc.upper(), tc.upper()
         fa, ta = float(fa.replace(',', '.')), float(ta.replace(',', '.'))
         dt = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
         await agw.append_rows(
             [
-                [fa, desc, fc, f'конвертация в {tc}', dt],
-                [ta, desc, tc, f'конвертация из {fc}', dt]
+                [mid, fa, desc, fc, f'конвертация в {tc}', dt],
+                [mid, ta, desc, tc, f'конвертация из {fc}', dt]
             ],
             value_input_option=ValueInputOption.user_entered,
             table_range='A1'
         )
-        # await agw.update_cells([
-        #     # outcome transaction
-        #     Cell(next_row, 1, fa),
-        #     Cell(next_row, 2, desc),
-        #     Cell(next_row, 3, fc),
-        #     Cell(next_row, 4, f'конвертация в {tc}'),
-        #     Cell(next_row, 5, dt),
-        #     # income transaction
-        #     Cell(next_row + 1, 1, ta),
-        #     Cell(next_row + 1, 2, desc),
-        #     Cell(next_row + 1, 3, tc.upper()),
-        #     Cell(next_row + 1, 4, f'конвертация из {fc}'),
-        #     Cell(next_row + 1, 5, dt),
-        # ])
 
 
 class Income(Transaction):
     pattern = re.compile(rf'^\+{_amount}(?: {_curr})?(?: (.*))?$')
-    default_currency = 'KZT'
+    ws_name = 'Base'
+    headers = ['#', 'Сумма', 'Назначение', 'Валюта', 'Тип', 'Дата']
 
     @classmethod
-    async def _record(cls, agw: AsyncioGspreadWorksheet, data: tuple, next_row: int) -> None:
-        amount, curr, desc = data
+    async def record(cls, ags: AsyncioGspreadSpreadsheet, data: tuple) -> None:
+        agw = await cls.get_ws(ags)
+        mid, amount, curr, desc = data
         curr = curr or cls.default_currency
         # desc = desc or ''
         amount = float(amount.replace(',', '.'))
         await agw.append_row(
-            [amount, desc, curr, 'доход', datetime.now().strftime('%d.%m.%Y %H:%M:%S')],
+            [mid, amount, desc, curr, 'доход', datetime.now().strftime('%d.%m.%Y %H:%M:%S')],
             value_input_option=ValueInputOption.user_entered,
             table_range='A1'
         )
-        # await agw.update_cells([
-        #     Cell(next_row, 1, amount),
-        #     Cell(next_row, 2, desc),
-        #     Cell(next_row, 3, curr),
-        #     Cell(next_row, 4, 'доход'),
-        #     Cell(next_row, 5, datetime.now().strftime('%d.%m.%Y %H:%M:%S')),
-        # ])
 
 
 class Outcome(Transaction):
-    pattern = re.compile(rf'^{_amount}(?: {_curr})?(?: (.*))?$')
-    default_currency = 'KZT'
+    pattern = re.compile(rf'^{_amount}(?: {_curr})?(?: {_date})?(?: (.*))?$')
+    ws_name = 'Base'
+    headers = ['#', 'Сумма', 'Назначение', 'Валюта', 'Тип', 'Дата']
 
     @classmethod
-    async def _record(cls, agw: AsyncioGspreadWorksheet, data: tuple, next_row: int) -> None:
-        amount, curr, desc = data
+    async def record(cls, ags: AsyncioGspreadSpreadsheet, data: tuple) -> None:
+        agw = await cls.get_ws(ags)
+        mid, amount, curr, date, desc = data
         curr = curr or cls.default_currency
         # desc = desc or ''
+        date = datetime.strptime(date, '%d.%m.%Y') if date else datetime.now()
         amount = float(amount.replace(',', '.'))
         await agw.append_row(
-            [amount, desc, curr, 'расход', datetime.now().strftime('%d.%m.%Y %H:%M:%S')],
+            [mid, amount, desc, curr, 'расход', date.strftime('%d.%m.%Y %H:%M:%S')],
             value_input_option=ValueInputOption.user_entered,
             table_range='A1'
         )
-        # amount = float(amount.replace(',', '.'))
-        # await agw.update_cells([
-        #     Cell(next_row, 1, amount),
-        #     Cell(next_row, 2, desc),
-        #     Cell(next_row, 3, curr),
-        #     Cell(next_row, 4, 'расход'),
-        #     Cell(next_row, 5, datetime.now().strftime('%d.%m.%Y %H:%M:%S')),
-        # ])
+
+
+class Loan(Outcome):
+    pattern = re.compile(rf'^(?:долг|за[еёйи]м) (.*?) ([+-])?{_amount}(?: {_curr})?(?: {_date})?(?: (.*))?$', flags=re.I)
+    ws_name = 'Loans'
+    headers = ['#', "Сумма", "Валюта", "Заёмщик", "Дата", "Комментарий"]
+
+    @classmethod
+    async def record(cls, ags: AsyncioGspreadSpreadsheet, data: tuple) -> None:
+        agw = await cls.get_ws(ags)
+        mid, who, direction, amount, curr, date, desc = data
+        who = who.strip() if who else "Неизвестно"
+        direction = 1 if direction in ('-', None) else -1  # -100 and 100 both mean loan, +100 means payback
+        amount = float(amount.replace(',', '.')) * direction
+        curr = curr or cls.default_currency
+        date = datetime.strptime(date, '%d.%m.%Y') if date else datetime.now()
+        desc = desc.strip() if desc else ""
+
+        await agw.append_row(
+            [mid, amount, curr, who, date.strftime('%d.%m.%Y %H:%M:%S'), desc],
+            value_input_option=ValueInputOption.user_entered,
+            table_range='A1'
+        )
