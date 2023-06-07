@@ -136,7 +136,7 @@ async def record_outcome(message: Message, ags: AsyncioGspreadSpreadsheet, match
         data = match.groups()
         data = (message.message_id,) + data
         await Outcome.record(ags, data)
-        return await message.answer('Записал')
+        return await message.reply('Записал')
 
 
 @router.message(F.text.regexp(Loan.pattern).as_("match"))
@@ -145,7 +145,7 @@ async def record_outcome(message: Message, ags: AsyncioGspreadSpreadsheet, match
         data = match.groups()
         data = (message.message_id,) + data
         await Loan.record(ags, data)
-        return await message.answer('Записал')
+        return await message.reply('Записал')
 
 
 @router.message()
