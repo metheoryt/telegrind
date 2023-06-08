@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 from .models import Chat
-from .transaction import Outcome, Loan
+from .sheets import Outcome, Loan, ConfigSheet
 
 dp = Dispatcher()
 router = Router()
@@ -70,13 +70,10 @@ async def populate_chat_data(handler, event, data):
         agcm: AsyncioGspreadClientManager = data['agcm']
         agc: AsyncioGspreadClient = await agcm.authorize()
 
-        if chat.sheet_url:
-            ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
-            data['ags'] = ags
-
         data['agc'] = agc
         data['chat'] = chat
         data['session'] = session
+
         return await handler(event, data)
 
 
@@ -87,9 +84,9 @@ class Form(StatesGroup):
 @router.message(CommandStart())
 @flags.chat_action(action='typing', initial_sleep=0.5)
 async def start(message: Message, state: FSMContext, chat: Chat, agc: AsyncioGspreadClient):
-    if chat.sheet_url:
-        ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
-        return await message.answer(f'За этим чатом уже закреплён документ "{ags.title}"')
+    # if chat.sheet_url:
+    #     ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
+    #     return await message.answer(f'За этим чатом уже закреплён документ "{ags.title}"')
 
     await state.set_state(Form.request_sheet_url)
     await message.answer(
@@ -107,7 +104,7 @@ async def obtain_sheet_url(message: Message, session: AsyncSession, chat: Chat, 
     sheet_url = message.text
     try:
         ags = await agc.open_by_url(sheet_url)
-        await Outcome.get_ws(ags)
+        await ConfigSheet(ags).get_agw()
     except Exception as e:
         return await message.answer(
             "Не удалось получить доступ к документу. "
@@ -130,22 +127,22 @@ async def obtain_sheet_url(message: Message, session: AsyncSession, chat: Chat, 
     )
 
 
-@router.message(F.text.regexp(Outcome.pattern).as_("match"))
+@router.message(F.text.regexp(Outcome.pattern))
 @flags.chat_action(action='typing', initial_sleep=0.5)
-async def record_outcome(message: Message, ags: AsyncioGspreadSpreadsheet, match: Match):
-        data = match.groups()
-        data = (message.message_id,) + data
-        await Outcome.record(ags, data)
-        return await message.reply('Записала!')
+async def record_outcome(message: Message, agc: AsyncioGspreadClient, chat: Chat):
+    ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
+    cfg = ConfigSheet(ags)
+    await Outcome(ags).record(message, cfg)
+    return await message.reply('Записала!')
 
 
-@router.message(F.text.regexp(Loan.pattern).as_("match"))
+@router.message(F.text.regexp(Loan.pattern))
 @flags.chat_action(action='typing', initial_sleep=0.5)
-async def record_outcome(message: Message, ags: AsyncioGspreadSpreadsheet, match: Match):
-        data = match.groups()
-        data = (message.message_id,) + data
-        await Loan.record(ags, data)
-        return await message.reply('Записала!')
+async def record_outcome(message: Message, agc: AsyncioGspreadClient, chat: Chat):
+    ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
+    cfg = ConfigSheet(ags)
+    await Loan(ags).record(message, cfg)
+    return await message.reply('Записала!')
 
 
 @router.message()
