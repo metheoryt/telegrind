@@ -5,7 +5,7 @@ RUN apt update  \
     && apt install -y libzbar0 ffmpeg libsm6 libxext6
 
 RUN python -mpip install --upgrade pip \
-    && python -mpip install --upgrade pipenv \
+    && python -mpip install --upgrade pipenv
 #    && python -mpip install torch --no-cache-dir
 
 COPY Pipfile* .
