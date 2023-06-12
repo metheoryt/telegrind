@@ -136,7 +136,7 @@ async def start(message: Message, state: FSMContext, chat: Chat, session: AsyncS
 
 @router.message(Form.request_sheet_url)
 @flags.chat_action(action='typing', initial_sleep=0.5)
-async def obtain_sheet_url(message: Message, session: AsyncSession, chat: Chat, state: FSMContext, agc: AsyncioGspreadClient):
+async def obtain_sheet_url(message: Message, session: AsyncSession, chat: Chat, state: FSMContext, agc: AsyncioGspreadClient, bot: Bot):
     sheet_url = message.text
     try:
         ags = await agc.open_by_url(sheet_url)
@@ -161,6 +161,7 @@ async def obtain_sheet_url(message: Message, session: AsyncSession, chat: Chat, 
 Всё это я запишу в документ, который вы со мной пошарили.
 Все ваши данные остаются у вас, я храню только ссылку на документ."""
     )
+    await message.pin(disable_notification=True)
 
 
 @router.message(F.text.regexp(Outcome.pattern))
@@ -238,6 +239,6 @@ async def parse_ticket_by_url(message: Message, chat: Chat, agc: AsyncioGspreadC
     await message.reply('Записала!')
 
 
-@router.message()
+@router.message(F.text)
 async def catchall(message: Message):
     return await message.answer(f'Не поняла... \n\n{TIP_TEXT}')
