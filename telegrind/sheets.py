@@ -101,8 +101,26 @@ class Transaction(Sheet):
             raise ValueError(f'text does not match pattern of {cls.__name__}')
         return match.groups()
 
-    async def record(self, message: Message, cfg: ConfigSheet) -> None:
+    async def record(self, *args, **kwargs) -> None:
         pass
+
+    async def write_rows(self, rows: list):
+        agw: AsyncioGspreadWorksheet
+        agw, _ = await self.get_agw()
+        await agw.append_rows(
+            rows,
+            value_input_option=ValueInputOption.user_entered,
+            table_range='A1'
+        )
+
+    async def write_row(self, row: list):
+        agw: AsyncioGspreadWorksheet
+        agw, _ = await self.get_agw()
+        await agw.append_row(
+            row,
+            value_input_option=ValueInputOption.user_entered,
+            table_range='A1'
+        )
 
 
 _amount = r'(\d+(?:[\.,]\d+)?)'
@@ -117,18 +135,29 @@ class Outcome(Transaction):
     ws_dim = (1, len(headers))
 
     async def record(self, message: Message, cfg: ConfigSheet) -> None:
-        agw, _ = await self.get_agw()
         conf = await cfg.get_data()
 
         amount, curr, date, desc = self.parse(message.text)
         curr = curr or conf.currency
         date = datetime.strptime(date, '%d.%m.%Y') if date else conf.now()
         amount = float(amount.replace(',', '.'))
-        await agw.append_row(
-            [message.message_id, amount, curr, date.strftime('%d.%m.%Y %H:%M:%S'), desc],
-            value_input_option=ValueInputOption.user_entered,
-            table_range='A1'
-        )
+        await self.write_row([
+            message.message_id,
+            amount,
+            curr,
+            date.strftime('%d.%m.%Y %H:%M:%S'),
+            desc
+        ])
+
+    @classmethod
+    def from_ticket(cls, message: Message, data: dict) -> list:
+        return [
+            message.message_id,
+            data['ticket']['totalSum'],
+            'KZT',
+            datetime.fromisoformat(data['ticket']['transactionDate']).strftime('%d.%m.%Y %H:%M:%S'),
+            'Покупки'
+        ]
 
 
 class Loan(Outcome):
@@ -138,7 +167,6 @@ class Loan(Outcome):
     ws_dim = (1, len(headers))
 
     async def record(self, message: Message, cfg: ConfigSheet) -> None:
-        agw, _ = await self.get_agw()
         conf = await cfg.get_data()
 
         who, direction, amount, curr, date, desc = self.parse(message.text)
@@ -147,9 +175,31 @@ class Loan(Outcome):
         amount = float(amount.replace(',', '.')) * direction
         curr = curr or conf.currency
         date = datetime.strptime(date, '%d.%m.%Y') if date else conf.now()
-
-        await agw.append_row(
-            [message.message_id, amount, curr, who, date.strftime('%d.%m.%Y %H:%M:%S'), desc],
-            value_input_option=ValueInputOption.user_entered,
-            table_range='A1'
+        await self.write_row(
+            [message.message_id, amount, curr, who, date.strftime('%d.%m.%Y %H:%M:%S'), desc]
         )
+
+
+class Commodity(Transaction):
+    """Commodities list from tiсket."""
+    ws_name = 'Commodities'
+    ws_dim = (1, 6)
+    headers = ['#', "Продукт", "Цена", "Количество", "Дата", "Организация"]
+
+    async def record(self, message: Message, data: dict) -> None:
+        org = data['orgTitle']
+        t = data['ticket']
+        dt = datetime.fromisoformat(t['transactionDate'])
+        rows = []
+        for i in t['items']:
+            row = [
+                message.message_id,
+                i['commodity']['name'],
+                i['commodity']['price'],
+                i['commodity']['quantity'],
+                dt.strftime('%d.%m.%Y %H:%M:%S'),
+                org
+            ]
+            rows.append(row)
+
+        await self.write_rows(rows)

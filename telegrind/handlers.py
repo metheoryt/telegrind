@@ -1,20 +1,27 @@
-from re import Match
+from pathlib import Path
 
-from aiogram import Dispatcher, Router, flags, F
+import aiohttp
+import cv2
+from aiogram import Dispatcher, Router, flags, F, Bot
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import Message
+from aiogram.types import Message, PhotoSize
 from gspread_asyncio import (
     AsyncioGspreadClientManager,
     AsyncioGspreadSpreadsheet,
     AsyncioGspreadClient
 )
+from qreader import QReader
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 from .models import Chat
-from .sheets import Outcome, Loan, ConfigSheet
+from .sheets import Outcome, Loan, ConfigSheet, Commodity
+import numpy as np
+
+qr_reader = QReader()
+
 
 dp = Dispatcher()
 router = Router()
@@ -33,6 +40,12 @@ TIP_TEXT = """<b>Расходы 💸</b>
 
 Расход в долларах за 1 января 2023 на хостинг
 <pre>41 USD 01.01.2023 хостинг</pre>
+
+
+<b>Покупки из чека</>
+---------------
+Сфотографируйте QR-код вашего чека, и отправьте мне фотографию - 
+я занесу покупки в отдельный список и запишу общую сумму чека в расход
 
 
 <b>Займы ⛓</b>
@@ -143,6 +156,45 @@ async def record_outcome(message: Message, agc: AsyncioGspreadClient, chat: Chat
     cfg = ConfigSheet(ags)
     await Loan(ags).record(message, cfg)
     return await message.reply('Записала!')
+
+
+@router.message(F.photo)
+async def parse_check_by_qr_oofd(message: Message, bot: Bot, agc: AsyncioGspreadClient, chat: Chat):
+    ps: PhotoSize = message.photo[-1]
+    content = await bot.download(ps.file_id)
+
+    cv2img = cv2.imdecode(np.frombuffer(content.read(), np.uint8), 1)
+    image = cv2.cvtColor(cv2img, cv2.COLOR_BGR2RGB)
+    decoded_text = qr_reader.detect_and_decode(image=image)
+    if not decoded_text:
+        return await message.reply("Не нашла ни одного QR кода!")
+
+    urls = [v for v in decoded_text if v and 'oofd.kz' in v]
+    if not urls:
+        msgs = []
+        for i, url in enumerate(decoded_text):
+            if not url:
+                msgs.append(f"QR #{i+1}: не смогла прочитать код")
+            elif 'oofd.kz' not in url:
+                msgs.append(f"QR #{i+1}: ко коду не та ссылка")
+        return await message.reply('\n'.join(msgs))
+
+    url = urls[0]
+    async with aiohttp.ClientSession() as session:
+        rs = await session.get(url, ssl=False)
+        ticket_token = rs.url.path.split('/')[-1]
+        async with session.get(f'https://consumer.oofd.kz/api/tickets/ticket/{ticket_token}', ssl=False) as rs2:
+            data = await rs2.json()
+
+    ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
+
+    # write into commodities list and into
+    await Commodity(ags).record(message, data)
+    await Outcome(ags).write_row(
+        Outcome.from_ticket(message, data)
+    )
+
+    await message.reply('Записала!')
 
 
 @router.message()
