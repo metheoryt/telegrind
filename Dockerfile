@@ -8,6 +8,6 @@ RUN python -mpip install --upgrade pip \
     && python -mpip install --upgrade pipenv \
     && python -mpip install torch --no-cache-dir
 
-COPY Pipfile* .
+COPY Pipfile* ./
 
 RUN pipenv sync --system
