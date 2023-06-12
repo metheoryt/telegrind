@@ -13,3 +13,11 @@ class Chat(Model):
     id: Mapped[int] = mapped_column(primary_key=True)
     chat_id: Mapped[int]
     sheet_url: Mapped[Optional[str]]
+
+
+class File(Model):
+    __tablename__ = 'file'
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    file_id: Mapped[str]
+    filename: Mapped[str]

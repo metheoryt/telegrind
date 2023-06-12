@@ -1,3 +1,4 @@
+from pathlib import Path
 from re import Match
 
 import aiohttp
@@ -7,7 +8,7 @@ from aiogram import Dispatcher, Router, flags, F, Bot
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import Message, PhotoSize
+from aiogram.types import Message, PhotoSize, FSInputFile
 from gspread_asyncio import (
     AsyncioGspreadClientManager,
     AsyncioGspreadSpreadsheet,
@@ -17,7 +18,7 @@ from qreader import QReader
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
-from .models import Chat
+from .models import Chat, File
 from .sheets import Outcome, Loan, ConfigSheet, Commodity
 
 qr_reader = QReader()
@@ -97,19 +98,40 @@ class Form(StatesGroup):
 
 @router.message(CommandStart())
 @flags.chat_action(action='typing', initial_sleep=0.5)
-async def start(message: Message, state: FSMContext, chat: Chat, agc: AsyncioGspreadClient):
-    # if chat.sheet_url:
-    #     ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
-    #     return await message.answer(f'За этим чатом уже закреплён документ "{ags.title}"')
-
+async def start(message: Message, state: FSMContext, chat: Chat, session: AsyncSession, bot: Bot):
     await state.set_state(Form.request_sheet_url)
-    await message.answer(
-        """Пожалуйста, создайте свежий Google Sheets документ, и поделитесь им со мной, \
-указав в качестве почты <pre>telegrind-bot@telegrind.iam.gserviceaccount.com</pre> и назначив роль редактора.
 
+    filename = 'intro.mp4'
+
+    async with session.begin():
+        result = await session.execute(
+            select(File).where(File.filename == filename)
+        )
+        file = result.scalar_one_or_none()
+        if not file:
+            video = FSInputFile(str(Path('static') / Path(filename)))
+        else:
+            video = file.file_id
+
+        message = await message.answer_video(
+            video,
+            caption="""\
+Пожалуйста, создайте свежий <a href="https://docs.google.com/spreadsheets">Google Sheets документ</a>, \
+и поделитесь им со мной:
+Укажите в качестве моей почты 
+<pre>telegrind-bot@telegrind.iam.gserviceaccount.com</pre>
+и назначьте меня редактором этой таблицы, чтобы я могла вносить изменения.
+    
 Затем скопируйте ссылку и пришлите её мне, чтобы я смогла управлять этим документом.
-"""
-    )
+    """
+        )
+        if not file:
+            session.add(
+                File(
+                    file_id=message.video.file_id,
+                    filename=filename,
+                )
+            )
 
 
 @router.message(Form.request_sheet_url)
