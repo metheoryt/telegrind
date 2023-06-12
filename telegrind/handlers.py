@@ -1,3 +1,5 @@
+from re import Match
+
 import aiohttp
 import cv2
 import numpy as np
@@ -42,8 +44,9 @@ TIP_TEXT = """<b>Расходы 💸</b>
 
 <b>Покупки из чека</>
 ---------------
-Сфотографируйте QR-код вашего чека, и отправьте мне фотографию - 
-я занесу покупки в отдельный список и запишу общую сумму чека в расход
+Сфотографируйте и отправьте мне QR-код вашего чека, или дайте мне прямую ссылку на чек на сайте consumer.oofd.kz.
+Я занесу покупки в отдельный список и запишу общую сумму чека в расход.
+
 
 
 <b>Займы ⛓</b>
@@ -187,6 +190,24 @@ async def parse_check_by_qr_oofd(message: Message, bot: Bot, agc: AsyncioGspread
     ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
 
     # write into commodities list and into
+    await Commodity(ags).record(message, data)
+    await Outcome(ags).write_row(
+        Outcome.from_ticket(message, data)
+    )
+
+    await message.reply('Записала!')
+
+
+@router.message(F.text.regexp(r'https?\:\/\/consumer\.oofd\.kz\/ticket\/([0-9a-f\-]{36})').as_('match'))
+async def parse_ticket_by_url(message: Message, chat: Chat, agc: AsyncioGspreadClient, match: Match):
+    token = match.groups()[0]
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f'https://consumer.oofd.kz/api/tickets/ticket/{token}', ssl=False) as rs2:
+            data = await rs2.json()
+
+    ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
+
+    # write into commodities and expenses lists
     await Commodity(ags).record(message, data)
     await Outcome(ags).write_row(
         Outcome.from_ticket(message, data)
