@@ -1,7 +1,6 @@
-from pathlib import Path
-
 import aiohttp
 import cv2
+import numpy as np
 from aiogram import Dispatcher, Router, flags, F, Bot
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
@@ -18,7 +17,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 from .models import Chat
 from .sheets import Outcome, Loan, ConfigSheet, Commodity
-import numpy as np
 
 qr_reader = QReader()
 

@@ -13,7 +13,6 @@ google-auth = "*"
 python-dotenv = "*"
 opencv-python = "*"
 qreader = "*"
-http3 = "*"
 numpy = "*"
 
 [dev-packages]
