@@ -6,7 +6,7 @@ RUN apt update  \
 
 RUN python -mpip install --upgrade pip \
     && python -mpip install --upgrade pipenv \
-    && python -mpip install install torch --no-cache-dir
+    && python -mpip install torch --no-cache-dir
 
 COPY Pipfile* .
 
