@@ -192,9 +192,12 @@ class Commodity(Transaction):
         dt = datetime.fromisoformat(t['transactionDate'])
         rows = []
         for i in t['items']:
+            cname: str = i['commodity']['name']
+            # some tickets have order number in goods name, removing
+            cname = re.sub(r'^\d+\.\s+', '', cname)
             row = [
                 message.message_id,
-                i['commodity']['name'],
+                cname,
                 i['commodity']['price'],
                 i['commodity']['quantity'],
                 dt.strftime('%d.%m.%Y %H:%M:%S'),
