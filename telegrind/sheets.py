@@ -86,12 +86,14 @@ class Transaction(Sheet):
     pattern: Pattern
     headers: list
 
+    async def apply_filter(self, agw: AsyncioGspreadWorksheet):
+        r_col = re.sub(r'\d+', '', rowcol_to_a1(1, self.ws_dim[1]))
+        await agw.set_basic_filter(f'A:{r_col}')
+
     async def get_agw(self):
         agw, created = await super().get_agw()
         if created:
             await agw.append_row(self.headers, table_range='A1')
-            r_col = re.sub(r'\d+', '', rowcol_to_a1(1, self.ws_dim[1]))
-            await agw.set_basic_filter(f'A:{r_col}')
         return agw, created
 
     @classmethod
@@ -112,6 +114,7 @@ class Transaction(Sheet):
             value_input_option=ValueInputOption.user_entered,
             table_range='A1'
         )
+        await self.apply_filter(agw)
 
     async def write_row(self, row: list):
         agw: AsyncioGspreadWorksheet
@@ -121,6 +124,7 @@ class Transaction(Sheet):
             value_input_option=ValueInputOption.user_entered,
             table_range='A1'
         )
+        await self.apply_filter(agw)
 
 
 _amount = r'(\d+(?:[\.,]\d+)?)'
@@ -145,7 +149,7 @@ class Outcome(Transaction):
             message.message_id,
             amount,
             curr,
-            date.strftime('%d.%m.%Y %H:%M:%S'),
+            date.strftime('%d.%m.%y %H:%M'),
             desc
         ])
 
@@ -155,7 +159,7 @@ class Outcome(Transaction):
             message.message_id,
             data['ticket']['totalSum'],
             'KZT',
-            datetime.fromisoformat(data['ticket']['transactionDate']).strftime('%d.%m.%Y %H:%M:%S'),
+            datetime.fromisoformat(data['ticket']['transactionDate']).strftime('%d.%m.%y %H:%M'),
             'Покупки'
         ]
 
@@ -176,7 +180,7 @@ class Loan(Outcome):
         curr = curr or conf.currency
         date = datetime.strptime(date, '%d.%m.%Y') if date else conf.now()
         await self.write_row(
-            [message.message_id, amount, curr, who, date.strftime('%d.%m.%Y %H:%M:%S'), desc]
+            [message.message_id, amount, curr, who, date.strftime('%d.%m.%y %H:%M'), desc]
         )
 
 
@@ -200,7 +204,7 @@ class Commodity(Transaction):
                 cname,
                 i['commodity']['price'],
                 i['commodity']['quantity'],
-                dt.strftime('%d.%m.%Y %H:%M:%S'),
+                dt.strftime('%d.%m.%y %H:%M'),
                 org
             ]
             rows.append(row)
