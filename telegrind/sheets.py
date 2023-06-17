@@ -192,6 +192,7 @@ class Commodity(Transaction):
 
     async def record(self, message: Message, data: dict) -> None:
         org = data['orgTitle']
+        org = org.replace('ТОВАРИЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ', 'ТОО')
         t = data['ticket']
         dt = datetime.fromisoformat(t['transactionDate'])
         rows = []
