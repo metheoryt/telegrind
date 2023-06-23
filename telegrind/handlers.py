@@ -210,6 +210,9 @@ async def parse_check_by_qr_oofd(message: Message, bot: Bot, agc: AsyncioGspread
         async with session.get(f'https://consumer.oofd.kz/api/tickets/ticket/{ticket_token}', ssl=False) as rs2:
             data = await rs2.json()
 
+        if data.get('message') == 'ticket.not.found.error':
+            return await message.reply("В oofd не нашли такого чека...")
+
     ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
 
     # write into commodities list and into
