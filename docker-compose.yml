@@ -25,6 +25,7 @@ services:
       target: prod
     volumes:
       - .:/opt/app
+      - weights:/usr/local/lib/python3.11/site-packages/.yolov7_qrdet
     depends_on:
       - postgres
     command: ["python", "main.py"]
