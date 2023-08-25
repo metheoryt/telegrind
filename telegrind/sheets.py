@@ -7,6 +7,7 @@ from aiogram.types import Message
 from gspread import WorksheetNotFound, Cell
 from gspread.utils import ValueInputOption, rowcol_to_a1
 from gspread_asyncio import AsyncioGspreadWorksheet, AsyncioGspreadSpreadsheet
+from dateparser.search import search_dates
 
 
 class Sheet:
@@ -17,7 +18,7 @@ class Sheet:
         self.ags = ags
         self._agw = None
 
-    async def get_agw(self) -> (AsyncioGspreadWorksheet, bool):
+    async def get_agw(self) -> tuple[AsyncioGspreadWorksheet, bool]:
         if self._agw:
             return self._agw, False
         try:
@@ -43,6 +44,11 @@ class Config:
     def now(self):
         return datetime.now(tz=self.tz)
 
+    @property
+    def tzname(self):
+        """Return timezone in +0600 format."""
+        return self.now().strftime('%z')
+
 
 class ConfigSheet(Sheet):
     ws_name = '_config'
@@ -57,7 +63,7 @@ class ConfigSheet(Sheet):
         super().__init__(ags)
         self._cfg = None
 
-    async def get_agw(self) -> (AsyncioGspreadWorksheet, bool):
+    async def get_agw(self) -> tuple[AsyncioGspreadWorksheet, bool]:
         agw: AsyncioGspreadWorksheet
         agw, created = await super().get_agw()
         if created:
@@ -74,7 +80,6 @@ class ConfigSheet(Sheet):
 
     async def get_data(self) -> Config:
         if not self._cfg:
-            agw: AsyncioGspreadWorksheet
             agw, _ = await self.get_agw()
             rows = await agw.get_values()
             data = {k[1]: k[2](rows[i][1]) for i, k in enumerate(self.keys)}
@@ -86,11 +91,15 @@ class Transaction(Sheet):
     pattern: Pattern
     headers: list
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.cfg = ConfigSheet(self.ags)
+
     async def apply_filter(self, agw: AsyncioGspreadWorksheet):
         r_col = re.sub(r'\d+', '', rowcol_to_a1(1, self.ws_dim[1]))
         await agw.set_basic_filter(f'A:{r_col}')
 
-    async def get_agw(self):
+    async def get_agw(self) -> tuple[AsyncioGspreadWorksheet, bool]:
         agw, created = await super().get_agw()
         if created:
             await agw.append_row(self.headers, table_range='A1')
@@ -103,11 +112,13 @@ class Transaction(Sheet):
             raise ValueError(f'text does not match pattern of {cls.__name__}')
         return match.groups()
 
+    async def make_row(self, message: Message) -> list:
+        pass
+
     async def record(self, *args, **kwargs) -> None:
         pass
 
     async def write_rows(self, rows: list):
-        agw: AsyncioGspreadWorksheet
         agw, _ = await self.get_agw()
         await agw.append_rows(
             rows,
@@ -117,7 +128,6 @@ class Transaction(Sheet):
         await self.apply_filter(agw)
 
     async def write_row(self, row: list):
-        agw: AsyncioGspreadWorksheet
         agw, _ = await self.get_agw()
         await agw.append_row(
             row,
@@ -126,6 +136,23 @@ class Transaction(Sheet):
         )
         await self.apply_filter(agw)
 
+    async def search_row(self, message_id: int):
+        agw, _ = await self.get_agw()
+        return await agw.find(str(message_id), in_column=1)
+
+    async def change_row(self, row_id: int, row: list):
+        agw, _ = await self.get_agw()
+        cells = [Cell(row=row_id, col=i+1, value=v) for i, v in enumerate(row)]
+        await agw.update_cells(
+            cells,
+            value_input_option=ValueInputOption.user_entered
+        )
+        await self.apply_filter(agw)
+
+    async def delete_row(self, row_id: int):
+        agw, _ = await self.get_agw()
+        return await agw.delete_rows(row_id)
+
 
 _amount = r'(\d+(?:[\.,]\d+)?)'
 _curr = r'([A-z]{3})'
@@ -133,25 +160,53 @@ _date = r'(\d{2}\.\d{2}\.\d{4})'
 
 
 class Outcome(Transaction):
-    pattern = re.compile(rf'^{_amount}(?: {_curr})?(?: {_date})?(?: (.*))?$')
+    pattern = re.compile(rf'^{_amount}\b')
     ws_name = 'Expenses'
     headers = ['#', 'Сумма', 'Валюта', 'Дата', 'Комментарий']
     ws_dim = (1, len(headers))
 
-    async def record(self, message: Message, cfg: ConfigSheet) -> None:
-        conf = await cfg.get_data()
+    async def make_row(self, message: Message) -> list:
+        conf = await self.cfg.get_data()
+        text = message.text
 
-        amount, curr, date, desc = self.parse(message.text)
-        curr = curr or conf.currency
-        date = datetime.strptime(date, '%d.%m.%Y') if date else conf.now()
+        # amount is mandatory
+        amount = re.search(rf'^{_amount}\b', text).group()
+        # extracting amount from text
+        text = re.sub(rf'^{_amount}\b', '', text).strip()
         amount = float(amount.replace(',', '.'))
-        await self.write_row([
+
+        # currency is optional
+        curr = conf.currency.upper()
+        match = re.search(rf'^{_curr}\b', text)
+        if match:
+            # no currency
+            curr = match.group()
+            text = re.sub(rf'^{_curr}\b', '', text).strip()
+            curr = curr.upper()
+
+        # date is optional
+        date = conf.now()
+        matches = search_dates(text, languages=['ru', 'en'], settings={
+            'TIMEZONE': conf.tzname,
+            'RETURN_AS_TIMEZONE_AWARE': True
+        })
+        if matches:
+            # take first found date
+            sub, date = matches[0]
+            text = text.replace(sub, '', 1).strip()
+        desc = text
+
+        return [
             message.message_id,
             amount,
             curr,
             date.strftime('%d.%m.%y %H:%M'),
             desc
-        ])
+        ]
+
+    async def record(self, *args, **kwargs) -> None:
+        row = await self.make_row(*args, **kwargs)
+        return await self.write_row(row)
 
     @classmethod
     def from_ticket(cls, message: Message, data: dict) -> list:
@@ -170,8 +225,8 @@ class Loan(Outcome):
     headers = ['#', "Сумма", "Валюта", "Заёмщик", "Дата", "Комментарий"]
     ws_dim = (1, len(headers))
 
-    async def record(self, message: Message, cfg: ConfigSheet) -> None:
-        conf = await cfg.get_data()
+    async def make_row(self, message: Message) -> list:
+        conf = await self.cfg.get_data()
 
         who, direction, amount, curr, date, desc = self.parse(message.text)
         who = who.strip() if who else "Неизвестно"
@@ -179,9 +234,14 @@ class Loan(Outcome):
         amount = float(amount.replace(',', '.')) * direction
         curr = curr or conf.currency
         date = datetime.strptime(date, '%d.%m.%Y') if date else conf.now()
-        await self.write_row(
-            [message.message_id, amount, curr, who, date.strftime('%d.%m.%y %H:%M'), desc]
-        )
+        return [
+            message.message_id,
+            amount,
+            curr,
+            who,
+            date.strftime('%d.%m.%y %H:%M'),
+            desc
+        ]
 
 
 class Commodity(Transaction):

@@ -168,21 +168,20 @@ async def obtain_sheet_url(message: Message, session: AsyncSession, chat: Chat, 
 @flags.chat_action(action='typing', initial_sleep=0.5)
 async def record_outcome(message: Message, agc: AsyncioGspreadClient, chat: Chat):
     ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
-    cfg = ConfigSheet(ags)
-    await Outcome(ags).record(message, cfg)
+    await Outcome(ags).record(message)
     return await message.reply('Записала!')
 
 
 @router.message(F.text.regexp(Loan.pattern))
 @flags.chat_action(action='typing', initial_sleep=0.5)
-async def record_outcome(message: Message, agc: AsyncioGspreadClient, chat: Chat):
+async def record_loan(message: Message, agc: AsyncioGspreadClient, chat: Chat):
     ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
-    cfg = ConfigSheet(ags)
-    await Loan(ags).record(message, cfg)
+    await Loan(ags).record(message)
     return await message.reply('Записала!')
 
 
 @router.message(F.photo)
+@flags.chat_action(action='typing', initial_sleep=0.5)
 async def parse_check_by_qr_oofd(message: Message, bot: Bot, agc: AsyncioGspreadClient, chat: Chat):
     ps: PhotoSize = message.photo[-1]
     content = await bot.download(ps.file_id)
@@ -242,6 +241,35 @@ async def parse_ticket_by_url(message: Message, chat: Chat, agc: AsyncioGspreadC
     await message.reply('Записала!')
 
 
+@router.edited_message(F.text)
+@flags.chat_action(action='typing', initial_sleep=0.5)
+async def update_changed_message(edited_message: Message, agc: AsyncioGspreadClient, chat: Chat):
+    ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
+    for sheet in (Outcome(ags), Loan(ags)):
+        cell = await sheet.search_row(edited_message.message_id)
+        if cell:
+            row = await sheet.make_row(edited_message)
+            await sheet.change_row(cell.row, row)
+            return await edited_message.reply(f'Поправила!')
+
+    return await edited_message.reply(f'Не нашла этого в книге...')
+
+
+@router.message(F.reply_to_message.text)
+@flags.chat_action(action='typing', initial_sleep=0.5)
+async def delete_record(message: Message, agc: AsyncioGspreadClient, chat: Chat):
+    if message.text.strip() == '-':
+        # delete record
+        msg = message.reply_to_message
+        ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
+        for sheet in (Outcome(ags), Loan(ags)):
+            cell = await sheet.search_row(msg.message_id)
+            if cell:
+                await sheet.delete_row(cell.row)
+                return await msg.reply(f'Удалила!')
+        return await msg.reply(f'Не нашла этого в книге...')
+
+
 @router.message(F.text)
 async def catchall(message: Message):
-    return await message.answer(f'Не поняла... \n\n{TIP_TEXT}')
+    return await message.reply(f'Не поняла... \n\n{TIP_TEXT}')

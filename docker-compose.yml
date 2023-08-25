@@ -1,0 +1,34 @@
+services:
+  postgres:
+    image: postgres:15
+    ports:
+      - 5433:5432
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  shell:
+    build:
+      context: .
+      target: dev
+    volumes:
+      - .:/opt/app
+      # qrdet (qreader) weights, or will be downloaded at every launch
+      - weights:/usr/local/lib/python3.11/site-packages/.yolov7_qrdet
+    depends_on:
+      - postgres
+
+  bot:
+    build:
+      context: .
+      target: prod
+    volumes:
+      - .:/opt/app
+    depends_on:
+      - postgres
+    command: ["python", "main.py"]
+
+volumes:
+  pgdata:
+  weights:

@@ -14,12 +14,15 @@ python-dotenv = "*"
 opencv-python = "*"
 qreader = "*"
 numpy = "*"
+camelot-py = {version = "*", extras = ["cv"]}
+pypdf2 = "<3.0"
+dateparser = "*"
+asyncpg = "*"
 
 [dev-packages]
 
 [requires]
 python_version = "3.11"
-python_full_version = "3.11.3"
 
 [pipenv]
 allow_prereleases = true
