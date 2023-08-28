@@ -223,7 +223,7 @@ async def parse_check_by_qr_oofd(message: Message, bot: Bot, agc: AsyncioGspread
     await message.reply('Записала!')
 
 
-@router.message(F.text.regexp(r'https?\:\/\/consumer\.oofd\.kz\/ticket\/([0-9a-f\-]{36})').as_('match'))
+@router.message(F.text.regexp(r'https?\:\/\/consumer\.oofd\.kz\/(?:ticket\/|\?uid\=)([0-9a-f\-]{36})').as_('match'))
 async def parse_ticket_by_url(message: Message, chat: Chat, agc: AsyncioGspreadClient, match: Match):
     token = match.groups()[0]
     async with aiohttp.ClientSession() as session:
