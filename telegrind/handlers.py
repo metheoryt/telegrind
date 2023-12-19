@@ -4,6 +4,8 @@ from re import Match
 import aiohttp
 import cv2
 import numpy as np
+import logging
+
 from aiogram import Dispatcher, Router, flags, F, Bot
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
@@ -26,6 +28,8 @@ qr_reader = QReader()
 
 dp = Dispatcher()
 router = Router()
+
+log = logging.getLogger(__name__)
 
 
 TIP_TEXT = """<b>Расходы 💸</b>
@@ -240,12 +244,16 @@ async def parse_ticket_by_url(message: Message, chat: Chat, agc: AsyncioGspreadC
     ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
 
     # write into commodities and expenses lists
-    await Commodity(ags).record(message, data)
-    await Outcome(ags).write_row(
-        Outcome.from_ticket(message, data)
-    )
-
-    await message.reply('Записала!')
+    try:
+        await Commodity(ags).record(message, data)
+        await Outcome(ags).write_row(
+            Outcome.from_ticket(message, data)
+        )
+    except KeyError:
+        log.exception(data)
+        await message.reply(f'Не смогла записать :(')
+    else:
+        await message.reply('Записала!')
 
 
 @router.edited_message(F.text)
