@@ -257,17 +257,20 @@ class Commodity(Transaction):
         dt = datetime.fromisoformat(t['transactionDate'])
         rows = []
         for i in t['items']:
-            cname: str = i['commodity']['name']
-            # some tickets have order number in goods name, removing
-            cname = re.sub(r'^\d+\.\s+', '', cname)
-            row = [
-                message.message_id,
-                cname,
-                i['commodity']['price'],
-                i['commodity']['quantity'],
-                dt.strftime('%d.%m.%y %H:%M'),
-                org
-            ]
-            rows.append(row)
+            if i['itemType'] == 1:  # actual position
+                cname: str = i['commodity']['name']
+                # some tickets have order number in item name, removing
+                cname = re.sub(r'^\d+\.\s+', '', cname)
+                row = [
+                    message.message_id,
+                    cname,
+                    i['commodity']['price'],
+                    i['commodity']['quantity'],
+                    dt.strftime('%d.%m.%y %H:%M'),
+                    org
+                ]
+                rows.append(row)
+            elif i['itemType'] == 5:  # position discount (usually goes right after an item)
+                rows[-1][2] -= (i['discount']['sum'] / rows[-1][3])  # reduce price of an item by discount amount
 
         await self.write_rows(rows)

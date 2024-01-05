@@ -31,7 +31,7 @@ async def main() -> None:
     # ... and all other routers should be attached to Dispatcher
     router.message.middleware(ChatActionMiddleware())
     dp.include_router(router)
-    engine = create_async_engine(os.getenv('DATABASE_URL'), echo=True)
+    engine = create_async_engine(os.getenv('DATABASE_URL'), echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(Model.metadata.create_all, checkfirst=True)
 
@@ -52,5 +52,5 @@ async def main() -> None:
 
 if __name__ == "__main__":
     load_dotenv()
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)-8s %(name)s - %(message)s')
     asyncio.run(main())
