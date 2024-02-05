@@ -44,6 +44,9 @@ class Config:
     def now(self):
         return datetime.now(tz=self.tz)
 
+    def nowstr(self) -> str:
+        return self.now().strftime('%d.%m.%y %H:%M')
+
     @property
     def tzname(self):
         """Return timezone in +0600 format."""
@@ -274,3 +277,25 @@ class Commodity(Transaction):
                 rows[-1][2] -= (i['discount']['sum'] / rows[-1][3])  # reduce price of an item by discount amount
 
         await self.write_rows(rows)
+
+
+class Wish(Transaction):
+    ws_name = 'Wishlist'
+    ws_dim = (1, 3)
+    headers = ['#', 'Желание', 'Добавлено', 'Исполнено']
+    pattern = re.compile(r'^хочу\s+(.*?)$', re.IGNORECASE)
+
+    async def make_row(self, message: Message) -> list:
+        wish = self.parse(message.text)
+        wish = wish[0] if wish else ''
+        conf = await self.cfg.get_data()
+        return [
+            message.message_id,
+            wish,
+            conf.nowstr(),
+            ''
+        ]
+
+    async def record(self, *args, **kwargs) -> None:
+        row = await self.make_row(*args, **kwargs)
+        return await self.write_row(row)

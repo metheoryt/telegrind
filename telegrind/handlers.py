@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 from .models import Chat, File
-from .sheets import Outcome, Loan, ConfigSheet, Commodity
+from .sheets import Outcome, Loan, ConfigSheet, Commodity, Wish
 
 qr_reader = QReader()
 
@@ -69,6 +69,11 @@ TIP_TEXT = """<b>Расходы 💸</b>
 
 Вася занял у вас 10 долларов три дня назад на жб ставочку
 <pre>займ Вася Пупкин 10 USD три дня назад на жб ставочку</pre>
+
+
+<b>Вишлист ⛓</b>
+---------------
+<pre>хочу {название или ссылка}</pre>
 
 
 <b>Изменить или удалить запись</b>
@@ -191,6 +196,14 @@ async def record_loan(message: Message, agc: AsyncioGspreadClient, chat: Chat):
     return await message.reply('Записала!')
 
 
+@router.message(F.text.regexp(Wish.pattern))
+@flags.chat_action(action='typing', initial_sleep=0.5)
+async def record_wish(message: Message, agc: AsyncioGspreadClient, chat: Chat):
+    ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
+    await Wish(ags).record(message)
+    return await message.reply('Записала!')
+
+
 @router.message(F.photo)
 @flags.chat_action(action='typing', initial_sleep=0.5)
 async def parse_check_by_qr_oofd(message: Message, bot: Bot, agc: AsyncioGspreadClient, chat: Chat):
@@ -260,7 +273,7 @@ async def parse_ticket_by_url(message: Message, chat: Chat, agc: AsyncioGspreadC
 @flags.chat_action(action='typing', initial_sleep=0.5)
 async def update_changed_message(edited_message: Message, agc: AsyncioGspreadClient, chat: Chat):
     ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
-    for sheet in (Outcome(ags), Loan(ags)):
+    for sheet in (Outcome(ags), Loan(ags), Wish(ags)):
         cell = await sheet.search_row(edited_message.message_id)
         if cell:
             row = await sheet.make_row(edited_message)
@@ -277,7 +290,7 @@ async def delete_record(message: Message, agc: AsyncioGspreadClient, chat: Chat)
         # delete record
         msg = message.reply_to_message
         ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
-        for sheet in (Outcome(ags), Loan(ags)):
+        for sheet in (Outcome(ags), Loan(ags), Wish(ags)):
             cell = await sheet.search_row(msg.message_id)
             if cell:
                 await sheet.delete_row(cell.row)
