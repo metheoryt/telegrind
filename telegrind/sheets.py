@@ -99,8 +99,9 @@ class Transaction(Sheet):
         self.cfg = ConfigSheet(self.ags)
 
     async def apply_filter(self, agw: AsyncioGspreadWorksheet):
-        r_col = re.sub(r'\d+', '', rowcol_to_a1(1, self.ws_dim[1]))
-        await agw.set_basic_filter(f'A:{r_col}')
+        # make it take whole table space,
+        # so we don't mess with user-added columns
+        await agw.set_basic_filter('A:A')
 
     async def get_agw(self) -> tuple[AsyncioGspreadWorksheet, bool]:
         agw, created = await super().get_agw()
