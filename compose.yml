@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: postgres:15
+    ports:
+      - 5433:5432
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  bot:
+    image: metheoryt/telegrind-bot:latest
+    build: .
+    volumes:
+      - .:/app
+      - /app/.venv
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+volumes:
+  pgdata:

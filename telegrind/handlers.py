@@ -1,9 +1,9 @@
 from pathlib import Path
-from re import Match
+# from re import Match
 
-import aiohttp
-import cv2
-import numpy as np
+# import aiohttp
+# import cv2
+# import numpy as np
 import logging
 
 from aiogram import Dispatcher, Router, flags, F, Bot
@@ -16,14 +16,14 @@ from gspread_asyncio import (
     AsyncioGspreadSpreadsheet,
     AsyncioGspreadClient
 )
-from qreader import QReader
+# from qreader import QReader
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 from .models import Chat, File
 from .sheets import Outcome, Loan, ConfigSheet, Commodity, Wish
 
-qr_reader = QReader()
+# qr_reader = QReader()
 
 
 dp = Dispatcher()
@@ -45,13 +45,6 @@ TIP_TEXT = """<b>Расходы 💸</b>
 
 Расход в долларах на хостинг вчера
 <pre>41 USD вчера хостинг</pre>
-
-
-<b>Покупки из чека 🧾</>
----------------
-Сфотографируйте и отправьте мне QR-код вашего чека, или дайте мне прямую ссылку на чек на сайте consumer.oofd.kz.
-Я занесу покупки в отдельный список и запишу общую сумму чека в расход.
-
 
 <b>Займы ⛓</b>
 ---------------
@@ -204,69 +197,69 @@ async def record_wish(message: Message, agc: AsyncioGspreadClient, chat: Chat):
     return await message.reply('Записала!')
 
 
-@router.message(F.photo)
-@flags.chat_action(action='typing', initial_sleep=0.5)
-async def parse_check_by_qr_oofd(message: Message, bot: Bot, agc: AsyncioGspreadClient, chat: Chat):
-    ps: PhotoSize = message.photo[-1]
-    content = await bot.download(ps.file_id)
+# @router.message(F.photo)
+# @flags.chat_action(action='typing', initial_sleep=0.5)
+# async def parse_check_by_qr_oofd(message: Message, bot: Bot, agc: AsyncioGspreadClient, chat: Chat):
+#     ps: PhotoSize = message.photo[-1]
+#     content = await bot.download(ps.file_id)
+#
+#     cv2img = cv2.imdecode(np.frombuffer(content.read(), np.uint8), 1)
+#     image = cv2.cvtColor(cv2img, cv2.COLOR_BGR2RGB)
+#     decoded_text = qr_reader.detect_and_decode(image=image)
+#     if not decoded_text:
+#         return await message.reply("Не нашла ни одного QR кода!")
+#
+#     urls = [v for v in decoded_text if v and 'oofd.kz' in v]
+#     if not urls:
+#         msgs = []
+#         for i, url in enumerate(decoded_text):
+#             if not url:
+#                 msgs.append(f"QR #{i+1}: не смогла прочитать код")
+#             elif 'oofd.kz' not in url:
+#                 msgs.append(f"QR #{i+1}: ко коду не та ссылка")
+#         return await message.reply('\n'.join(msgs))
+#
+#     url = urls[0]
+#     async with aiohttp.ClientSession() as session:
+#         rs = await session.get(url, ssl=False)
+#         ticket_token = rs.url.path.split('/')[-1]
+#         async with session.get(f'https://consumer.oofd.kz/api/tickets/ticket/{ticket_token}', ssl=False) as rs2:
+#             data = await rs2.json()
+#
+#         if data.get('message') == 'ticket.not.found.error':
+#             return await message.reply("В oofd не нашли такого чека...")
+#
+#     ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
+#
+#     # write into commodities list and into
+#     await Commodity(ags).record(message, data)
+#     await Outcome(ags).write_row(
+#         Outcome.from_ticket(message, data)
+#     )
+#
+#     await message.reply('Записала!')
 
-    cv2img = cv2.imdecode(np.frombuffer(content.read(), np.uint8), 1)
-    image = cv2.cvtColor(cv2img, cv2.COLOR_BGR2RGB)
-    decoded_text = qr_reader.detect_and_decode(image=image)
-    if not decoded_text:
-        return await message.reply("Не нашла ни одного QR кода!")
 
-    urls = [v for v in decoded_text if v and 'oofd.kz' in v]
-    if not urls:
-        msgs = []
-        for i, url in enumerate(decoded_text):
-            if not url:
-                msgs.append(f"QR #{i+1}: не смогла прочитать код")
-            elif 'oofd.kz' not in url:
-                msgs.append(f"QR #{i+1}: ко коду не та ссылка")
-        return await message.reply('\n'.join(msgs))
-
-    url = urls[0]
-    async with aiohttp.ClientSession() as session:
-        rs = await session.get(url, ssl=False)
-        ticket_token = rs.url.path.split('/')[-1]
-        async with session.get(f'https://consumer.oofd.kz/api/tickets/ticket/{ticket_token}', ssl=False) as rs2:
-            data = await rs2.json()
-
-        if data.get('message') == 'ticket.not.found.error':
-            return await message.reply("В oofd не нашли такого чека...")
-
-    ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
-
-    # write into commodities list and into
-    await Commodity(ags).record(message, data)
-    await Outcome(ags).write_row(
-        Outcome.from_ticket(message, data)
-    )
-
-    await message.reply('Записала!')
-
-
-@router.message(F.text.regexp(r'https?\:\/\/consumer\.oofd\.kz\/(?:ticket\/|\?uid\=)([0-9a-f\-]{36})').as_('match'))
-async def parse_ticket_by_url(message: Message, chat: Chat, agc: AsyncioGspreadClient, match: Match):
-    token = match.groups()[0]
-    async with aiohttp.ClientSession() as session:
-        async with session.get(f'https://consumer.oofd.kz/api/tickets/ticket/{token}', ssl=False) as rs2:
-            data = await rs2.json()
-
-    ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
-
-    # write into commodities and expenses lists
-    try:
-        await Commodity(ags).record(message, data)
-        await Outcome(ags).write_row(
-            Outcome.from_ticket(message, data)
-        )
-    except KeyError:
-        log.exception(data)
-        await message.reply(f'Не смогла записать :(')
-    else:
-        await message.reply('Записала!')
+# @router.message(F.text.regexp(r'https?\:\/\/consumer\.oofd\.kz\/(?:ticket\/|\?uid\=)([0-9a-f\-]{36})').as_('match'))
+# async def parse_ticket_by_url(message: Message, chat: Chat, agc: AsyncioGspreadClient, match: Match):
+#     token = match.groups()[0]
+#     async with aiohttp.ClientSession() as session:
+#         async with session.get(f'https://consumer.oofd.kz/api/tickets/ticket/{token}', ssl=False) as rs2:
+#             data = await rs2.json()
+#
+#     ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
+#
+#     # write into commodities and expenses lists
+#     try:
+#         await Commodity(ags).record(message, data)
+#         await Outcome(ags).write_row(
+#             Outcome.from_ticket(message, data)
+#         )
+#     except KeyError:
+#         log.exception(data)
+#         await message.reply(f'Не смогла записать :(')
+#     else:
+#         await message.reply('Записала!')
 
 
 @router.edited_message(F.text)

@@ -2,3 +2,4 @@
 !/local/.gitkeep
 .env
 .idea/
+.venv/

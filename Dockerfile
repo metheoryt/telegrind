@@ -1,24 +1,29 @@
-FROM python:3.11 as base
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
-RUN apt update  \
-    && apt upgrade -y  \
-    && apt install -y \
-    libzbar0 ffmpeg libsm6 libxext6 \
-    ghostscript python3-tk
+WORKDIR /app
 
-RUN python -mpip install --upgrade pip \
-    && python -mpip install --upgrade pipenv \
-    && python -mpip install torch --no-cache-dir
+# Enable bytecode compilation
+ENV UV_COMPILE_BYTECODE=1
 
-RUN mkdir -p /opt/app
-WORKDIR /opt/app
+# Copy from the cache instead of linking since it's a mounted volume
+ENV UV_LINK_MODE=copy
 
-FROM base as dev
+ADD pyproject.toml uv.lock /app/
 
-COPY Pipfile* ./
-RUN pipenv sync --system --dev
+# Install the project's dependencies using the lockfile and settings
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project --no-dev
 
-FROM base as prod
+# Then, add the rest of the project source code and install it
+# Installing separately from its dependencies allows optimal layer caching
+ADD . /app
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
 
-COPY Pipfile* ./
-RUN pipenv sync --clear --system
+# Place executables in the environment at the front of the path
+ENV PATH="/app/.venv/bin:$PATH"
+
+# Reset the entrypoint, don't invoke `uv`
+ENTRYPOINT []
+
+CMD ["python", "main.py"]

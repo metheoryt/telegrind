@@ -3,6 +3,7 @@ import logging
 import os
 
 from aiogram import Bot
+from aiogram.client.default import DefaultBotProperties
 from aiogram.utils.chat_action import ChatActionMiddleware
 from dotenv import load_dotenv
 from google.oauth2.service_account import Credentials
@@ -38,7 +39,7 @@ async def main() -> None:
     async_session = async_sessionmaker(engine, expire_on_commit=False)
 
     token = os.getenv('BOT_TOKEN')
-    bot = Bot(token, parse_mode="HTML")
+    bot = Bot(token, default=DefaultBotProperties(parse_mode="HTML"))
     # And the run events dispatching
     await dp.start_polling(
         bot,
