@@ -12,7 +12,7 @@ Your private telemetry through telegram chat with Google shets
 
 ## TODO
 
-- ! AI parsing
+- !!! AI parsing
 - Emoji react on most messages instead of reply
 - Kaspi PDF statement parsing
 - Recurrent payments - manage and get notified when you need to pay.
