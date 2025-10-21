@@ -9,6 +9,14 @@ dependencies = [
     "asyncpg>=0.30.0",
     "dateparser>=1.2.2",
     "gspread-asyncio>=2.0.0",
+    "marvin>=3.2.2",
+    "pycountry>=24.6.1",
+    "pydantic-extra-types>=2.10.6",
     "python-dotenv>=1.1.1",
     "sqlalchemy[asyncio]>=2.0.44",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.0.1",
 ]
