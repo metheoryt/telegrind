@@ -43,7 +43,7 @@ class Config(BaseModel):
     def tz(self):
         return timezone(timedelta(hours=self.dt_offset))
 
-    def now(self):
+    def now(self) -> datetime:
         return datetime.now(tz=self.tz)
 
     def nowstr(self) -> str:
@@ -95,6 +95,7 @@ class ConfigSheet(Sheet):
 
 
 class Transaction(Sheet):
+    # TODO lock the sheet while updating. We wight want to use redis lock for that.
     pattern: Pattern
     headers: list
 
@@ -133,14 +134,14 @@ class Transaction(Sheet):
         )
         await self.apply_filter(agw)
 
-    async def write_row(self, row: list):
+    async def write_row(self, row: list[str]) -> None:
         agw, _ = await self.get_agw()
         await agw.append_row(
             row, value_input_option=ValueInputOption.user_entered, table_range="A1"
         )
         await self.apply_filter(agw)
 
-    async def search_row(self, message_id: int):
+    async def search_row(self, message_id: int) -> Cell | None:
         agw, _ = await self.get_agw()
         return await agw.find(str(message_id), in_column=1)
 
@@ -204,18 +205,6 @@ class Outcome(Transaction):
         row = await self.make_row(*args, **kwargs)
         return await self.write_row(row)
 
-    @classmethod
-    def from_ticket(cls, message: Message, data: dict) -> list:
-        return [
-            message.message_id,
-            data["ticket"]["totalSum"],
-            "KZT",
-            datetime.fromisoformat(data["ticket"]["transactionDate"]).strftime(
-                "%d.%m.%y %H:%M"
-            ),
-            "Покупки",
-        ]
-
 
 class Loan(Outcome):
     pattern = re.compile(
@@ -247,41 +236,41 @@ class Loan(Outcome):
         ]
 
 
-class Commodity(Transaction):
-    """Commodities list from tiсket."""
+# class Commodity(Transaction):
+#     """Commodities list from tiсket."""
 
-    ws_name = "Commodities"
-    ws_dim = (1, 6)
-    headers = ["#", "Продукт", "Цена", "Количество", "Дата", "Организация"]
+#     ws_name = "Commodities"
+#     ws_dim = (1, 6)
+#     headers = ["#", "Продукт", "Цена", "Количество", "Дата", "Организация"]
 
-    async def record(self, message: Message, data: dict) -> None:
-        org = data["orgTitle"]
-        org = org.replace("ТОВАРИЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ", "ТОО")
-        t = data["ticket"]
-        dt = datetime.fromisoformat(t["transactionDate"])
-        rows = []
-        for i in t["items"]:
-            if i["itemType"] == 1:  # actual position
-                cname: str = i["commodity"]["name"]
-                # some tickets have order number in item name, removing
-                cname = re.sub(r"^\d+\.\s+", "", cname)
-                row = [
-                    message.message_id,
-                    cname,
-                    i["commodity"]["price"],
-                    i["commodity"]["quantity"],
-                    dt.strftime("%d.%m.%y %H:%M"),
-                    org,
-                ]
-                rows.append(row)
-            elif (
-                i["itemType"] == 5
-            ):  # position discount (usually goes right after an item)
-                rows[-1][2] -= (
-                    i["discount"]["sum"] / rows[-1][3]
-                )  # reduce price of an item by discount amount
+#     async def record(self, message: Message, data: dict) -> None:
+#         org = data["orgTitle"]
+#         org = org.replace("ТОВАРИЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ", "ТОО")
+#         t = data["ticket"]
+#         dt = datetime.fromisoformat(t["transactionDate"])
+#         rows = []
+#         for i in t["items"]:
+#             if i["itemType"] == 1:  # actual position
+#                 cname: str = i["commodity"]["name"]
+#                 # some tickets have order number in item name, removing
+#                 cname = re.sub(r"^\d+\.\s+", "", cname)
+#                 row = [
+#                     message.message_id,
+#                     cname,
+#                     i["commodity"]["price"],
+#                     i["commodity"]["quantity"],
+#                     dt.strftime("%d.%m.%y %H:%M"),
+#                     org,
+#                 ]
+#                 rows.append(row)
+#             elif (
+#                 i["itemType"] == 5
+#             ):  # position discount (usually goes right after an item)
+#                 rows[-1][2] -= (
+#                     i["discount"]["sum"] / rows[-1][3]
+#                 )  # reduce price of an item by discount amount
 
-        await self.write_rows(rows)
+#         await self.write_rows(rows)
 
 
 class Wish(Transaction):
