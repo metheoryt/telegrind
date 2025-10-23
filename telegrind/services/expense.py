@@ -5,7 +5,9 @@ from pydantic import BaseModel, PositiveFloat, PositiveInt
 from pydantic_extra_types.currency_code import Currency
 from telegrind.sheets import Outcome
 from aiogram.types import Message
+import logging
 
+log = logging.getLogger(__name__)
 
 EXTRACT_INSTRUCTION = """\
 How to extract expense date:
@@ -105,7 +107,12 @@ class ExpenseService:
         return remark
 
     async def make_reply_text(self, message: Message, expense: Expense):
-        remark = await self.joke_remark(message.text, expense)
+        try:
+            remark = await self.joke_remark(message.text, expense)
+        except Exception:
+            remark = "Хотел пошутить, но не смог."
+            log.exception("Failed to generate joke remark")
+
         reply = f"""\
 <code>{expense.amount} {expense.currency.lower()} {expense.date.strftime("%d.%m.%y в %H:%M")} "{expense.description}"</code>
 
