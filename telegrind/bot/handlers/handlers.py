@@ -42,9 +42,9 @@ async def update_changed_message(
 
     # first, check for expense
     service = ExpenseService(wb)
-    expense_exists = await ExpenseService(wb).expense_exists(edited_message)
+    expense_exists = await service.expense_exists(edited_message)
     if expense_exists:
-        edited_expense = await service.extract_expense(edited_message.text)
+        edited_expense = await service.extract_expense(edited_message)
         reply_text = await service.make_reply_text(edited_message, edited_expense)
         updated = await service.update_expense(edited_message, edited_expense)
         if updated:
@@ -87,7 +87,7 @@ async def record_outcome_llm(message: Message, agc: AsyncioGspreadClient, chat: 
     wb: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
 
     service = ExpenseService(wb)
-    expense = await service.extract_expense(message.text)  # parse expense from text
+    expense = await service.extract_expense(message)  # parse expense from text
     reply_text = await service.make_reply_text(message, expense)  # talk about it
 
     # write it to the worksheet at last

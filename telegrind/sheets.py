@@ -49,6 +49,9 @@ class Config(BaseModel):
     def nowstr(self) -> str:
         return self.now().strftime("%d.%m.%y %H:%M")
 
+    def localized(self, dt: datetime) -> datetime:
+        return dt.astimezone(self.tz)
+
     @property
     def tzname(self):
         """Return timezone in +0600 format."""

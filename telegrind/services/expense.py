@@ -83,17 +83,18 @@ class ExpenseService:
         )
         return is_expense_record
 
-    async def extract_expense(self, msg_text: str):
+    async def extract_expense(self, message: Message):
         config = await self.ws.cfg.get_data()
+        msg_date = config.localized(message.date)
         exps = await marvin.extract_async(
-            data=msg_text,
+            data=message.text,
             target=Expense,
             instructions=EXTRACT_INSTRUCTION.format(
-                default_currency=config.currency, now=config.now().isoformat()
+                default_currency=config.currency, now=msg_date.isoformat()
             ),
         )
         exp = exps[0]
-        exp.date = exp.date or config.now()
+        exp.date = exp.date or msg_date
         return exp
 
     async def joke_remark(self, msg_text: str, exp: Expense):
