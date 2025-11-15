@@ -1,11 +1,13 @@
+import logging
 from datetime import datetime
-from gspread_asyncio import AsyncioGspreadSpreadsheet
+
 import marvin
+from aiogram.types import Message
+from gspread_asyncio import AsyncioGspreadSpreadsheet
 from pydantic import BaseModel, PositiveFloat, PositiveInt
 from pydantic_extra_types.currency_code import Currency
+
 from telegrind.sheets import Outcome
-from aiogram.types import Message
-import logging
 
 log = logging.getLogger(__name__)
 
@@ -99,25 +101,9 @@ class ExpenseService:
         exp.date = exp.date or msg_date
         return exp
 
-    async def joke_remark(self, msg_text: str, exp: Expense):
-        remark = await marvin.run_async(
-            JOKE_REMARK_INSTRUCTION,
-            context={"boss_message": msg_text, "boss_expense": exp},
-        )
-        return remark
-
     async def make_reply_text(self, message: Message, expense: Expense):
-        try:
-            remark = await self.joke_remark(message.text, expense)
-        except Exception:
-            remark = "Хотел пошутить, но не смог."
-            log.exception("Failed to generate joke remark")
-
         reply = f"""\
 <code>{expense.amount} {expense.currency.lower()} {expense.date.strftime("%d.%m.%y в %H:%M")} "{expense.description}"</code>
-
-<i>{remark}</i>
-
 <tg-spoiler>{message.message_id}@{self.ws.ws_name}</tg-spoiler>
 """
         return reply
