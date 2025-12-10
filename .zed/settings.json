@@ -1,0 +1,24 @@
+{
+  "languages": {
+    "Python": {
+      "language_servers": [
+        // https://zed.dev/docs/languages/python
+        "ty", // Language server, astral-sh promising alpha
+        "!basedpyright", // Language server, pyright fork TOP
+        "ruff", // linter-formatter
+        "..."
+      ],
+      "formatter": [{ "language_server": { "name": "ruff" } }],
+      // "format_on_save": {
+      //   "language_server": {
+      //     "name": "ruff"
+      //   }
+      // },
+      "code_actions_on_format": {
+        // apply ruff autofixes and sort imports
+        "source.fixAll.ruff": true,
+        "source.organizeImports.ruff": true
+      }
+    }
+  }
+}
