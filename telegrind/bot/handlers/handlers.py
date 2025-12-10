@@ -1,7 +1,8 @@
 from aiogram import flags, F
 from aiogram.types import Message
 from gspread_asyncio import AsyncioGspreadSpreadsheet, AsyncioGspreadClient
-
+from aiogram.types import ReactionTypeEmoji
+import asyncio
 from telegrind.models import Chat
 from telegrind.sheets import Outcome, Loan, Wish
 from telegrind.bot.router import router
@@ -48,7 +49,8 @@ async def update_changed_message(
         reply_text = await service.make_reply_text(edited_message, edited_expense)
         updated = await service.update_expense(edited_message, edited_expense)
         if updated:
-            return await edited_message.reply(reply_text, disable_notification=True)
+            return await edited_message.react([ReactionTypeEmoji(emoji="✍")])
+            # return await edited_message.reply(reply_text, disable_notification=True)
 
     # second, check for other legacy types
     for sheet in (Loan(wb), Wish(wb)):
@@ -56,7 +58,7 @@ async def update_changed_message(
         if cell:
             row = await sheet.make_row(edited_message)
             await sheet.change_row(cell.row, row)
-            return await edited_message.reply("Изменено!")
+            return await edited_message.react([ReactionTypeEmoji(emoji="✍")])
 
     return await edited_message.reply("Отсутствует в книге...")
 
@@ -64,6 +66,7 @@ async def update_changed_message(
 @router.message(F.reply_to_message.text)
 @flags.chat_action(action="typing", initial_sleep=0.5)
 async def delete_record(message: Message, agc: AsyncioGspreadClient, chat: Chat):
+    bot = message.bot
     if message.text.strip() == "-":
         # delete record
         msg: Message = message.reply_to_message
@@ -72,7 +75,18 @@ async def delete_record(message: Message, agc: AsyncioGspreadClient, chat: Chat)
             cell = await sheet.search_row(msg.message_id)
             if cell:
                 await sheet.delete_row(cell.row)
-                return await msg.reply("Удалено!")
+                return await asyncio.gather(
+                    bot.set_message_reaction(
+                        chat_id=msg.chat.id,
+                        message_id=msg.message_id,
+                        reaction=[ReactionTypeEmoji(emoji="💩")],
+                    ),
+                    bot.set_message_reaction(
+                        chat_id=message.chat.id,
+                        message_id=message.message_id,
+                        reaction=[ReactionTypeEmoji(emoji="👌")],
+                    ),
+                )
         return await msg.reply("Отсутствует в книге...")
 
 
@@ -88,8 +102,8 @@ async def record_outcome_llm(message: Message, agc: AsyncioGspreadClient, chat: 
 
     service = ExpenseService(wb)
     expense = await service.extract_expense(message)  # parse expense from text
-    reply_text = await service.make_reply_text(message, expense)  # talk about it
+    # reply_text = await service.make_reply_text(message, expense)  # talk about it
 
     # write it to the worksheet at last
     expense = await service.add_expense(message, expense)
-    return await message.reply(reply_text, disable_notification=True)
+    return await message.react([ReactionTypeEmoji(emoji="👌")])
