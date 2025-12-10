@@ -24,7 +24,7 @@ log.info("marvin default model is %s", marvin.defaults.model)
 async def record_loan(message: Message, agc: AsyncioGspreadClient, chat: Chat):
     ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
     await Loan(ags).record(message)
-    return await message.reply("Внесено!")
+    return await message.react([ReactionTypeEmoji(emoji="👌")])
 
 
 @router.message(F.text.regexp(Wish.pattern))
@@ -32,7 +32,7 @@ async def record_loan(message: Message, agc: AsyncioGspreadClient, chat: Chat):
 async def record_wish(message: Message, agc: AsyncioGspreadClient, chat: Chat):
     ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
     await Wish(ags).record(message)
-    return await message.reply("Внесено!")
+    return await message.react([ReactionTypeEmoji(emoji="👌")])
 
 
 @router.edited_message(F.text)
