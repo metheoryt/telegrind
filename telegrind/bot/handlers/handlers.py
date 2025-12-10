@@ -1,18 +1,19 @@
-from aiogram import flags, F
-from aiogram.types import Message
-from gspread_asyncio import AsyncioGspreadSpreadsheet, AsyncioGspreadClient
-from aiogram.types import ReactionTypeEmoji
 import asyncio
-from telegrind.models import Chat
-from telegrind.sheets import Outcome, Loan, Wish
-from telegrind.bot.router import router
-from telegrind.bot.const import TIP_TEXT
-import marvin
 import logging
-from telegrind.services.expense import ExpenseService
 
+import marvin
+from aiogram import F, flags
+from aiogram.types import Message, ReactionTypeEmoji
+from gspread_asyncio import AsyncioGspreadClient, AsyncioGspreadSpreadsheet
+
+from telegrind.bot.const import TIP_TEXT
+from telegrind.bot.router import router
+from telegrind.models import Chat
+from telegrind.services.expense import ExpenseService
+from telegrind.sheets import Loan, Outcome, Wish
 
 log = logging.getLogger(__name__)
+
 
 # marvin.settings.agent_model = "google-gla:gemini-2.5-flash"
 log.info("marvin default model is %s", marvin.defaults.model)
@@ -46,7 +47,7 @@ async def update_changed_message(
     expense_exists = await service.expense_exists(edited_message)
     if expense_exists:
         edited_expense = await service.extract_expense(edited_message)
-        reply_text = await service.make_reply_text(edited_message, edited_expense)
+        # reply_text = await service.make_reply_text(edited_message, edited_expense)
         updated = await service.update_expense(edited_message, edited_expense)
         if updated:
             return await edited_message.react([ReactionTypeEmoji(emoji="✍")])
