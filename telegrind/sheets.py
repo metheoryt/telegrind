@@ -1,13 +1,12 @@
 import re
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Pattern
+from re import Pattern
 
 from aiogram.types import Message
-from gspread import WorksheetNotFound, Cell
-from gspread.utils import ValueInputOption, rowcol_to_a1
-from gspread_asyncio import AsyncioGspreadWorksheet, AsyncioGspreadSpreadsheet
 from dateparser.search import search_dates
+from gspread import Cell, WorksheetNotFound
+from gspread.utils import ValueInputOption
+from gspread_asyncio import AsyncioGspreadSpreadsheet, AsyncioGspreadWorksheet
 from pydantic import BaseModel
 from pydantic_extra_types.currency_code import Currency
 
@@ -142,7 +141,7 @@ class Transaction(Sheet):
         await agw.append_row(
             row, value_input_option=ValueInputOption.user_entered, table_range="A1"
         )
-        await self.apply_filter(agw)
+        # await self.apply_filter(agw)
 
     async def search_row(self, message_id: int) -> Cell | None:
         agw, _ = await self.get_agw()
