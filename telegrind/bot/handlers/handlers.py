@@ -2,7 +2,8 @@ import asyncio
 import logging
 
 import marvin
-from aiogram import F, flags
+from aiogram import Bot, F, flags
+from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, ReactionTypeEmoji
 from gspread_asyncio import AsyncioGspreadClient, AsyncioGspreadSpreadsheet
 
@@ -12,16 +13,27 @@ from telegrind.models import Chat
 from telegrind.services.expense import ExpenseService
 from telegrind.sheets import Loan, Outcome, Wish
 
+from .start import Form
+
 log = logging.getLogger(__name__)
 
-
-# marvin.settings.agent_model = "google-gla:gemini-2.5-flash"
 log.info("marvin default model is %s", marvin.defaults.model)
+
+
+LINK_MISSING_TEXT = (
+    "Ссылка на вашу таблицу потерялась. Пожауйста, отправьте её мне ещё раз."
+)
 
 
 @router.message(F.text.regexp(Loan.pattern))
 @flags.chat_action(action="typing", initial_sleep=0.5)
-async def record_loan(message: Message, agc: AsyncioGspreadClient, chat: Chat):
+async def record_loan(
+    message: Message, agc: AsyncioGspreadClient, chat: Chat, state: FSMContext
+):
+    if not chat.sheet_url:
+        await state.set_state(Form.request_sheet_url)
+        return await message.reply(LINK_MISSING_TEXT)
+
     ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
     await Loan(ags).record(message)
     return await message.react([ReactionTypeEmoji(emoji="👌")])
@@ -29,7 +41,13 @@ async def record_loan(message: Message, agc: AsyncioGspreadClient, chat: Chat):
 
 @router.message(F.text.regexp(Wish.pattern))
 @flags.chat_action(action="typing", initial_sleep=0.5)
-async def record_wish(message: Message, agc: AsyncioGspreadClient, chat: Chat):
+async def record_wish(
+    message: Message, agc: AsyncioGspreadClient, chat: Chat, state: FSMContext
+):
+    if not chat.sheet_url:
+        await state.set_state(Form.request_sheet_url)
+        return await message.reply(LINK_MISSING_TEXT)
+
     ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
     await Wish(ags).record(message)
     return await message.react([ReactionTypeEmoji(emoji="👌")])
@@ -38,8 +56,12 @@ async def record_wish(message: Message, agc: AsyncioGspreadClient, chat: Chat):
 @router.edited_message(F.text)
 @flags.chat_action(action="typing", initial_sleep=0.5)
 async def update_changed_message(
-    edited_message: Message, agc: AsyncioGspreadClient, chat: Chat
+    edited_message: Message, agc: AsyncioGspreadClient, chat: Chat, state: FSMContext
 ):
+    if not chat.sheet_url:
+        await state.set_state(Form.request_sheet_url)
+        return await edited_message.reply(LINK_MISSING_TEXT)
+
     wb: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
 
     # first, check for expense
@@ -47,11 +69,9 @@ async def update_changed_message(
     expense_exists = await service.expense_exists(edited_message)
     if expense_exists:
         edited_expense = await service.extract_expense(edited_message)
-        # reply_text = await service.make_reply_text(edited_message, edited_expense)
         updated = await service.update_expense(edited_message, edited_expense)
         if updated:
             return await edited_message.react([ReactionTypeEmoji(emoji="✍")])
-            # return await edited_message.reply(reply_text, disable_notification=True)
 
     # second, check for other legacy types
     for sheet in (Loan(wb), Wish(wb)):
@@ -66,9 +86,14 @@ async def update_changed_message(
 
 @router.message(F.reply_to_message.text)
 @flags.chat_action(action="typing", initial_sleep=0.5)
-async def delete_record(message: Message, agc: AsyncioGspreadClient, chat: Chat):
-    bot = message.bot
-    if message.text.strip() == "-":
+async def delete_record(
+    message: Message, agc: AsyncioGspreadClient, chat: Chat, bot: Bot, state: FSMContext
+):
+    if not chat.sheet_url:
+        await state.set_state(Form.request_sheet_url)
+        return await message.reply(LINK_MISSING_TEXT)
+
+    if message.text and message.text.strip() == "-":
         # delete record
         msg: Message = message.reply_to_message
         ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
@@ -93,7 +118,13 @@ async def delete_record(message: Message, agc: AsyncioGspreadClient, chat: Chat)
 
 @router.message(F.text)
 @flags.chat_action(action="typing", initial_sleep=0.5)
-async def record_outcome_llm(message: Message, agc: AsyncioGspreadClient, chat: Chat):
+async def record_outcome_llm(
+    message: Message, agc: AsyncioGspreadClient, chat: Chat, state: FSMContext
+):
+    if not chat.sheet_url:
+        await state.set_state(Form.request_sheet_url)
+        return await message.reply(LINK_MISSING_TEXT)
+
     # support AI parsing only for expenses for now
     is_expense = await ExpenseService.is_expense(message.text)
     if not is_expense:

@@ -1,4 +1,3 @@
-from aiogram.types import Chat as TGChat
 from aiogram.types import Message, Update
 from gspread_asyncio import AsyncioGspreadClient, AsyncioGspreadClientManager
 from sqlalchemy import select
@@ -24,12 +23,6 @@ async def populate_chat_data(handler, event: Update, data: dict):
             chat: Chat | None = result.scalar_one_or_none()
             if not chat:
                 chat = Chat(chat_id=msg.chat.id)
-                session.add(chat)
-
-            if not chat.sheet_url:
-                bot = data["bot"]
-                tgchat: TGChat = await bot.get_chat(msg.chat.id)
-                chat.sheet_url = tgchat.pinned_message.text
                 session.add(chat)
 
         agcm: AsyncioGspreadClientManager = data["agcm"]
