@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import datetime
 
 import marvin
@@ -80,12 +81,13 @@ class ExpenseService:
 
     @classmethod
     async def is_expense(cls, msg_text: str):
-        is_expense_record = await marvin.run_async(
-            "Does the user message contain a number, in digits or in words?",
-            context={"user_message": msg_text[:200]},
-            result_type=bool,
-        )
-        return is_expense_record
+        # is_expense_record = await marvin.run_async(
+        #     "Does the user message contain a number, in digits or in words?",
+        #     context={"user_message": msg_text[:200]},
+        #     result_type=bool,
+        # )
+        # return is_expense_record
+        return re.match(r"^\d+\s", msg_text.strip()) is not None
 
     async def extract_expense(self, message: Message):
         config = await self.ws.cfg.get_data()
