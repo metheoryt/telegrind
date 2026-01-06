@@ -1,19 +1,19 @@
-from pathlib import Path
 import logging
+from pathlib import Path
 
-from aiogram import flags, Bot
+from aiogram import Bot, flags
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import Message, FSInputFile
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import FSInputFile, Message
 from gspread_asyncio import AsyncioGspreadClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from telegrind.bot.const import TIP_TEXT
+from telegrind.bot.router import router
 from telegrind.models import Chat, File
 from telegrind.sheets import ConfigSheet
-from telegrind.bot.router import router
-from telegrind.bot.const import TIP_TEXT
 
 log = logging.getLogger(__name__)
 
