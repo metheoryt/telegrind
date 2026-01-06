@@ -87,11 +87,16 @@ class ExpenseService:
         #     result_type=bool,
         # )
         # return is_expense_record
-        return re.match(r"^\d+\s", msg_text.strip()) is not None
+        return re.match(r"^\d+\b", msg_text.strip()) is not None
 
     async def extract_expense(self, message: Message):
+        date = message.date
+        if message.forward_origin:
+            date = message.forward_origin.date
+
         config = await self.ws.cfg.get_data()
-        msg_date = config.localized(message.date)
+        msg_date = config.localized(date)
+
         exps = await marvin.extract_async(
             data=message.text,
             target=Expense,

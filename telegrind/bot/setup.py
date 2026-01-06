@@ -1,7 +1,8 @@
-from .router import router
-from .dispatcher import dp
 from aiogram import Dispatcher
 from aiogram.utils.chat_action import ChatActionMiddleware
+
+from .dispatcher import dp
+from .router import router
 
 
 def setup_dispatcher() -> Dispatcher:
