@@ -11,6 +11,8 @@ from telegrind.bot.const import TIP_TEXT
 @router.message(F.text.regexp(Outcome.pattern))
 @flags.chat_action(action="typing", initial_sleep=0.5)
 async def record_outcome(message: Message, agc: AsyncioGspreadClient, chat: Chat):
+    if not chat.sheet_url:
+        return await message.reply("Сначала настройте бота командой /start")
     ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
     await Outcome(ags).record(message)
     return await message.reply("Записала!")
@@ -19,6 +21,8 @@ async def record_outcome(message: Message, agc: AsyncioGspreadClient, chat: Chat
 @router.message(F.text.regexp(Loan.pattern))
 @flags.chat_action(action="typing", initial_sleep=0.5)
 async def record_loan(message: Message, agc: AsyncioGspreadClient, chat: Chat):
+    if not chat.sheet_url:
+        return await message.reply("Сначала настройте бота командой /start")
     ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
     await Loan(ags).record(message)
     return await message.reply("Записала!")
@@ -27,6 +31,8 @@ async def record_loan(message: Message, agc: AsyncioGspreadClient, chat: Chat):
 @router.message(F.text.regexp(Wish.pattern))
 @flags.chat_action(action="typing", initial_sleep=0.5)
 async def record_wish(message: Message, agc: AsyncioGspreadClient, chat: Chat):
+    if not chat.sheet_url:
+        return await message.reply("Сначала настройте бота командой /start")
     ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
     await Wish(ags).record(message)
     return await message.reply("Записала!")
@@ -37,6 +43,8 @@ async def record_wish(message: Message, agc: AsyncioGspreadClient, chat: Chat):
 async def update_changed_message(
     edited_message: Message, agc: AsyncioGspreadClient, chat: Chat
 ):
+    if not chat.sheet_url:
+        return await edited_message.reply("Сначала настройте бота командой /start")
     ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
     for sheet in (Outcome(ags), Loan(ags), Wish(ags)):
         cell = await sheet.search_row(edited_message.message_id)
@@ -48,19 +56,19 @@ async def update_changed_message(
     return await edited_message.reply("Не нашла этого в книге...")
 
 
-@router.message(F.reply_to_message.text)
+@router.message(F.reply_to_message.text, F.text == "-")
 @flags.chat_action(action="typing", initial_sleep=0.5)
 async def delete_record(message: Message, agc: AsyncioGspreadClient, chat: Chat):
-    if message.text.strip() == "-":
-        # delete record
-        msg: Message = message.reply_to_message
-        ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
-        for sheet in (Outcome(ags), Loan(ags), Wish(ags)):
-            cell = await sheet.search_row(msg.message_id)
-            if cell:
-                await sheet.delete_row(cell.row)
-                return await msg.reply("Удалила!")
-        return await msg.reply("Не нашла этого в книге...")
+    if not chat.sheet_url:
+        return await message.reply("Сначала настройте бота командой /start")
+    msg: Message = message.reply_to_message
+    ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
+    for sheet in (Outcome(ags), Loan(ags), Wish(ags)):
+        cell = await sheet.search_row(msg.message_id)
+        if cell:
+            await sheet.delete_row(cell.row)
+            return await msg.reply("Удалила!")
+    return await msg.reply("Не нашла этого в книге...")
 
 
 @router.message(F.text)

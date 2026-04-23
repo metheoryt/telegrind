@@ -107,6 +107,7 @@ class Transaction(Sheet):
         agw, created = await super().get_agw()
         if created:
             await agw.append_row(self.headers, table_range='A1')
+            await self.apply_filter(agw)
         return agw, created
 
     @classmethod
@@ -117,10 +118,11 @@ class Transaction(Sheet):
         return match.groups()
 
     async def make_row(self, message: Message) -> list:
-        pass
+        raise NotImplementedError
 
     async def record(self, *args, **kwargs) -> None:
-        pass
+        row = await self.make_row(*args, **kwargs)
+        return await self.write_row(row)
 
     async def write_rows(self, rows: list):
         agw, _ = await self.get_agw()
@@ -129,7 +131,6 @@ class Transaction(Sheet):
             value_input_option=ValueInputOption.user_entered,
             table_range='A1'
         )
-        await self.apply_filter(agw)
 
     async def write_row(self, row: list):
         agw, _ = await self.get_agw()
@@ -138,7 +139,6 @@ class Transaction(Sheet):
             value_input_option=ValueInputOption.user_entered,
             table_range='A1'
         )
-        await self.apply_filter(agw)
 
     async def search_row(self, message_id: int):
         agw, _ = await self.get_agw()
@@ -151,7 +151,6 @@ class Transaction(Sheet):
             cells,
             value_input_option=ValueInputOption.user_entered
         )
-        await self.apply_filter(agw)
 
     async def delete_row(self, row_id: int):
         agw, _ = await self.get_agw()
@@ -159,7 +158,7 @@ class Transaction(Sheet):
 
 
 _amount = r'(\d+(?:[\.,]\d+)?)'
-_curr = r'([A-z]{3})'
+_curr = r'([A-Za-z]{3})'
 _date = r'(\d{2}\.\d{2}\.\d{4})'
 
 
@@ -208,10 +207,6 @@ class Outcome(Transaction):
             desc
         ]
 
-    async def record(self, *args, **kwargs) -> None:
-        row = await self.make_row(*args, **kwargs)
-        return await self.write_row(row)
-
     @classmethod
     def from_ticket(cls, message: Message, data: dict) -> list:
         return [
@@ -223,7 +218,7 @@ class Outcome(Transaction):
         ]
 
 
-class Loan(Outcome):
+class Loan(Transaction):
     pattern = re.compile(rf'^(?:долг|за[еёйи]м) (.*?) ([+-])?{_amount}(?: {_curr})?(?: {_date})?(?: (.*))?$', flags=re.I)
     ws_name = 'Loans'
     headers = ['#', "Сумма", "Валюта", "Заёмщик", "Дата", "Комментарий"]
@@ -296,7 +291,3 @@ class Wish(Transaction):
             conf.nowstr(),
             ''
         ]
-
-    async def record(self, *args, **kwargs) -> None:
-        row = await self.make_row(*args, **kwargs)
-        return await self.write_row(row)
