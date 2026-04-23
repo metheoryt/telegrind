@@ -29,8 +29,8 @@ dev = [
 # Set the maximum line length to match Black's default
 line-length = 88
 
-# Assume Python 3.12+
-target-version = "py312"
+# Assume Python 3.14+
+target-version = "py314"
 
 # Enable specific rule sets
 lint.select = [
