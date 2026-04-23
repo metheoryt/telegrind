@@ -1,4 +1,9 @@
 #!/bin/sh
 set -e
-alembic upgrade head
-exec python main.py
+
+if [ $# -eq 0 ]; then
+    alembic upgrade head
+    exec python main.py
+fi
+
+exec "$@"
