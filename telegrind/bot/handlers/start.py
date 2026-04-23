@@ -6,6 +6,7 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import FSInputFile, Message
+from gspread.exceptions import APIError, NoValidUrlKeyFound
 from gspread_asyncio import AsyncioGspreadClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -74,16 +75,19 @@ async def obtain_sheet_url(
     try:
         ags = await agc.open_by_url(sheet_url)
         await ConfigSheet(ags).get_agw()
-    except Exception as e:
+    except NoValidUrlKeyFound:
+        return await message.answer(
+            "Не удалось распознать ссылку. Убедитесь, что скопировали правильную ссылку на Google Sheets документ."
+        )
+    except APIError:
         return await message.answer(
             "Не удалось получить доступ к документу. "
-            "Убедитесь, что вы выдали мне права редактора, и вышлите ссылку снова. "
-            f"Детали: \n{e}"
+            "Убедитесь, что вы выдали мне права редактора, и вышлите ссылку снова."
         )
 
     # on success
-    chat.sheet_url = sheet_url
-    await session.commit()
+    async with session.begin():
+        chat.sheet_url = sheet_url
 
     await state.clear()
     await message.answer(

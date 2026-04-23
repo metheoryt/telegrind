@@ -133,9 +133,10 @@ async def record_outcome_llm(
     wb: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
 
     service = ExpenseService(wb)
-    expense = await service.extract_expense(message)  # parse expense from text
-    # reply_text = await service.make_reply_text(message, expense)  # talk about it
+    try:
+        expense = await service.extract_expense(message)
+    except ValueError:
+        return await message.reply("Не удалось распознать расход. Уточните сумму и попробуйте снова.")
 
-    # write it to the worksheet at last
-    expense = await service.add_expense(message, expense)
+    await service.add_expense(message, expense)
     return await message.react([ReactionTypeEmoji(emoji="👌")])

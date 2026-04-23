@@ -159,7 +159,7 @@ class Transaction(Sheet):
 
 
 _amount = r"(\d+(?:[\.,]\d+)?)"
-_curr = r"([A-z]{3})"
+_curr = r"([A-Za-z]{3})"
 _date = r"(\d{2}\.\d{2}\.\d{4})"
 
 
@@ -238,52 +238,14 @@ class Loan(Outcome):
         ]
 
 
-# class Commodity(Transaction):
-#     """Commodities list from tiсket."""
-
-#     ws_name = "Commodities"
-#     ws_dim = (1, 6)
-#     headers = ["#", "Продукт", "Цена", "Количество", "Дата", "Организация"]
-
-#     async def record(self, message: Message, data: dict) -> None:
-#         org = data["orgTitle"]
-#         org = org.replace("ТОВАРИЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ", "ТОО")
-#         t = data["ticket"]
-#         dt = datetime.fromisoformat(t["transactionDate"])
-#         rows = []
-#         for i in t["items"]:
-#             if i["itemType"] == 1:  # actual position
-#                 cname: str = i["commodity"]["name"]
-#                 # some tickets have order number in item name, removing
-#                 cname = re.sub(r"^\d+\.\s+", "", cname)
-#                 row = [
-#                     message.message_id,
-#                     cname,
-#                     i["commodity"]["price"],
-#                     i["commodity"]["quantity"],
-#                     dt.strftime("%d.%m.%y %H:%M"),
-#                     org,
-#                 ]
-#                 rows.append(row)
-#             elif (
-#                 i["itemType"] == 5
-#             ):  # position discount (usually goes right after an item)
-#                 rows[-1][2] -= (
-#                     i["discount"]["sum"] / rows[-1][3]
-#                 )  # reduce price of an item by discount amount
-
-#         await self.write_rows(rows)
-
-
 class Wish(Transaction):
     ws_name = "Wishlist"
-    ws_dim = (1, 3)
+    ws_dim = (1, 4)
     headers = ["#", "Желание", "Добавлено", "Исполнено"]
     pattern = re.compile(r"^хочу\s+(.*?)$", re.IGNORECASE)
 
     async def make_row(self, message: Message) -> list:
-        wish = self.parse(message.text)
-        wish = wish[0] if wish else ""
+        (wish,) = self.parse(message.text)
         conf = await self.cfg.get_data()
         return [message.message_id, wish, conf.nowstr(), ""]
 

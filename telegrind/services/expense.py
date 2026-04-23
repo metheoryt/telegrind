@@ -39,23 +39,6 @@ Use next data:
     Current date and time: {now}
 """
 
-JOKE_REMARK_INSTRUCTION = """
-Make a funny, ironic remark/phrase/quote about your boss' expense. Use russian language. Keep in mind that you are saying it personally to the boss.
-Be like Alfred Pennyworth for Bruce Wayne - creative and witty, but also respectful, kind and humane.
-
-You can come up with an interesting fact about the amount number, from history, culture, or science.
-Or you can ask a rhetorical question about the expense, if it is appropriate.
-
-Note missing, too short or ambiguous description. Note if the time of the expense is somewhat unusual.
-
-Important:
-    - Avoid quoting expense data directly, but you can mention it partly or indirectly.
-    - Avoid references to the boss' gender, do not use pronouns and do not appeal to the boss.
-    - Use proper nouns as is, without translation.
-    - Do not make things up, do not compare the amount to any other expenses.
-    - Write one short sentence at most!
-"""
-
 
 class Expense(BaseModel):
     amount: PositiveFloat | PositiveInt
@@ -65,7 +48,7 @@ class Expense(BaseModel):
 
     @property
     def amount_str(self) -> str:
-        return f"{self.amount}".replace(".", ",")
+        return f"{self.amount:.10f}".rstrip("0").rstrip(".").replace(".", ",")
 
     @property
     def date_str(self) -> str:
@@ -81,12 +64,6 @@ class ExpenseService:
 
     @classmethod
     async def is_expense(cls, msg_text: str):
-        # is_expense_record = await marvin.run_async(
-        #     "Does the user message contain a number, in digits or in words?",
-        #     context={"user_message": msg_text[:200]},
-        #     result_type=bool,
-        # )
-        # return is_expense_record
         return re.match(r"^\d+\b", msg_text.strip()) is not None
 
     async def extract_expense(self, message: Message):
@@ -104,6 +81,8 @@ class ExpenseService:
                 default_currency=config.currency, now=msg_date.isoformat()
             ),
         )
+        if not exps:
+            raise ValueError(f"Could not extract expense from: {message.text!r}")
         exp = exps[0]
         exp.date = exp.date or msg_date
         return exp
