@@ -10,7 +10,6 @@ from gspread_asyncio import AsyncioGspreadClientManager
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from telegrind.bot.setup import setup_dispatcher
-from telegrind.models import Model
 
 
 def get_creds():
@@ -32,19 +31,14 @@ def get_creds():
 async def main() -> None:
     dp = setup_dispatcher()
     engine = create_async_engine(os.environ["DATABASE_URL"], echo=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Model.metadata.create_all, checkfirst=True)
-
     async_session = async_sessionmaker(engine, expire_on_commit=False)
 
     token = os.environ["BOT_TOKEN"]
     bot = Bot(token, default=DefaultBotProperties(parse_mode="HTML"))
-    # And the run events dispatching
     await dp.start_polling(
         bot, async_session=async_session, agcm=AsyncioGspreadClientManager(get_creds)
     )
 
-    # teardown
     await engine.dispose()
 
 
