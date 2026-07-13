@@ -1,5 +1,7 @@
 .venv/
 .env
+.env.*
+google-account.json
 .git/
 __pycache__/
 *.pyc
