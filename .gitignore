@@ -1,6 +1,9 @@
 /local/*
 !/local/.gitkeep
 .env
+.env.prod
+compose.override.yml
+google-account.json
 .idea/
 .venv/
 **/__pycache__
