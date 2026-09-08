@@ -103,7 +103,7 @@ class Transaction(Sheet):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.cfg = ConfigSheet(self.ags)
+        self.cfg: ConfigSheet = ConfigSheet(self.ags)
 
     async def apply_filter(self, agw: AsyncioGspreadWorksheet):
         # make it take whole table space,
@@ -170,7 +170,7 @@ class Outcome(Transaction):
     ws_dim = (1, len(headers))
 
     async def make_row(self, message: Message) -> list:
-        conf = await self.cfg.get_data()
+        conf: Config = await self.cfg.get_data()
         text = message.text
 
         # amount is mandatory
@@ -218,7 +218,7 @@ class Loan(Outcome):
     ws_dim = (1, len(headers))
 
     async def make_row(self, message: Message) -> list:
-        conf = await self.cfg.get_data()
+        conf: Config = await self.cfg.get_data()
 
         who, direction, amount, curr, date, desc = self.parse(message.text)
         who = who.strip() if who else "Неизвестно"
@@ -246,7 +246,7 @@ class Wish(Transaction):
 
     async def make_row(self, message: Message) -> list:
         (wish,) = self.parse(message.text)
-        conf = await self.cfg.get_data()
+        conf: Config = await self.cfg.get_data()
         return [message.message_id, wish, conf.nowstr(), ""]
 
     async def record(self, *args, **kwargs) -> None:

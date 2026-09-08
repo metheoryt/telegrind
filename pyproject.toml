@@ -46,12 +46,14 @@ lint.select = [
     "T20", # flake8-print
     "SIM", # flake8-simplify
     "RUF", # Ruff-specific rules
+    "ANN", # flake8-annotations (feeds gortex's type-aware resolver)
 ]
 
 # Ignore specific rules if needed
 # https://docs.astral.sh/ruff/linter/#error-suppression
 lint.ignore = [
-    "S101",  # Use of assert (common in tests)
+    "S101",   # Use of assert (common in tests)
+    "ANN401", # allow explicit Any where deliberate
 ]
 
 # Directories to exclude from linting
@@ -95,3 +97,19 @@ line-ending = "auto"
 # Configure import sorting
 [tool.ruff.lint.isort]
 known-first-party = ["telegrind"]
+
+[tool.ty.environment]
+python-version = "3.14"
+python = "./.venv"
+root = ["."]
+
+[tool.ty.src]
+include = ["telegrind", "main.py"]
+exclude = ["**/__pycache__", "alembic/versions", "build", "dist"]
+respect-ignore-files = true
+
+[tool.ty.terminal]
+error-on-warning = false
+
+# [tool.ty.rules]  — promote to "error" as gaps are paid down, e.g.
+# unresolved-import = "error"

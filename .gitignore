@@ -7,3 +7,8 @@ google-account.json
 .idea/
 .venv/
 **/__pycache__
+
+# Gortex: auto-generated routing skills (re-sprayed by a bare `gortex init`)
+.claude/skills/generated/
+# Claude Code machine-local settings
+.claude/settings.local.json
