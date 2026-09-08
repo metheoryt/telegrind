@@ -318,6 +318,14 @@ Registration order matters — aiogram stops at the first match.
 `populate_chat_data` gains `registry` and `config` alongside today's `session`,
 `chat`, and `agc`.
 
+**The `sheet_url` gate moves.** All five handlers today open with
+`if not chat.sheet_url: set_state(request_sheet_url)` and return, which drops the
+message. With Postgres as the source of truth the right order is: **write the
+`Message` row first, then gate on `sheet_url` before projection.** A fact recorded
+before onboarding finishes is recoverable by `/rebuild`; one dropped at the handler
+is gone — and "nothing you write is ever lost" is the property this design is
+claiming.
+
 ## Module layout
 
 | module | responsibility |
@@ -367,8 +375,14 @@ Three independently shippable phases. Phase 1 is the whole point and stands alon
    submission, and `rollups.py` with its two templates. Depends on `prompt_version`
    and `model` already being recorded by Phase 1, so nothing is retrofitted.
 3. **Voice** — `transcribe.py`, the `F.voice` handler, `/retranscribe`, and the
-   transcript columns. The `Message` columns for it land in Phase 1's migration so
-   this phase adds no migration of its own.
+   transcript columns. The `Message` columns for it land in Phase 1's migration, so
+   this phase adds no *schema* migration — but it is not self-contained on the
+   deployment side. `faster-whisper` pulls CTranslate2 and a downloaded model, which
+   changes the image and raises the prod container's RAM floor, and **the prod
+   compose lives in the `vps` repo, not here.** Phase 3 therefore includes a `vps`
+   change: a memory limit that fits the chosen model size, and a volume or bake-in
+   for the whisper model cache so it is not re-downloaded on every `docker compose
+   up -d --force-recreate`.
 
 ## Non-goals
 
@@ -382,9 +396,18 @@ Three independently shippable phases. Phase 1 is the whole point and stands alon
 - Proposing new categories from clustered `Facts` rows. Attractive, but it belongs
   after the ingestion path is proven.
 
-## Open questions
+## Probes
 
-None blocking. Two probes gate implementation:
+Not open questions — **prerequisites**. Each is the first task of the phase it
+gates, and its outcome can still change that phase's shape.
 
-1. Structured outputs with `anyOf` + `const` discriminator on the chosen model.
-2. `faster-whisper` latency and RSS for a ~10s Russian clip on the homeserver.
+1. **Gates Phase 1.** Does structured outputs accept `anyOf` *inside an array's
+   `items`*? A top-level `anyOf` passing proves nothing about the nested case, which
+   is the shape this schema needs. Test the exact schema from the spec with two
+   categories carrying differently-typed fields, and confirm a `date` field comes
+   back as a parseable string rather than a format the model invented. If it fails,
+   the flat `category` enum + string-map fallback becomes the schema and coercion
+   carries more weight.
+2. **Gates Phase 3.** `faster-whisper` latency and resident memory for a ~10s
+   Russian clip on the homeserver, which picks the model size and confirms the RAM
+   floor is acceptable in the prod container.
