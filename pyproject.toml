@@ -23,6 +23,7 @@ dev = [
     "ipykernel>=7.0.1",
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
+    "pyyaml>=6.0",
     "ruff>=0.14.8",
 ]
 
@@ -122,3 +123,5 @@ error-on-warning = false
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = ["llm: hits the Anthropic API; costs tokens; opt in with -m llm"]
+addopts = "-m 'not llm'"

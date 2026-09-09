@@ -1,0 +1,30 @@
+# message -> the category it must land in.
+# Run on demand: `uv run pytest -m llm`. Costs tokens; never in the default suite.
+- message: "4500 такси"
+  category: expense
+- message: "5.4 usd хостинг"
+  category: expense
+- message: "41 бат массаж вчера вечером"
+  category: expense
+- message: "потратил тысячу на продукты в среду"
+  category: expense
+- message: "займ Вася Пупкин 500"
+  category: loan
+- message: "Вася вернул мне 500"
+  category: loan
+- message: "дал брату 20000 до конца месяца"
+  category: loan
+- message: "вес 82.4"
+  category: telemetry
+- message: "давление 120 на 80"
+  category: telemetry
+- message: "пробежал 5 км за 27 минут"
+  category: telemetry
+- message: "хочу новый монитор"
+  category: wish
+- message: "хочу велосипед gravel тысяч за 400"
+  category: wish
+- message: "позвонил маме, всё хорошо"
+  category: facts
+- message: "начал читать Пелевина"
+  category: facts
