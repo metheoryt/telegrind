@@ -136,7 +136,9 @@ async def record_outcome_llm(
     try:
         expense = await service.extract_expense(message)
     except ValueError:
-        return await message.reply("Не удалось распознать расход. Уточните сумму и попробуйте снова.")
+        return await message.reply(
+            "Не удалось распознать расход. Уточните сумму и попробуйте снова."
+        )
 
     await service.add_expense(message, expense)
     return await message.react([ReactionTypeEmoji(emoji="👌")])

@@ -1,5 +1,6 @@
 import logging
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from re import Pattern
 
@@ -411,3 +412,33 @@ class Worksheet:
         # "A:A" specifically, so a user-added column is never captured.
         agw = await self.agw()
         await agw.set_basic_filter("A:A")
+
+
+_config_cache: dict[str, tuple[float, Config]] = {}
+CONFIG_TTL_SECONDS = 60.0
+
+
+def invalidate_config(sheet_url: str | None = None) -> None:
+    """Drop the cached config for one workbook, or for all of them."""
+    if sheet_url is None:
+        _config_cache.clear()
+    else:
+        _config_cache.pop(sheet_url, None)
+
+
+async def load_config(
+    ags: AsyncioGspreadSpreadsheet, sheet_url: str, *, now: float | None = None
+) -> Config:
+    """Read `_config`, cached for CONFIG_TTL_SECONDS, keyed by sheet_url.
+
+    Today's code builds a fresh ConfigSheet per Transaction, so the
+    three-sheet edit loop does three separate _config reads for one message.
+    """
+    at = time.monotonic() if now is None else now
+    cached = _config_cache.get(sheet_url)
+    if cached and at - cached[0] < CONFIG_TTL_SECONDS:
+        return cached[1]
+
+    cfg = await ConfigSheet(ags).get_data()
+    _config_cache[sheet_url] = (at, cfg)
+    return cfg
