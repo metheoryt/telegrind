@@ -65,8 +65,16 @@ mapping layer: the header is what the LLM is asked for, what `fields` is keyed b
 and what a `rollup` argument refers to. One name, one place to change it.
 
 **Types:** `text` (the default when `:type` is omitted), `number`, `money`,
-`currency`, `date`. Column order in the cell is column order in the sheet, after a
-`#` key column in A.
+`currency`, `date`, `due`. Column order in the cell is column order in the sheet,
+after a `#` key column in A.
+
+`date` and `due` differ only in which way they resolve an ambiguous reference:
+`date` leans past ("во вторник" = the Tuesday just gone), `due` leans future ("во
+вторник" = the Tuesday coming). Past-vs-future is a property of the column, not a
+global rule of the prompt — today's `EXTRACT_INSTRUCTION` hardcodes *"assume they
+are in the past"*, which would mis-parse every future-dated field the roadmap's
+reminders need. `due` costs one line now and prevents re-touching the extraction
+prompt later.
 
 **Seeding.** On first read, if `_categories` is absent the bot writes the five rows
 above. `expense`, `loan`, and `wish` reproduce today's worksheets and headers
@@ -192,12 +200,13 @@ class Message(Base):           # the log — append on first sight, updated on e
 
 class Fact(Base):              # replaceable derivation of a Message
     id: int                    # PK
-    message_id: int            # FK → message.id, ON DELETE CASCADE
+    message_id: int | None     # FK → message.id, ON DELETE CASCADE; NULL if imported
     seq: int                   # 1-based within the message
     category: str
     fields: dict               # JSONB, {header: coerced value}
-    model: str                 # which model produced this
-    prompt_version: str        # which extraction prompt produced this
+    origin: str                # "extracted" | "imported"
+    model: str | None          # which model produced this; NULL if imported
+    prompt_version: str | None # which extraction prompt produced this
     extracted_at: datetime
     worksheet: str             # where it landed
     sheet_key: str             # what is in column A: "4821.2"
@@ -338,12 +347,63 @@ claiming.
 | `telegrind/transcribe.py` | *new* — faster-whisper behind a thread executor |
 | `telegrind/store.py` | *new* — message and fact repository functions |
 | `telegrind/models.py` | add `Message` and `Fact` |
-| `telegrind/sheets.py` | keep `Sheet`, `Config`, `ConfigSheet`, and generic row I/O; **delete** every `pattern`, `parse`, `make_row`, and the `Outcome`/`Loan`/`Wish` subclasses |
+| `telegrind/sheets.py` | reduced to a **worksheet client** — get-or-create, append, find, update, delete, filter. No subclasses, no `pattern`, no `parse`, no `make_row` |
 | `telegrind/services/expense.py` | **delete** |
 | `telegrind/bot/handlers/handlers.py` | rewrite to the seven handlers above |
 
 Deleting the regex path is not optional. Two parsers with different opinions about
 the same message is worse than either alone.
+
+### What "rewrite" does and does not include
+
+The Python is not preserved out of seniority. The `Sheet` → `Transaction` →
+`Outcome`/`Loan`/`Wish` hierarchy exists *because* categories used to be
+compile-time; with a runtime registry a category is a row of data, not a class, so
+the hierarchy has nothing left to express. `sheets.py` keeps only the parts that
+are about talking to a worksheet — lazy get-or-create, the `A:A` basic filter, row
+find/append/update/delete — and loses everything that was about knowing what a
+message means.
+
+Kept because rewriting them buys nothing: `main.py`'s engine and credential wiring,
+`middleware.populate_chat_data`'s shape, and the `/start` FSM in
+`handlers/start.py`. Onboarding works and users depend on it.
+
+**The data contracts are fixed, and this is the part "from scratch" does not
+reach:**
+
+- **The prod database.** `telegrind_pgdata` holds live `chat` rows with real
+  `sheet_url` values. `Chat` and `File` keep their tables and both existing Alembic
+  revisions; the new work is one additive migration on top.
+- **The `_config` worksheet.** Its two Russian key labels are already sitting in
+  real spreadsheets. The class may be rewritten; the sheet format may not change.
+- **The existing worksheets.** `Expenses`, `Loans`, and `Wishlist` hold real
+  history with real headers. The seeded registry reproduces them exactly — see the
+  import step below, which is what makes that safe.
+
+## Importing existing history
+
+**Without this step, the first `/rebuild` destroys real data.** The design makes
+the workbook a projection of `fact` rows, and `/rebuild` clears and rewrites each
+category's declared column range. On day one the `fact` table is empty while the
+workbook holds years of expenses — so a rebuild would write nothing over
+everything.
+
+A one-time import, run as part of Phase 1:
+
+- Read every row of each seeded category's worksheet and synthesize a `fact` row
+  per sheet row: `category` from the registry, `fields` keyed by the sheet's own
+  headers, `sheet_key` from column A, `origin = "imported"`.
+- Imported facts have **no `message`** — `Fact.message_id` becomes nullable. Their
+  source text was never stored, so they are re-projectable but **not
+  re-extractable**, and `/reparse` skips them. That is an honest limit, not a bug:
+  the log starts the day the bot starts logging.
+- Column A already holds the Telegram `message_id` for bot-written rows, so an
+  imported fact keeps its identity and a later edit to that original message still
+  finds its row.
+
+**`/rebuild` refuses to run** on a worksheet holding rows whose keys are not
+accounted for by facts, and says how many, unless given an explicit `--force`. A
+projection that can silently discard its own source is not worth the convenience.
 
 ## Testing
 
@@ -368,9 +428,9 @@ Three independently shippable phases. Phase 1 is the whole point and stands alon
 2 and 3 are additive and touch nothing Phase 1 owns.
 
 1. **Core ingestion** — registry, extraction, `Message`/`Fact`, projection, the
-   seven handlers, `/rebuild` and `/reload`, and the deletion of the regex path.
-   At the end of this phase freeform text works end to end and the workbook is
-   rebuildable.
+   import of existing worksheet history, the seven handlers, `/rebuild` and
+   `/reload`, and the deletion of the regex path. At the end of this phase freeform
+   text works end to end and the workbook is rebuildable without data loss.
 2. **Re-extraction and rollups** — `/reparse`, the `??` escalation reply, Batch API
    submission, and `rollups.py` with its two templates. Depends on `prompt_version`
    and `model` already being recorded by Phase 1, so nothing is retrofitted.
@@ -383,6 +443,38 @@ Three independently shippable phases. Phase 1 is the whole point and stands alon
    change: a memory limit that fits the chosen model size, and a volume or bake-in
    for the whisper model cache so it is not re-downloaded on every `docker compose
    up -d --force-recreate`.
+
+## Roadmap — reminders (Phases 4 and 5, not in scope here)
+
+Recorded so the phases above do not have to be re-opened for it. Everything in this
+spec is a **fact about the past**: immutable, derived once, projected. A reminder is
+an **obligation about the future** — mutable per-occurrence state, and the bot
+speaking first, which it does nowhere today. So it is a second axis, not a sixth
+category.
+
+What it will need, none of which exists yet:
+
+- **A clock.** A `due_at` column polled by an asyncio task, backed by Postgres —
+  not an in-process scheduler. Pushing to `main` recreates the container, so
+  in-memory schedules would vanish on every deploy.
+- **Recurrence.** `dateutil.rrule` covers "monthly" and "twice a day".
+  `python-dateutil` already arrives as a `dateparser` dependency.
+- **Occurrence rows.** Fired / acknowledged / missed / snoozed is per-occurrence
+  mutable state, which is precisely what a `Fact` is not.
+
+Two mechanisms, in order:
+
+- **Phase 4 — declared schedules.** A `remind(...)` column in `_categories`,
+  sitting beside `rollup`, so a category carries scheduling metadata the same way
+  it carries rollup metadata. This covers a pills schedule.
+- **Phase 5 — schedules derived from facts.** A loan with a `due`-typed column
+  generates its own payback reminder; a subscription expense recurring monthly
+  generates its own. Nothing is typed twice. Strictly more powerful, and it is what
+  makes reminders read as the same system rather than a bolted-on todo list. It
+  depends on Phase 4's occurrence machinery.
+
+The only forward-compatibility cost paid now is the `due` column type, so the
+extraction prompt never has to be re-touched for this.
 
 ## Non-goals
 
