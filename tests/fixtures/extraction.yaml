@@ -1,4 +1,5 @@
-# message -> the category it must land in.
+# message -> the category it must land in, and optionally the date the
+# `Дата` field must resolve to (`date:`, ISO, in the chat's timezone).
 # Run on demand: `uv run pytest -m llm`. Costs tokens; never in the default suite.
 - message: "4500 такси"
   category: expense
@@ -6,8 +7,10 @@
   category: expense
 - message: "41 бат массаж вчера вечером"
   category: expense
-- message: "потратил тысячу на продукты в среду"
+  date: "2026-09-08"
+- message: "потратил тысячу на продукты в понедельник"
   category: expense
+  date: "2026-09-07"
 - message: "займ Вася Пупкин 500"
   category: loan
 - message: "Вася вернул мне 500"
@@ -28,3 +31,13 @@
   category: facts
 - message: "начал читать Пелевина"
   category: facts
+
+# Tense must beat the column's bias. `Дата` is a `date` column, so an ambiguous
+# reference leans past — but a message in the future tense means the future.
+# NOW is Wednesday 2026-09-09 21:40 +06:00, so "в пятницу" is 09-11, not 09-04.
+- message: "в пятницу заплачу 5000 за интернет"
+  category: expense
+  date: "2026-09-11"
+- message: "12 октября куплю подарок за 20000"
+  category: expense
+  date: "2026-10-12"

@@ -154,6 +154,41 @@ message's own timestamp. Writes stay `ValueInputOption.USER_ENTERED` so numbers 
 dates land typed in Sheets. `dateparser` is kept for this fallback; `marvin` is
 dropped; `anthropic` is added.
 
+### Past- and future-dated facts
+
+**Both already work, and no new column type is needed for either.** Worth writing
+down because the mechanism is not obvious and the natural instinct — add a
+`past`/`future` flag — would be wrong.
+
+The model receives the current timestamp in the user message and returns a
+resolved ISO date-time. `date` tells it that an *ambiguous* reference leans past
+("в понедельник" = the Monday just gone); `due` that it leans future. But an
+ambiguous reference is the only thing that bias governs. **The message's own tense
+overrides it**, and an explicit date is not ambiguous at all:
+
+| message (now = Wed 2026-09-09) | resolved `Дата` |
+|---|---|
+| `41 бат массаж вчера вечером` | 2026-09-08 |
+| `потратил тысячу на продукты в понедельник` | 2026-09-07 |
+| `в пятницу заплачу 5000 за интернет` | 2026-09-**11** |
+| `12 октября куплю подарок за 20000` | 2026-10-12 |
+
+All four are `llm`-marked fixtures in `tests/fixtures/extraction.yaml` that assert
+the resolved day, not just the category — verified passing 2026-09-09 on
+`claude-haiku-4-5`. The third row is the load-bearing one: `Дата` on `expense` is a
+`date` column, so the past-leaning bias *did* apply, and the future tense still won.
+
+`date` vs `due` therefore stays what the spec already said it was — a hint for
+ambiguity and for the `dateparser` fallback — not a gate on which direction a fact
+may point.
+
+**Future facts need a consumer, not a mechanism.** Recording one is free today;
+nothing reads it. Phase 6 below ("schedules derived from facts") is exactly that
+consumer: a fact whose date is still ahead is what generates its own reminder.
+Until then a future-dated expense is a note to self that projects and rebuilds
+correctly and does nothing else. That is the honest state, and it is why nothing is
+being built for it now.
+
 ## Voice
 
 Claude's API takes no audio, so transcription is a separate step with a separate
@@ -444,7 +479,112 @@ Three independently shippable phases. Phase 1 is the whole point and stands alon
    for the whisper model cache so it is not re-downloaded on every `docker compose
    up -d --force-recreate`.
 
-## Roadmap — reminders (Phases 4 and 5, not in scope here)
+## Roadmap — states and periods (Phase 4, not in scope here)
+
+Two messages, sent at different times, describing one interval:
+
+```
+Tue: заболел
+Fri: выздоровел          → болезнь: 08.09 – 11.09, 3 дня
+```
+
+```
+01.08: бросил курить
+(nothing yet)            → не курю: с 01.08, 39 дней и идёт
+```
+
+Habit tracking is the same shape as the sickness case, and the open-ended one is
+the point of it: the answer is "how long so far", recomputed on every read.
+
+### Why it does not fit as a category
+
+Everything in this spec is a fact about one message. A period spans two, and a
+naive implementation gives one row two owners — which breaks `sheet_key`
+(`<message_id>_<seq>`), `facts_for_message`, and all four rows of the edit-diff
+table at once. That is too much blast radius for a feature this small.
+
+### The design: boundary events are facts, periods are a second projection
+
+**One message still produces one fact and owns one row.** The fact is a *boundary
+event*, not a period. Pairing happens in projection, where a fold over that
+worksheet's events — ordered by time, grouped by subject — writes a derived
+`<Worksheet>_periods` sheet. Nothing above this line changes: no new diff cases, no
+shared row ownership, no schema change beyond what `fields` already holds.
+
+Two column types carry it:
+
+- **`state`** — what the period is about (`болезнь`, `не курю`). The grouping key.
+- **`boundary`** — `начало` or `конец`.
+
+A category declaring both *is* an interval category; the periods derivation is
+triggered by the types, not by an extra registry cell. That is the same grain as
+the rest of the registry, where types drive behavior.
+
+The seeded category — a Phase 4 decision, **not** a change to Phase 1's
+`SEED_CATEGORIES`:
+
+| name | worksheet | when to use | columns |
+|---|---|---|---|
+| `state` | `States` | начало или конец состояния, привычки, периода | `Состояние:state, Событие:boundary, Время:date, Комментарий:text` |
+
+Re-opening needs no special case: open/close/open/close over one subject folds into
+two periods. The ongoing period's duration is written as a live `=NOW()-<start>`
+formula rather than a computed number, so it keeps ticking while the bot is down —
+the same reasoning that puts rollups in native formulas.
+
+### Closing a period months later is the hard part
+
+The fold groups by subject string, so `выздоровел` in November must produce the
+same `Состояние` the September `заболел` did. Free text will not do that on its own.
+
+**The currently-open subjects go into the user message**, so the model closes an
+existing state by name instead of inventing a near-miss. It cannot go in the system
+prompt: that prefix is cached, and per-chat state there would invalidate the cache
+on every message — the same constraint that already puts the timestamp in the user
+message.
+
+For `/reparse` to stay reproducible, the injected list is reconstructed **as of the
+message's own timestamp** from the fact table, not as of now. And the read is
+skipped entirely for a workbook with no interval category, so the feature costs
+nothing on the ingest path until it is used.
+
+**Known risk, named because it will produce wrong data quietly: polarity.** The two
+examples above open on opposite events — sickness opens on the bad one, abstinence
+on the good one. So `покурил` is as plausibly the *opening* of a `курение` period as
+the *closing* of a `не курю` one. One lived state, two namings, and the fold simply
+never pairs them. The open-subject injection is the main mitigation; `??`
+re-extraction and the edit path are the manual one. This is the part to watch in
+testing, not the fold.
+
+### Degenerate folds are non-fatal
+
+A `конец` with no matching `начало`, and a `начало` with no `конец` — the second
+being the whole point of the habit case. Both are reported on the periods sheet as
+what they are, never dropped and never an error: a malformed pairing must not cost
+a message, for the same reason a malformed registry row does not.
+
+### Interaction with `/rebuild`
+
+A periods sheet is a **third kind of sheet**: bot-owned and wholly rewritten, unlike
+a data sheet (declared column range only) and unlike a `_summary` sheet (formulas
+scaffolded once). `/rebuild` must rewrite it, and must **exclude it from the
+unaccounted-keys guard** — its rows are folds, not facts, so every key there is
+unaccounted for by construction and the guard would refuse every rebuild.
+
+### Reading it back
+
+`/state` lists open periods with their durations. That is the actual answer to "how
+long have I not smoked", and it is cheap: the fold already exists.
+
+**Depends on date resolution**, which is why the fixtures above matter here and not
+only for expenses — `заболел в пятницу` is a past-dated boundary, and a boundary
+placed on the wrong day silently mis-measures the period it opens.
+
+**This is not reminders.** A period is derived and immutable, recomputable from its
+events; an occurrence is mutable per-occurrence state. Phases 5 and 6 stay a
+separate axis, and neither depends on this one.
+
+## Roadmap — reminders (Phases 5 and 6, not in scope here)
 
 Recorded so the phases above do not have to be re-opened for it. Everything in this
 spec is a **fact about the past**: immutable, derived once, projected. A reminder is
@@ -464,14 +604,14 @@ What it will need, none of which exists yet:
 
 Two mechanisms, in order:
 
-- **Phase 4 — declared schedules.** A `remind(...)` column in `_categories`,
+- **Phase 5 — declared schedules.** A `remind(...)` column in `_categories`,
   sitting beside `rollup`, so a category carries scheduling metadata the same way
   it carries rollup metadata. This covers a pills schedule.
-- **Phase 5 — schedules derived from facts.** A loan with a `due`-typed column
+- **Phase 6 — schedules derived from facts.** A loan with a `due`-typed column
   generates its own payback reminder; a subscription expense recurring monthly
   generates its own. Nothing is typed twice. Strictly more powerful, and it is what
   makes reminders read as the same system rather than a bolted-on todo list. It
-  depends on Phase 4's occurrence machinery.
+  depends on Phase 5's occurrence machinery.
 
 The only forward-compatibility cost paid now is the `due` column type, so the
 extraction prompt never has to be re-touched for this.
