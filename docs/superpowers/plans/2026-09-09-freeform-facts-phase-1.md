@@ -2511,7 +2511,7 @@ The pure half of projection. The edit diff is the piece today's code cannot do a
 Create `tests/test_projection.py`:
 
 ```python
-import pytest
+import re
 
 from telegrind.llm import RawFact
 from telegrind.models import Fact
@@ -2559,10 +2559,15 @@ def test_sheet_key_is_uniform_for_single_fact_messages() -> None:
 def test_sheet_key_is_never_a_number_sheets_could_coerce() -> None:
     """Column A is written USER_ENTERED. A key Sheets parses as a number is
     re-rendered on read: "4821.10" would come back "4821.1" and collide with
-    seq 1, so find_key would never match the tenth fact of a message."""
+    seq 1, so find_key would never match the tenth fact of a message.
+
+    The oracle is a regex, not `float()`: Python accepts `_` as a digit
+    separator, so `float("4821_1")` is 48211.0, while Sheets has no such
+    syntax and leaves the same string as text. Do not "fix" this back.
+    """
+    numeric = re.compile(r"[0-9]+(?:[.,][0-9]+)?")
     for seq in (1, 2, 10, 100):
-        with pytest.raises(ValueError):
-            float(sheet_key(4821, seq))
+        assert not numeric.fullmatch(sheet_key(4821, seq))
 
 
 def test_fact_row_puts_the_key_in_column_a_then_the_columns_in_order() -> None:
@@ -2683,8 +2688,8 @@ def sheet_key(message_id: int, seq: int) -> str:
     a message can gain a second fact on a later edit.
 
     The separator is `_` and not `.` because column A is written with
-    ValueInputOption.user_entered: Sheets would parse "4821_10" as the
-    number 4821_1, render it back as "4821_1", and collide it with seq 1.
+    ValueInputOption.user_entered: Sheets would parse a dotted "4821.10" as
+    the number 4821.1, render it back as "4821.1", and collide it with seq 1.
     An underscore is text in every locale, so the key round-trips exactly.
     """
     return f"{message_id}_{seq}"
