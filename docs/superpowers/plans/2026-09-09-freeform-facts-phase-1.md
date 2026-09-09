@@ -77,7 +77,7 @@ Four places where this plan is deliberately not what the spec says. Each is a ga
 2. **Import is a command, `/import [--dry-run]`, not an implicit startup step.** A one-shot data migration that runs itself on container start is unreviewable and re-runs on every deploy. `/rebuild`'s refusal gate already makes it impossible to do damage before the import has run.
 3. **Imported rows with no usable key in column A get a synthesized one** — `import-<worksheet>-<row number>`. Hand-added rows have no Telegram `message_id` there; without synthesis they stay permanently "unaccounted" and `/rebuild` refuses forever, turning the safety gate into a dead end.
 4. **`importer.py` is a new module** not listed in the spec's module layout. It is one-time code with a distinct lifetime from `projection.py`, and keeping it separate makes it deletable later.
-5. **Registry validation errors are logged, not messaged to the user, in Phase 1.** The spec says the bot "reports which row and why, once per registry load". A handler cannot tell a fresh load from a cached one, so "once per load" would need extra state to express faithfully; a `log.warning` per error per load is what this phase ships, and Task 15 step 15 verifies it. Surfacing it in chat belongs with `/reload`'s output in Phase 2.
+5. **Registry validation errors are logged, not messaged to the user, in Phase 1.** The spec says the bot "reports which row and why, once per registry load". A handler cannot tell a fresh load from a cached one, so "once per load" would need extra state to express faithfully; a `log.warning` per error per load is what this phase ships, and Task 15 step 16 verifies it. Surfacing it in chat belongs with `/reload`'s output in Phase 2.
 
 ---
 
@@ -2568,6 +2568,13 @@ def test_fact_row_fills_a_missing_field_with_an_empty_string() -> None:
     assert row == ["4821.1", 4500.0, "", "", ""]
 
 
+def test_fact_row_is_always_the_full_declared_width() -> None:
+    """Worksheet.update_row writes left-to-right from A and does not clear
+    what it does not reach, so a short row would leave stale trailing cells
+    behind on a REWRITE."""
+    assert len(fact_row(EXPENSE, "4821.1", {})) == len(EXPENSE.columns) + 1
+
+
 def test_fact_row_ignores_a_field_the_category_does_not_declare() -> None:
     row = fact_row(EXPENSE, "4821.1", {"Сумма": 1.0, "Придумано": "x"})
     assert len(row) == 5
@@ -4328,17 +4335,23 @@ Expected: the dry run reports counts and writes nothing; the import reports what
 Send `/import` again.
 Expected: `Импортировано: 0`, everything skipped. A second import must not double the workbook.
 
-- [ ] **Step 15: A malformed registry row costs a row, not a message**
+- [ ] **Step 15: A command is not swallowed by onboarding**
+
+`obtain_sheet_url` is filtered on the `Form.request_sheet_url` FSM state alone, with no text filter, so while that state is set it matches *anything* the user sends. Send `/start`, and then — without sending a URL — send `/reload`.
+
+Expected: `/reload` is answered as a command. `commands` imports before `start`, so `Command("reload")` should win. If instead the bot treats `/reload` as a spreadsheet link, add `~F.text.startswith("/")` to `obtain_sheet_url`'s filter in `telegrind/bot/handlers/start.py`. This is the only place in the plan where two live filters can genuinely fight, which is why it is a step rather than a footnote.
+
+- [ ] **Step 16: A malformed registry row costs a row, not a message**
 
 In `_categories`, change one category's `columns` cell to `Значение:quantum`. Send `/reload`, then a message.
 Expected: the message is still recorded (into `facts` if its own category was the broken one), and the log carries a `_categories: row N (...): column 'Значение' has unknown type 'quantum'` warning.
 
-- [ ] **Step 16: A user-added column survives a rebuild**
+- [ ] **Step 17: A user-added column survives a rebuild**
 
 Add a column `Мой столбец` to the right of `Expenses`' declared range, put a value in it, and send `/rebuild --force`.
 Expected: your column and its value are untouched. `clear_data` clears only the declared range, and `apply_filter` stays on `"A:A"`.
 
-- [ ] **Step 17: Record the result**
+- [ ] **Step 18: Record the result**
 
 Append a short verification note to the plan file — which steps passed, and anything that surprised you — then commit:
 
@@ -4352,6 +4365,6 @@ EOF
 )"
 ```
 
-- [ ] **Step 18: Do not deploy yet**
+- [ ] **Step 19: Do not deploy yet**
 
 Phase 1 is done when this checklist passes on a scratch workbook. Deploying means merging `freeform-facts` into `main`, which recreates the prod container and runs `alembic upgrade head` against `telegrind_pgdata` — and the **first thing to do on prod is `/import`, before any `/rebuild`**. Leave that decision to Максим; do not push `main`.
