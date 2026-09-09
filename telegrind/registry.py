@@ -330,12 +330,9 @@ async def load_registry(
         # themselves are still created lazily on first write, so a seeded
         # category you never use adds no clutter.
         #
-        # `Worksheet.agw()` writes the headers only when it *creates* the
-        # sheet. A `_categories` that already exists but is empty returns no
-        # rows at all, and appending straight into row 1 would put a category
-        # where `parse_registry` expects the header — so write it here too.
-        header = [] if rows else [REGISTRY_HEADERS]
-        await ws.append([*header, *to_rows(SEED_CATEGORIES)])
+        # `Worksheet.agw()` guarantees row 1 is the header — on the created
+        # path and on a found-but-empty one — so this appends below it.
+        await ws.append(to_rows(SEED_CATEGORIES))
         rows = await ws.all_values()
 
     registry = parse_registry(rows)

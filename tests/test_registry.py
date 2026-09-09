@@ -194,10 +194,16 @@ def test_to_rows_round_trips_through_parse_registry() -> None:
 
 
 class FakeWorksheet:
-    """Stands in for telegrind.sheets.Worksheet. Counts round trips."""
+    """Stands in for telegrind.sheets.Worksheet. Counts round trips.
+
+    Mirrors the real client's invariant that row 1 is always the header —
+    `Worksheet.agw()` writes it on create and repairs a found-but-empty
+    sheet, so `all_values()` never returns a sheet with no header at all.
+    See tests/test_sheets.py for the guard itself.
+    """
 
     def __init__(self, values: list[list[str]]) -> None:
-        self.values = values
+        self.values = values or [REGISTRY_HEADERS]
         self.reads = 0
         self.appended: list[list[str]] = []
 
@@ -277,10 +283,7 @@ async def test_an_empty_registry_worksheet_is_seeded(
     ws = FakeWorksheet([])
     monkeypatch.setattr(registry_module, "_worksheet", lambda ags, headers: ws)
     reg = await load_registry(object(), "url-g", now=0.0)
-    # A `_categories` that exists but holds no rows at all gets the header
-    # row too — otherwise the first seeded category lands in row 1 and
-    # `parse_registry` reads it as the header.
-    assert ws.appended == [REGISTRY_HEADERS, *to_rows(SEED_CATEGORIES)]
+    assert ws.appended == to_rows(SEED_CATEGORIES)
     assert reg.categories == SEED_CATEGORIES
 
 

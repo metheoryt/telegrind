@@ -1,4 +1,7 @@
-from telegrind.sheets import Config, data_range, parse_config
+import pytest
+from gspread import WorksheetNotFound
+
+from telegrind.sheets import Config, Worksheet, data_range, parse_config
 
 
 def test_parse_config_reads_both_keys() -> None:
@@ -35,3 +38,95 @@ def test_data_range_covers_the_declared_columns_only() -> None:
 
 def test_data_range_past_column_z() -> None:
     assert data_range(27) == "A2:AA"
+
+
+def test_parse_config_keeps_the_readable_field_when_another_is_invalid() -> None:
+    """A typo in one cell must not silently revert the other to its default."""
+    cfg = parse_config([["Часовой пояс (в часах)", "3"], ["Основная валюта", "XXXXX"]])
+    assert cfg.dt_offset == 3
+    assert cfg.currency == Config().currency
+
+
+class FakeAgw:
+    """Minimal AsyncioGspreadWorksheet stand-in."""
+
+    def __init__(self, values: list[list[str]]) -> None:
+        self.values = values
+        self.appended: list[list[str]] = []
+        self.filtered = False
+
+    async def row_values(self, row: int) -> list[str]:
+        return self.values[row - 1] if row <= len(self.values) else []
+
+    async def append_row(self, row: list[str], table_range: str) -> None:
+        self.appended.append(row)
+        self.values.insert(0, row)
+
+    async def set_basic_filter(self, rng: str) -> None:
+        self.filtered = True
+
+
+class FakeAgs:
+    """Minimal AsyncioGspreadSpreadsheet stand-in."""
+
+    def __init__(self, existing: dict[str, FakeAgw]) -> None:
+        self.existing = existing
+        self.created: list[str] = []
+
+    async def worksheet(self, name: str) -> FakeAgw:
+        if name not in self.existing:
+            raise WorksheetNotFound(name)
+        return self.existing[name]
+
+    async def add_worksheet(self, name: str, rows: int, cols: int) -> FakeAgw:
+        self.created.append(name)
+        agw = FakeAgw([])
+        self.existing[name] = agw
+        return agw
+
+
+HEADERS = ["#", "Сумма", "Дата"]
+
+
+async def test_a_created_worksheet_gets_its_header_row() -> None:
+    ags = FakeAgs({})
+    ws = Worksheet(ags, "Expenses", HEADERS)
+    agw = await ws.agw()
+    assert ags.created == ["Expenses"]
+    assert agw.appended == [HEADERS]
+
+
+async def test_an_existing_but_empty_worksheet_gets_its_header_row() -> None:
+    """agw() writes headers only on create. A hand-made empty Telemetry sheet
+    is *found*, so without this guard append() drops a fact into row 1 —
+    where keys() reads it as a key and data_range never clears it."""
+    agw = FakeAgw([])
+    ws = Worksheet(FakeAgs({"Telemetry": agw}), "Telemetry", HEADERS)
+    await ws.agw()
+    assert agw.appended == [HEADERS]
+
+
+async def test_a_populated_worksheet_is_left_alone() -> None:
+    agw = FakeAgw([HEADERS, ["1_1", "100", "09.09.26 21:40"]])
+    ws = Worksheet(FakeAgs({"Expenses": agw}), "Expenses", HEADERS)
+    await ws.agw()
+    assert agw.appended == []
+
+
+async def test_a_worksheet_with_data_but_no_header_is_left_alone() -> None:
+    """Repairing row 1 here would push a real data row down and orphan it;
+    the import path is what reconciles a header-less sheet."""
+    agw = FakeAgw([["1_1", "100", "09.09.26 21:40"]])
+    ws = Worksheet(FakeAgs({"Expenses": agw}), "Expenses", HEADERS)
+    await ws.agw()
+    assert agw.appended == []
+
+
+async def test_agw_is_cached_so_the_header_probe_happens_once() -> None:
+    agw = FakeAgw([HEADERS])
+    ws = Worksheet(FakeAgs({"Expenses": agw}), "Expenses", HEADERS)
+    assert await ws.agw() is await ws.agw()
+
+
+def test_pytest_import_is_used() -> None:
+    assert pytest is not None

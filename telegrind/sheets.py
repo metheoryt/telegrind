@@ -93,8 +93,19 @@ def parse_config(rows: list[list[str]]) -> Config:
     try:
         return Config(**data)
     except ValidationError:
-        log.warning("_config: %r failed validation, using all defaults", data)
-        return Config()
+        pass
+
+    # One bad cell must not revert the readable ones: drop the offending
+    # fields individually rather than falling back to an all-defaults Config.
+    kept: dict[str, object] = {}
+    for field, value in data.items():
+        try:
+            Config(**kept, **{field: value})
+        except ValidationError:
+            log.warning("_config: %s=%r failed validation, using default", field, value)
+        else:
+            kept[field] = value
+    return Config(**kept)
 
 
 def data_range(ncols: int, first_row: int = 2) -> str:
@@ -316,7 +327,14 @@ class Worksheet:
         self._agw: AsyncioGspreadWorksheet | None = None
 
     async def agw(self) -> AsyncioGspreadWorksheet:
-        """Get or lazily create the worksheet, writing headers on creation."""
+        """Get or lazily create the worksheet, ensuring row 1 is the header.
+
+        Everything downstream reads row 1 as the header: `keys()` skips it,
+        `data_range` clears from A2, and the importer maps columns by it. A
+        worksheet the user made by hand exists but is empty, so it is
+        *found* rather than created — the guard below covers that path too.
+        Costs one extra read, once per instance, thanks to the `_agw` cache.
+        """
         if self._agw is not None:
             return self._agw
         try:
@@ -325,9 +343,19 @@ class Worksheet:
             self._agw = await self.ags.add_worksheet(
                 self.name, rows=1, cols=len(self.headers)
             )
-            await self._agw.append_row(self.headers, table_range="A1")
-            await self.apply_filter()
+            await self._write_header()
+        else:
+            # Only a *wholly* empty sheet is repaired. Prepending a header to
+            # a sheet that already has data would shift every row down and
+            # orphan it; reconciling that is the importer's job.
+            if not await self._agw.row_values(1):
+                await self._write_header()
         return self._agw
+
+    async def _write_header(self) -> None:
+        assert self._agw is not None
+        await self._agw.append_row(self.headers, table_range="A1")
+        await self.apply_filter()
 
     async def all_values(self) -> list[list[str]]:
         agw = await self.agw()

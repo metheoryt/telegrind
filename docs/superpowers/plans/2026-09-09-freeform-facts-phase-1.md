@@ -2511,6 +2511,8 @@ The pure half of projection. The edit diff is the piece today's code cannot do a
 Create `tests/test_projection.py`:
 
 ```python
+import pytest
+
 from telegrind.llm import RawFact
 from telegrind.models import Fact
 from telegrind.projection import (
@@ -2544,39 +2546,48 @@ def stored(seq: int, category: str) -> Fact:
     )
 
 
-def test_sheet_key_is_message_id_dot_seq() -> None:
-    assert sheet_key(4821, 1) == "4821.1"
-    assert sheet_key(4821, 2) == "4821.2"
+def test_sheet_key_joins_message_id_and_seq() -> None:
+    assert sheet_key(4821, 1) == "4821_1"
+    assert sheet_key(4821, 2) == "4821_2"
 
 
 def test_sheet_key_is_uniform_for_single_fact_messages() -> None:
     """A message can gain a second fact on a later edit, so 1 is not special."""
-    assert sheet_key(7, 1) == "7.1"
+    assert sheet_key(7, 1) == "7_1"
+
+
+def test_sheet_key_is_never_a_number_sheets_could_coerce() -> None:
+    """Column A is written USER_ENTERED. A key Sheets parses as a number is
+    re-rendered on read: "4821.10" would come back "4821.1" and collide with
+    seq 1, so find_key would never match the tenth fact of a message."""
+    for seq in (1, 2, 10, 100):
+        with pytest.raises(ValueError):
+            float(sheet_key(4821, seq))
 
 
 def test_fact_row_puts_the_key_in_column_a_then_the_columns_in_order() -> None:
     row = fact_row(
         EXPENSE,
-        "4821.1",
+        "4821_1",
         {"Сумма": 4500.0, "Валюта": "KZT", "Дата": "09.09.26 21:40", "Комментарий": "такси"},
     )
-    assert row == ["4821.1", 4500.0, "KZT", "09.09.26 21:40", "такси"]
+    assert row == ["4821_1", 4500.0, "KZT", "09.09.26 21:40", "такси"]
 
 
 def test_fact_row_fills_a_missing_field_with_an_empty_string() -> None:
-    row = fact_row(EXPENSE, "4821.1", {"Сумма": 4500.0})
-    assert row == ["4821.1", 4500.0, "", "", ""]
+    row = fact_row(EXPENSE, "4821_1", {"Сумма": 4500.0})
+    assert row == ["4821_1", 4500.0, "", "", ""]
 
 
 def test_fact_row_is_always_the_full_declared_width() -> None:
     """Worksheet.update_row writes left-to-right from A and does not clear
     what it does not reach, so a short row would leave stale trailing cells
     behind on a REWRITE."""
-    assert len(fact_row(EXPENSE, "4821.1", {})) == len(EXPENSE.columns) + 1
+    assert len(fact_row(EXPENSE, "4821_1", {})) == len(EXPENSE.columns) + 1
 
 
 def test_fact_row_ignores_a_field_the_category_does_not_declare() -> None:
-    row = fact_row(EXPENSE, "4821.1", {"Сумма": 1.0, "Придумано": "x"})
+    row = fact_row(EXPENSE, "4821_1", {"Сумма": 1.0, "Придумано": "x"})
     assert len(row) == 5
 
 
@@ -2669,8 +2680,14 @@ log = logging.getLogger(__name__)
 
 def sheet_key(message_id: int, seq: int) -> str:
     """What goes in column A. Uniform, including for single-fact messages —
-    a message can gain a second fact on a later edit."""
-    return f"{message_id}.{seq}"
+    a message can gain a second fact on a later edit.
+
+    The separator is `_` and not `.` because column A is written with
+    ValueInputOption.user_entered: Sheets would parse "4821_10" as the
+    number 4821_1, render it back as "4821_1", and collide it with seq 1.
+    An underscore is text in every locale, so the key round-trips exactly.
+    """
+    return f"{message_id}_{seq}"
 
 
 def fact_row(cat: Category, key: str, fields: dict[str, object]) -> list[object]:
@@ -2775,16 +2792,16 @@ from telegrind.projection import unaccounted_keys
 
 
 def test_no_unaccounted_keys_when_the_sheet_matches_the_facts() -> None:
-    assert unaccounted_keys({"4821.1", "4821.2"}, {"4821.1", "4821.2"}) == set()
+    assert unaccounted_keys({"4821_1", "4821_2"}, {"4821_1", "4821_2"}) == set()
 
 
 def test_a_sheet_row_with_no_fact_is_unaccounted() -> None:
-    assert unaccounted_keys({"4821.1", "9.1"}, {"4821.1"}) == {"9.1"}
+    assert unaccounted_keys({"4821_1", "9_1"}, {"4821_1"}) == {"9_1"}
 
 
 def test_a_fact_with_no_sheet_row_is_not_unaccounted() -> None:
     """A missing row is what /rebuild is for. An extra row is what it refuses over."""
-    assert unaccounted_keys({"4821.1"}, {"4821.1", "4821.2"}) == set()
+    assert unaccounted_keys({"4821_1"}, {"4821_1", "4821_2"}) == set()
 
 
 def test_an_untouched_workbook_is_entirely_unaccounted() -> None:
@@ -3741,7 +3758,7 @@ def test_one_record_names_the_worksheet_and_the_values() -> None:
         [
             fact(
                 "Expenses",
-                "4821.1",
+                "4821_1",
                 {
                     "Сумма": 4500.0,
                     "Валюта": "KZT",
@@ -3757,13 +3774,13 @@ def test_one_record_names_the_worksheet_and_the_values() -> None:
 
 
 def test_the_pointer_is_hidden_in_a_spoiler() -> None:
-    out = format_records([fact("Expenses", "4821.1", {"Сумма": 1.0})])
-    assert "<tg-spoiler>4821.1@Expenses</tg-spoiler>" in out
+    out = format_records([fact("Expenses", "4821_1", {"Сумма": 1.0})])
+    assert "<tg-spoiler>4821_1@Expenses</tg-spoiler>" in out
 
 
 def test_empty_fields_are_dropped_from_the_line() -> None:
     out = format_records(
-        [fact("Wishlist", "9.1", {"Желание": "велосипед", "Исполнено": ""})]
+        [fact("Wishlist", "9_1", {"Желание": "велосипед", "Исполнено": ""})]
     )
     assert "велосипед" in out
     assert " ·  · " not in out
@@ -3772,8 +3789,8 @@ def test_empty_fields_are_dropped_from_the_line() -> None:
 def test_several_records_are_counted() -> None:
     out = format_records(
         [
-            fact("Expenses", "4821.1", {"Сумма": 1.0}),
-            fact("Telemetry", "4821.2", {"Значение": 82.4}),
+            fact("Expenses", "4821_1", {"Сумма": 1.0}),
+            fact("Telemetry", "4821_2", {"Значение": 82.4}),
         ]
     )
     assert "2" in out.splitlines()[0]
@@ -3781,7 +3798,7 @@ def test_several_records_are_counted() -> None:
 
 
 def test_a_single_record_is_not_counted() -> None:
-    out = format_records([fact("Expenses", "4821.1", {"Сумма": 1.0})])
+    out = format_records([fact("Expenses", "4821_1", {"Сумма": 1.0})])
     assert len(out.splitlines()) == 2
 
 
@@ -4276,7 +4293,7 @@ Expected: the intro video, then the confirmation, then the pinned message. Open 
 - [ ] **Step 4: The registry seeds itself**
 
 Send `4500 такси`.
-Expected: a `_categories` worksheet appears with a header row and five rows; an `Expenses` worksheet has the row `4821.1 | 4500 | KZT | <today> | такси`; the bot's reply names `Expenses` and hides `4821.1@Expenses` in a spoiler.
+Expected: a `_categories` worksheet appears with a header row and five rows; an `Expenses` worksheet has the row `4821_1 | 4500 | KZT | <today> | такси`; the bot's reply names `Expenses` and hides `4821_1@Expenses` in a spoiler.
 
 - [ ] **Step 5: A multi-fact message**
 
