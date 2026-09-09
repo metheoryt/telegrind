@@ -1,7 +1,7 @@
 # Freeform fact ingestion — design
 
 **Date:** 2026-09-08
-**Status:** approved, pending implementation plan
+**Status:** approved; Phase 1 planned in `docs/superpowers/plans/2026-09-09-freeform-facts-phase-1.md`
 **Branch:** `freeform-facts`
 
 ## Problem
