@@ -112,8 +112,10 @@ move your own column to the right of the new range first.
 The one case row 1 cannot reveal is a user column carrying formulas but no header.
 
 **Caching.** The registry is loaded once per update in `populate_chat_data` and
-injected into handlers, with an in-process TTL cache (60s) keyed by `sheet_url`.
-`/reload` clears it. Without this, N categories would mean N `_config` reads and N
+injected into handlers, with an in-process TTL cache (60s) keyed by the **chat**,
+not by `sheet_url`: a chat with no workbook still has a registry, and keying on
+the URL made `invalidate(chat.sheet_url)` mean "every chat" the moment the URL was
+null. `/reload` clears it. Without this, N categories would mean N `_config` reads and N
 `find()` calls per message — today's three-sheet edit loop already does three
 separate `_config` reads because `Transaction.__init__` builds a fresh
 `ConfigSheet` per instance.
@@ -388,7 +390,9 @@ write.
 
 | command | effect |
 |---|---|
-| `/rebuild` | re-project the workbook from `fact` rows. No LLM cost. |
+| `/link [url]` | attach a Google workbook, or report the attached one. With no argument and nothing attached, explains how to share one. |
+| `/import [--dry-run]` | read the attached workbook's existing rows in as facts. Idempotent. |
+| `/rebuild` | re-project the workbook from `fact` rows. No LLM cost. This *is* the export: on a freshly linked empty workbook it creates every declared worksheet and writes every fact, so no separate `/export` command exists. |
 | `/reparse [--since D] [--category C] [--model M] [--stale]` | re-extract stored messages via the Batch API. Shows a token estimate and confirms before spending. `--category` selects messages whose *current* facts include that category; `--stale` selects those whose `prompt_version` is not the current one. |
 | `/retranscribe [--since D]` | re-run whisper over stored voice messages, then re-extract them. |
 | `/reload` | drop the cached `_categories` read. |
@@ -398,8 +402,8 @@ write.
 
 Registration order matters — aiogram stops at the first match.
 
-1. `/start` FSM (unchanged)
-2. `/rebuild`, `/reparse`, `/retranscribe`, `/reload`
+1. `/start` — intro only; there is no FSM and nothing to configure
+2. `/link`, `/import`, `/rebuild`, `/reparse`, `/retranscribe`, `/reload`
 3. reply `-` → delete
 4. reply `??` → escalated re-extract
 5. `F.voice` → transcribe → ingest
@@ -409,13 +413,53 @@ Registration order matters — aiogram stops at the first match.
 `populate_chat_data` gains `registry` and `config` alongside today's `session`,
 `chat`, and `agc`.
 
-**The `sheet_url` gate moves.** All five handlers today open with
-`if not chat.sheet_url: set_state(request_sheet_url)` and return, which drops the
-message. With Postgres as the source of truth the right order is: **write the
-`Message` row first, then gate on `sheet_url` before projection.** A fact recorded
-before onboarding finishes is recoverable by `/rebuild`; one dropped at the handler
-is gone — and "nothing you write is ever lost" is the property this design is
-claiming.
+**The `sheet_url` gate is gone, and so is onboarding.** All five handlers today
+open with `if not chat.sheet_url: set_state(request_sheet_url)` and return, which
+drops the message. The first revision of this spec moved that gate down to just
+before projection. That was still one step short: with Postgres as the source of
+truth there is nothing left for the gate to protect, because **the workbook is not
+a prerequisite for anything.**
+
+`load_registry(None, …)` returns the seeded categories and `load_config(None, …)`
+returns the defaults (+06:00, KZT), so `registry` and `config` are never null and
+extraction runs with nothing linked. `apply_changes` and `delete_facts` do their
+Postgres half unconditionally and their Sheets half only when there is a sheet. A
+fact recorded with no workbook is projected by the first `/rebuild` after one is
+attached — the same recovery path a fact recorded *before* projection already
+used, so this adds a starting point rather than a failure mode.
+
+The FSM and its `request_sheet_url` state are deleted. `/start` sends the intro
+and the tips; attaching a workbook is `/link <url>`, a command the user reaches
+for when they want a spreadsheet rather than a gate they must pass before the bot
+will record anything.
+
+### Why the bot cannot create the spreadsheet itself
+
+The obvious version of this — the bot creates a fresh workbook and shares it —
+does not exist. Measured 2026-09-09 against the production service account:
+
+```
+about.get → storageQuota { limit: "0", usage: "0" }
+files.create (Google-native spreadsheet) → 403 storageQuotaExceeded
+files.copy   (of an existing workbook)   → 403 storageQuotaExceeded
+```
+
+A service account outside a Workspace domain has **no Drive of its own**. It can
+read and write any workbook shared with it, forever, but it can never own a file,
+so it can never create one — and there is correspondingly nothing to transfer
+ownership *from*. (The Drive API also has to be enabled in the GCP project at all;
+before that the same calls fail `SERVICE_DISABLED`, which is a different error with
+the same symptom.)
+
+So `/link`'s help text asks the user to create an empty spreadsheet and share it
+with the service account, and says why. The consolation is real: the user owns the
+workbook, it sits in their own Drive rather than under "Shared with me", and they
+can delete it — none of which would be true of a workbook the bot had created.
+
+Bot-created workbooks would need OAuth as the user (the `drive.file` scope is
+non-sensitive, so no Google verification and no expiring refresh token, but it can
+only touch files the app itself created — so importing a pre-existing workbook has
+to happen before any such switch). Roadmap, not Phase 1.
 
 ## Module layout
 
@@ -446,9 +490,14 @@ are about talking to a worksheet — lazy get-or-create, the `A:A` basic filter,
 find/append/update/delete — and loses everything that was about knowing what a
 message means.
 
-Kept because rewriting them buys nothing: `main.py`'s engine and credential wiring,
-`middleware.populate_chat_data`'s shape, and the `/start` FSM in
-`handlers/start.py`. Onboarding works and users depend on it.
+Kept because rewriting them buys nothing: `main.py`'s engine and credential
+wiring, and `middleware.populate_chat_data`'s shape.
+
+The `/start` FSM in `handlers/start.py` is **not** kept. An earlier revision of
+this spec kept it on the grounds that onboarding worked and users depended on it;
+that was true of the regex bot, where the spreadsheet *was* the database. Once
+Postgres holds the facts, the onboarding step's only remaining effect is to make
+the bot's first answer a refusal.
 
 **The data contracts are fixed, and this is the part "from scratch" does not
 reach:**
@@ -486,6 +535,33 @@ A one-time import, run as part of Phase 1:
 **`/rebuild` refuses to run** on a worksheet holding rows whose keys are not
 accounted for by facts, and says how many, unless given an explicit `--force`. A
 projection that can silently discard its own source is not worth the convenience.
+
+### Retiring the original workbook
+
+The original spreadsheet is a hand-grown thing with formula columns, extra sheets
+and years of drift. Once its rows are facts, none of that has to be carried
+forward: a fresh workbook is a cleaner projection than the old one can ever be
+edited into. The order is not negotiable, because until step 2 completes the old
+workbook is the **only** copy of the pre-bot history:
+
+1. Deploy. `chat.sheet_url` still points at the original workbook, and it is still
+   honoured — that is what makes step 2 possible.
+2. `/import`. Verify the counts against the sheets by hand.
+3. Create an empty workbook, share it with the service account, `/link` it.
+4. `/rebuild`. A brand-new workbook has no unaccounted keys, so this needs no
+   `--force` — the guard is satisfied by construction rather than overridden.
+5. Compare, then retire the original: unshare it from the service account so no
+   future misconfiguration can reach it.
+
+Facts carry their own `sheet_key`, synthesized `import-<worksheet>-<row>` keys
+included, so step 4 reproduces every key exactly and stays idempotent. Nothing
+about the projection is tied to the identity of the workbook it was last written
+to.
+
+One deploy hazard, unrelated to the workbook: `facts_for_message` filters on
+`Fact.message_pk`, which is null for imported facts. Editing a message sent in the
+window between the deploy and `/import` writes a second row instead of rewriting
+the first. A prompt `/import` closes the window.
 
 ## Testing
 
