@@ -1,4 +1,6 @@
-from telegrind.bot.handlers.handlers import format_records
+from types import SimpleNamespace
+
+from telegrind.bot.handlers.handlers import COMMAND_LIKE, format_records
 from telegrind.models import Fact
 
 
@@ -57,3 +59,14 @@ def test_a_single_record_is_not_counted() -> None:
 
 def test_no_records_says_so() -> None:
     assert format_records([]).strip()
+
+
+def test_a_mistyped_command_is_not_treated_as_a_fact() -> None:
+    """/rebiuld must not be extracted into the Facts sheet."""
+    assert COMMAND_LIKE.resolve(SimpleNamespace(text="/rebiuld"))
+    assert COMMAND_LIKE.resolve(SimpleNamespace(text="/help"))
+
+
+def test_an_ordinary_message_is_not_command_like() -> None:
+    assert not COMMAND_LIKE.resolve(SimpleNamespace(text="4500 такси"))
+    assert not COMMAND_LIKE.resolve(SimpleNamespace(text="вес 82.4"))

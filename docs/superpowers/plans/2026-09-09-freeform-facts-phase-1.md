@@ -4370,8 +4370,13 @@ Expected: the message is still recorded (into `facts` if its own category was th
 
 - [ ] **Step 17: A user-added column survives a rebuild**
 
-Add a column `Мой столбец` to the right of `Expenses`' declared range, put a value in it, and send `/rebuild --force`.
-Expected: your column and its value are untouched. `clear_data` clears only the declared range, and `apply_filter` stays on `"A:A"`.
+Add a column `Мой столбец` to the right of `Expenses`' declared range, put a value in it *on several rows*, and send `/rebuild --force`.
+
+Expected — and check all three, the first is the one that can actually fail:
+
+1. **The first rebuilt data row is row 2.** `clear_data` uses `batch_clear`, which empties `A2:E` but leaves the physical rows in place; `append` then uses `table_range="A1"`, and `values.append` locates the table by contiguity from A1. A populated column F running down the sheet can extend that block past the cleared rows, so the appended rows land *below* it with a gap of blanks between the header and the first fact. If you see that gap, `rebuild` needs to write with an explicit `A2` range instead of appending. The same mechanism applies to every ordinary `append`, not just rebuild.
+2. Your column and its values are untouched — `clear_data` clears only the declared range.
+3. The basic filter still covers `"A:A"` only, so your column was never captured by it.
 
 - [ ] **Step 18: Record the result**
 
@@ -4410,9 +4415,11 @@ Google workbook, so it is Максим's to run.
   `op.drop_*` or `op.alter_column` against `chat` or `file`.
 - `setup_dispatcher()` builds, and handler registration order is:
   `cmd_import`, `cmd_rebuild`, `cmd_reload`, `start`, `obtain_sheet_url`,
-  `delete_record`, `escalate_stub`, `record_voice`, `record_text`, with
-  `record_edited` on the `edited_message` observer. The catch-all is last,
-  which is the property Task 12 step 6 needed.
+  `delete_record`, `escalate_stub`, `record_voice`, `unknown_command`,
+  `record_text`, with `record_edited` on the `edited_message` observer. The
+  catch-all is last, which is the property Task 12 step 6 needed. Note this
+  does **not** validate the injected kwarg names — aiogram resolves those at
+  dispatch time, so a mismatch would raise on the first message, not here.
 - `Bot`, `AsyncioGspreadClientManager` and the service-account credentials
   all construct from the real `.env`. Polling was deliberately *not* started
   — `.env`'s `BOT_TOKEN` would have served live chats.
@@ -4433,3 +4440,24 @@ here and no Google Sheets URL begins with a slash, the filter now carries
 **Not deployed.** `freeform-facts` is unpushed. Deploying means merging to
 `main`, and the first command to run on prod is `/import`, before any
 `/rebuild`.
+
+**One gap closed after the task list.** `record_text` is a bare `F.text`, so
+any slash-prefixed message no `Command` filter claimed — `/help`, or a typo
+like `/rebiuld` — fell through to it, got extracted, and landed in the
+`Facts` worksheet. The old code answered `TIP_TEXT` there. A new
+`unknown_command` handler on `F.text.startswith("/")` sits immediately before
+the catch-all: it still logs the message (declining to *extract* something is
+not licence to drop it) and replies that the command is unknown.
+
+**Known deploy hazard.** `facts_for_message` filters on `Fact.message_pk`,
+which is NULL for imported facts. A message sent shortly before the deploy
+gets imported under its bare key (`4821`), so editing it inside Telegram's
+48-hour window finds no prior fact, treats the edit as an APPEND, and writes
+a second row at `4821_1`. Narrow, but it silently doubles that one row.
+Worth knowing before the prod `/import` — the cheap mitigation is to run
+`/import` at a quiet moment and not edit anything sent just before it.
+
+**`TIP_TEXT` is now stale.** `telegrind/bot/const.py` still teaches the old
+regex syntax and onboarding still shows it. Nothing breaks, but it is the
+wrong thing to tell a new user now that any phrasing works. Rewriting it is
+a separate, purely copy change.

@@ -39,6 +39,15 @@ VOICE_PENDING_TEXT = (
     "Голосовые пока не расшифровываю, но сообщение сохранила — разберу, когда научусь."
 )
 ESCALATE_PENDING_TEXT = "Повторный разбор появится в следующей версии."
+UNKNOWN_COMMAND_TEXT = (
+    "Не знаю такой команды. Сообщение сохранила, но в таблицу "
+    "не записала — если это был факт, пришлите его без слэша."
+)
+
+#: A slash-prefixed message that no Command filter claimed. Registered
+#: immediately before the catch-all so a mistyped /rebiuld is not
+#: extracted into the Facts sheet.
+COMMAND_LIKE = F.text.startswith("/")
 
 
 def format_records(facts: list[Fact]) -> str:
@@ -176,6 +185,20 @@ async def record_voice(message: Message, chat: Chat, session: AsyncSession) -> N
     async with session.begin():
         await store.upsert_message(session, chat, message)
     await message.reply(VOICE_PENDING_TEXT)
+
+
+@router.message(COMMAND_LIKE)
+async def unknown_command(message: Message, chat: Chat, session: AsyncSession) -> None:
+    """Answer an unrecognised command instead of recording it as a fact.
+
+    Without this, /help — or a typo like /rebiuld — falls through to
+    record_text and lands in the Facts worksheet. It still logs the message:
+    the claim is that nothing you write is ever lost, so declining to
+    *extract* something is not licence to drop it.
+    """
+    async with session.begin():
+        await store.upsert_message(session, chat, message)
+    await message.reply(UNKNOWN_COMMAND_TEXT)
 
 
 @router.message(F.text)
