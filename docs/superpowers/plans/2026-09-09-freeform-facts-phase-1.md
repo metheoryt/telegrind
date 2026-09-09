@@ -57,7 +57,7 @@ payload = json.loads(resp.content[0].text)
 - No `thinking` parameter — `claude-haiku-4-5` is the `budget_tokens` generation.
 - **Never assert a prompt-cache hit in a test.** `cache_control` silently no-ops below the model's minimum cacheable prefix; the probe measured `cache_creation_input_tokens == 0` at 1047 input tokens.
 
-**Environment variables added this phase:** `LLM_MODEL` (default `claude-haiku-4-5`), `LLM_MODEL_ESCALATE` (default `claude-sonnet-5`, unused until Phase 2 but declared now so `.env.dist` is complete). `ANTHROPIC_API_KEY` already exists. `MARVIN_AGENT_MODEL` is removed in Task 14, not before.
+**Environment variables added this phase:** `LLM_MODEL` (default `claude-haiku-4-5`), `LLM_MODEL_ESCALATE` (default `claude-sonnet-5`, unused until Phase 2 but declared now so `.env.dist` is complete). `ANTHROPIC_API_KEY` already exists. `MARVIN_AGENT_MODEL` is removed in Task 13, not before.
 
 **Deployment:** pushing to `main` **is** the deploy. Do not push `main` during this work — the branch is `freeform-facts`. The dev stack is compose project `telegrind-dev`; never `docker compose down -v` against prod. Never tag an image `metheoryt/telegrind-bot:*`.
 
@@ -71,7 +71,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 
 ## Deviations from the spec
 
-Four places where this plan is deliberately not what the spec says. Each is a gap the spec did not close, found while sequencing the work.
+Five places where this plan is deliberately not what the spec says. Each is a gap the spec did not close, found while sequencing the work.
 
 1. **`Fact` gains a non-null `chat_pk`.** The spec scopes facts to a chat *through* `message_pk` — but imported facts have `message_pk IS NULL`, so they would belong to no chat and `/rebuild` could not find them. `Fact.chat_pk` is a non-null FK to `chat.id`; `message_pk` stays nullable.
 2. **Import is a command, `/import [--dry-run]`, not an implicit startup step.** A one-shot data migration that runs itself on container start is unreviewable and re-runs on every deploy. `/rebuild`'s refusal gate already makes it impossible to do damage before the import has run.
@@ -86,7 +86,7 @@ Four places where this plan is deliberately not what the spec says. Each is a ga
 | file | responsibility | task |
 |---|---|---|
 | `telegrind/registry.py` | *new* — `Column`, `Category`, `Registry`; parse and validate `_categories`; seed it; TTL cache | 2, 4 |
-| `telegrind/sheets.py` | keep `Config`; rewrite `ConfigSheet` robustly; add the `Worksheet` client; delete `Sheet`/`Transaction`/`Outcome`/`Loan`/`Wish` | 3, 14 |
+| `telegrind/sheets.py` | keep `Config`; rewrite `ConfigSheet` robustly; add the `Worksheet` client; delete `Sheet`/`Transaction`/`Outcome`/`Loan`/`Wish` | 3, 13 |
 | `telegrind/coerce.py` | *new* — one function per field type, plus the date fallback chain | 5 |
 | `telegrind/llm.py` | *new* — JSON Schema builder, system prompt, `PROMPT_VERSION`, the extraction call | 6 |
 | `telegrind/models.py` | add `LoggedMessage` and `Fact` | 7 |
@@ -105,7 +105,7 @@ Four places where this plan is deliberately not what the spec says. Each is a ga
 
 ## Task 1: Dependencies, test harness, and the config contract
 
-There are no tests in this repo and no test runner. Nothing later in this plan can be verified until this exists, so it is first. `anthropic` is currently only a transitive dependency of `marvin`; it becomes direct here, while `marvin` stays until Task 14 removes the last import of it.
+There are no tests in this repo and no test runner. Nothing later in this plan can be verified until this exists, so it is first. `anthropic` is currently only a transitive dependency of `marvin`; it becomes direct here, while `marvin` stays until Task 13 removes the last import of it.
 
 **Files:**
 - Modify: `pyproject.toml`
@@ -176,7 +176,7 @@ LLM_MODEL_ESCALATE=claude-sonnet-5
 ANTHROPIC_API_KEY=
 ```
 
-`MARVIN_AGENT_MODEL` is gone from `.env.dist` here, but `marvin` still reads it from a real `.env` until Task 14. That is fine: `.env.dist` is the contract for a *fresh* box, and a fresh box will not run the old code.
+`MARVIN_AGENT_MODEL` is gone from `.env.dist` here, but `marvin` still reads it from a real `.env` until Task 13. That is fine: `.env.dist` is the contract for a *fresh* box, and a fresh box will not run the old code.
 
 - [ ] **Step 5: Sync and run the tests**
 
