@@ -4390,3 +4390,46 @@ EOF
 - [ ] **Step 19: Do not deploy yet**
 
 Phase 1 is done when this checklist passes on a scratch workbook. Deploying means merging `freeform-facts` into `main`, which recreates the prod container and runs `alembic upgrade head` against `telegrind_pgdata` — and the **first thing to do on prod is `/import`, before any `/rebuild`**. Leave that decision to Максим; do not push `main`.
+
+---
+
+## Verification record — 2026-09-09
+
+Tasks 1–14 are implemented and committed on `freeform-facts`. **Task 15 is
+not done**: every step from 3 onward needs a Telegram client and a scratch
+Google workbook, so it is Максим's to run.
+
+**What was verified mechanically:**
+
+- 145 unit tests pass; 15 LLM cases are deselected by `addopts`.
+- `uv run ruff check .` and `ruff format --check .` are clean. The branch
+  started at 77 ruff errors, all in code this phase rewrote or deleted.
+- Migration `f8ba900863f4` upgrades, downgrades and upgrades again cleanly
+  against dev Postgres. Dev DB now holds `chat`, `file`, `message`, `fact`.
+- The generated migration contains only two `create_table` calls — no
+  `op.drop_*` or `op.alter_column` against `chat` or `file`.
+- `setup_dispatcher()` builds, and handler registration order is:
+  `cmd_import`, `cmd_rebuild`, `cmd_reload`, `start`, `obtain_sheet_url`,
+  `delete_record`, `escalate_stub`, `record_voice`, `record_text`, with
+  `record_edited` on the `edited_message` observer. The catch-all is last,
+  which is the property Task 12 step 6 needed.
+- `Bot`, `AsyncioGspreadClientManager` and the service-account credentials
+  all construct from the real `.env`. Polling was deliberately *not* started
+  — `.env`'s `BOT_TOKEN` would have served live chats.
+- **All 15 LLM eval cases pass** against `claude-haiku-4-5`, the multi-fact
+  case included. That is the end-to-end proof that the discriminated-union
+  schema, the Cyrillic property names and the prompt work on the real API.
+  Note `.env` has CRLF line endings, so sourcing it in bash leaves a `\r` on
+  `ANTHROPIC_API_KEY` and every call fails with `APIConnectionError`; load it
+  with `dotenv` instead.
+
+**Step 15 was fixed rather than verified.** `obtain_sheet_url` was filtered
+on the FSM state alone, so while `Form.request_sheet_url` was set it matched
+anything — including a command, which it would then try to open as a
+spreadsheet URL. Since the verification that gated the fix cannot be run
+here and no Google Sheets URL begins with a slash, the filter now carries
+`~F.text.startswith("/")`. Steps 3–14 and 16–17 remain outstanding.
+
+**Not deployed.** `freeform-facts` is unpushed. Deploying means merging to
+`main`, and the first command to run on prod is `/import`, before any
+`/rebuild`.
