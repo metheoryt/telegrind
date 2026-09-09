@@ -46,6 +46,13 @@ NO_ACCESS_TEXT = (
     f"редактора на <pre>{SERVICE_ACCOUNT_EMAIL}</pre> и пришлите ссылку снова."
 )
 
+UNLINKED_TEXT = (
+    "Таблица отключена — записывать буду по-прежнему, просто без таблицы. "
+    "Не забудьте забрать у меня доступ в самой таблице, если он больше не нужен."
+)
+
+NOTHING_LINKED_TEXT = "Таблица и так не подключена."
+
 LINKED_TEXT = (
     "Таблица подключена. Дальше по порядку:\n"
     "/import — если в листах уже есть строки, которые надо забрать в базу "
@@ -134,6 +141,25 @@ async def cmd_link(
     invalidate(str(chat.id))
     invalidate_config(str(chat.id))
     await message.reply(LINKED_TEXT)
+
+
+@router.message(Command("unlink"))
+async def cmd_unlink(message: Message, chat: Chat, session: AsyncSession) -> None:
+    """Detach the workbook. Facts stay; only the projection target is dropped.
+
+    This is how the original workbook is retired once its rows have been
+    imported: without it the only way to stop writing to a sheet is to link
+    a different one.
+    """
+    if not chat.sheet_url:
+        await message.reply(NOTHING_LINKED_TEXT)
+        return
+
+    async with session.begin():
+        chat.sheet_url = None
+    invalidate(str(chat.id))
+    invalidate_config(str(chat.id))
+    await message.reply(UNLINKED_TEXT)
 
 
 @router.message(Command("import"))
