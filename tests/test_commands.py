@@ -70,3 +70,10 @@ def test_a_report_with_a_failure_is_not_ok() -> None:
     assert not RebuildReport(failed={"Telemetry": "boom"}).ok
     assert not RebuildReport(refused={"Loans": 3}).ok
     assert RebuildReport(rebuilt={"Expenses": 1}).ok
+
+
+def test_format_import_plan_reports_a_refused_worksheet() -> None:
+    """A collided sheet is skipped, not silently absent from the report."""
+    out = format_import_plan({}, {"Expenses": "Expenses!C1 holds 'Курс'"})
+    assert "Expenses" in out
+    assert "Курс" in out

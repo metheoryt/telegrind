@@ -97,6 +97,44 @@ def data_range(ncols: int, first_row: int = 2) -> str:
     return f"A{first_row}:{last}"
 
 
+class HeaderMismatchError(Exception):
+    """The declared columns collide with a column the user owns.
+
+    Every write is positional: `write_rows` puts `len(headers)` values at
+    `A<row>`, and `clear_data` empties `data_range(len(headers))`. So the
+    declared headers must be a *prefix* of the worksheet's real header row.
+    Widen a category by one column in `_categories` and, without this, the
+    next projection writes over whatever sits in the column that just
+    joined the declared range — on a real workbook that is a formula column
+    filled down every row, and `/rebuild` takes the whole column with it.
+
+    Raised instead of writing. The message log is already committed by the
+    time projection runs, so the fact is not lost: fix the header (or the
+    registry) and `/rebuild` puts it back.
+    """
+
+
+def check_headers(worksheet: str, declared: list[str], actual: list[str]) -> None:
+    """Raise unless `declared` is a prefix of `actual`.
+
+    An *empty* cell in `actual` is unclaimed territory and fine to write
+    into — that is what makes adding a column to a narrow sheet work. Only
+    a differing non-empty header is a collision. A user column with
+    formulas but no header cannot be detected from row 1, and is the one
+    case this guard misses.
+    """
+    for index, header in enumerate(declared):
+        if index >= len(actual):
+            return
+        found = actual[index].strip()
+        if found and found != header:
+            column = rowcol_to_a1(1, index + 1).rstrip("1")
+            raise HeaderMismatchError(
+                f"{worksheet}!{column}1 holds {found!r}, but the registry "
+                f"declares {header!r} there. Nothing was written."
+            )
+
+
 class ConfigSheet:
     """The `_config` worksheet: timezone and default currency.
 
@@ -184,8 +222,11 @@ class Worksheet:
             # Only a *wholly* empty sheet is repaired. Prepending a header to
             # a sheet that already has data would shift every row down and
             # orphan it; reconciling that is the importer's job.
-            if not await self._agw.row_values(1):
+            row = await self._agw.row_values(1)
+            if not row:
                 await self._write_header()
+            else:
+                check_headers(self.name, self.headers, row)
         return self._agw
 
     async def _write_header(self) -> None:

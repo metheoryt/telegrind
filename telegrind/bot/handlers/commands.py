@@ -23,10 +23,16 @@ NOT_READY_TEXT = (
 )
 
 
-def format_import_plan(plan: dict[str, list[ImportedRow]]) -> str:
+def format_import_plan(
+    plan: dict[str, list[ImportedRow]], refused: dict[str, str] | None = None
+) -> str:
+    lines: list[str] = []
+    for worksheet, err in sorted((refused or {}).items()):
+        lines.append(f"<b>Пропущен</b> {worksheet}: {err}")
     if not plan:
-        return "Нечего импортировать — в листах нет строк."
-    lines = ["<b>Импорт истории</b>"]
+        lines.append("Нечего импортировать — в листах нет строк.")
+        return "\n".join(lines)
+    lines.append("<b>Импорт истории</b>")
     for category, rows in sorted(plan.items()):
         synthesized = sum(1 for r in rows if r.synthesized)
         suffix = f" (без ключа: {synthesized})" if synthesized else ""
@@ -73,8 +79,8 @@ async def cmd_import(
         return
 
     dry_run = "--dry-run" in (command.args or "")
-    plan = await plan_import(ags, registry)
-    await message.reply(format_import_plan(plan))
+    plan, refused = await plan_import(ags, registry)
+    await message.reply(format_import_plan(plan, refused))
     if dry_run or not plan:
         return
 

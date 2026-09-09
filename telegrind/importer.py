@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from telegrind.models import ORIGIN_IMPORTED, Chat, Fact
 from telegrind.registry import KEY_HEADER, Category, Registry
-from telegrind.sheets import Worksheet
+from telegrind.sheets import HeaderMismatchError, Worksheet
 from telegrind.store import fact_keys_for_worksheet
 
 log = logging.getLogger(__name__)
@@ -101,15 +101,29 @@ def plan_worksheet(cat: Category, values: list[list[str]]) -> list[ImportedRow]:
 
 async def plan_import(
     ags: AsyncioGspreadSpreadsheet, registry: Registry
-) -> dict[str, list[ImportedRow]]:
-    """Read every declared worksheet. Reads only — writes nothing."""
+) -> tuple[dict[str, list[ImportedRow]], dict[str, str]]:
+    """Read every declared worksheet. Returns `(plan, refused)`.
+
+    A worksheet whose headers collide with the registry is skipped rather
+    than imported: `map_row` reads by header, so importing it would mint
+    facts with the wrong fields and the next projection would write them
+    back as truth. One collided sheet must not abort the other categories,
+    which is why this is per-worksheet and reported rather than raised.
+    """
     plan: dict[str, list[ImportedRow]] = {}
+    refused: dict[str, str] = {}
     for cat in registry.categories:
         ws = Worksheet(ags, cat.worksheet, cat.headers)
-        rows = plan_worksheet(cat, await ws.all_values())
+        try:
+            values = await ws.all_values()
+        except HeaderMismatchError as exc:
+            log.warning("skipping %s on import: %s", cat.worksheet, exc)
+            refused[cat.worksheet] = str(exc)
+            continue
+        rows = plan_worksheet(cat, values)
         if rows:
             plan[cat.name] = rows
-    return plan
+    return plan, refused
 
 
 async def apply_import(

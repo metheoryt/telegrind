@@ -1,7 +1,14 @@
 import pytest
 from gspread import WorksheetNotFound
 
-from telegrind.sheets import Config, Worksheet, data_range, parse_config
+from telegrind.sheets import (
+    Config,
+    HeaderMismatchError,
+    Worksheet,
+    check_headers,
+    data_range,
+    parse_config,
+)
 
 
 def test_parse_config_reads_both_keys() -> None:
@@ -61,6 +68,9 @@ class FakeAgw:
 
     async def row_values(self, row: int) -> list[str]:
         return self.values[row - 1] if row <= len(self.values) else []
+
+    async def get_values(self) -> list[list[str]]:
+        return self.values
 
     async def append_row(self, row: list[str], table_range: str) -> None:
         self.appended.append(row)
@@ -140,12 +150,16 @@ async def test_a_populated_worksheet_is_left_alone() -> None:
     assert agw.appended == []
 
 
-async def test_a_worksheet_with_data_but_no_header_is_left_alone() -> None:
-    """Repairing row 1 here would push a real data row down and orphan it;
-    the import path is what reconciles a header-less sheet."""
+async def test_a_worksheet_with_data_but_no_header_is_refused_not_repaired() -> None:
+    """Repairing row 1 here would push a real data row down and orphan it, so
+    it is still never repaired — but proceeding is not safe either. Row 1 is
+    what `keys()` skips and what the importer maps columns by, so a data row
+    sitting there means the bot's whole layout model is wrong for this sheet.
+    Refuse and say so."""
     agw = FakeAgw([["1_1", "100", "09.09.26 21:40"]])
     ws = Worksheet(FakeAgs({"Expenses": agw}), "Expenses", HEADERS)
-    await ws.agw()
+    with pytest.raises(HeaderMismatchError):
+        await ws.agw()
     assert agw.appended == []
 
 
@@ -215,3 +229,46 @@ async def test_write_rows_of_nothing_touches_nothing() -> None:
     await _ws(agw).write_rows([])
     assert agw.updates == []
     assert agw.resized_to is None
+
+
+def test_check_headers_accepts_an_exact_match() -> None:
+    check_headers("Expenses", ["#", "Сумма"], ["#", "Сумма"])
+
+
+def test_check_headers_accepts_the_users_extra_columns() -> None:
+    """Declared headers only need to be a *prefix*. F onward is his."""
+    check_headers("Expenses", ["#", "Сумма"], ["#", "Сумма", "Курс", "В тенге"])
+
+
+def test_check_headers_accepts_a_narrower_sheet() -> None:
+    """Empty territory to the right is fine to write into."""
+    check_headers("Expenses", ["#", "Сумма", "Валюта"], ["#", "Сумма"])
+
+
+def test_check_headers_accepts_a_blank_cell_inside_the_declared_range() -> None:
+    check_headers("Expenses", ["#", "Сумма", "Валюта"], ["#", "", "Валюта"])
+
+
+def test_check_headers_refuses_a_collision_with_a_user_column() -> None:
+    """Widening a category by one column must not eat the column it lands on.
+
+    This is the whole point of the guard: `write_rows` is positional, so
+    declaring a 3rd column on a sheet whose 3rd column is the user's `Курс`
+    would overwrite it on every write and blank it on /rebuild.
+    """
+    with pytest.raises(HeaderMismatchError) as exc:
+        check_headers(
+            "Expenses", ["#", "Сумма", "Валюта"], ["#", "Сумма", "Курс", "В тенге"]
+        )
+    assert "Expenses!C1" in str(exc.value)
+    assert "Курс" in str(exc.value)
+    assert "Валюта" in str(exc.value)
+
+
+async def test_agw_refuses_a_worksheet_whose_headers_collide() -> None:
+    agw = FakeAgw([["#", "Сумма", "Курс"]])
+    ws = Worksheet(FakeAgs({"Expenses": agw}), "Expenses", ["#", "Сумма", "Валюта"])
+    with pytest.raises(HeaderMismatchError):
+        await ws.agw()
+    assert agw.updates == []
+    assert agw.cleared == []

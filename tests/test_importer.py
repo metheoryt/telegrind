@@ -1,10 +1,13 @@
+from test_sheets import FakeAgs, FakeAgw
+
 from telegrind.importer import (
     ImportedRow,
     map_row,
+    plan_import,
     plan_worksheet,
     synthesized_key,
 )
-from telegrind.registry import Category, Column
+from telegrind.registry import KEY_HEADER, Category, Column, Registry
 
 EXPENSE = Category(
     name="expense",
@@ -113,3 +116,29 @@ def test_plan_worksheet_deduplicates_a_repeated_key() -> None:
 
 def test_imported_row_is_a_value() -> None:
     assert ImportedRow("4821", {}, False) == ImportedRow("4821", {}, False)
+
+
+async def test_plan_import_skips_a_worksheet_whose_headers_collide() -> None:
+    """One collided sheet must not abort the other categories' import."""
+    expenses = Category(
+        name="expense",
+        worksheet="Expenses",
+        when_to_use="",
+        columns=(Column("Сумма", "money"),),
+    )
+    wishes = Category(
+        name="wish",
+        worksheet="Wishlist",
+        when_to_use="",
+        columns=(Column("Желание", "text"),),
+    )
+    ags = FakeAgs(
+        {
+            # Row 1 declares the user's own column where `Сумма` should be.
+            "Expenses": FakeAgw([[KEY_HEADER, "Курс"], ["1_1", "1.0"]]),
+            "Wishlist": FakeAgw([[KEY_HEADER, "Желание"], ["2_1", "монитор"]]),
+        }
+    )
+    plan, refused = await plan_import(ags, Registry((expenses, wishes)))
+    assert list(plan) == ["wish"]
+    assert "Expenses" in refused

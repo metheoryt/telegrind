@@ -19,7 +19,7 @@ from telegrind.coerce import coerce_fields
 from telegrind.llm import RawFact
 from telegrind.models import ORIGIN_EXTRACTED, Chat, Fact, LoggedMessage
 from telegrind.registry import Category, Registry
-from telegrind.sheets import Config, Worksheet
+from telegrind.sheets import Config, HeaderMismatchError, Worksheet
 from telegrind.store import fact_keys_for_worksheet, facts_for_chat
 
 log = logging.getLogger(__name__)
@@ -248,10 +248,12 @@ async def rebuild(
     for cat in registry.categories:
         try:
             counted = await _rebuild_one(ags, session, registry, chat, cat, force=force)
-        except APIError as exc:
+        except (APIError, HeaderMismatchError) as exc:
             # One worksheet's API error must not abandon the rest: rebuild
             # walks every category, and aborting midway leaves the workbook
-            # half-rewritten with no report of how far it got.
+            # half-rewritten with no report of how far it got. A header
+            # collision belongs here too — it is one category's registry row
+            # that is wrong, and the other categories are still projectable.
             log.exception("rebuild of %s failed", cat.worksheet)
             failed[cat.worksheet] = str(exc)
             continue

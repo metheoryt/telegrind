@@ -25,7 +25,7 @@ from telegrind.bot.router import router
 from telegrind.models import Chat, Fact
 from telegrind.projection import apply_changes, delete_facts, diff_facts
 from telegrind.registry import Registry
-from telegrind.sheets import Config
+from telegrind.sheets import Config, HeaderMismatchError
 
 from .start import Form
 
@@ -40,6 +40,11 @@ VOICE_PENDING_TEXT = (
     "Голосовые пока не расшифровываю, но сообщение сохранила — разберу, когда научусь."
 )
 ESCALATE_PENDING_TEXT = "Повторный разбор появится в следующей версии."
+HEADER_MISMATCH_TEXT = (
+    "Столбцы в <code>_categories</code> разошлись с заголовками листа, и я "
+    "не стала ничего перезаписывать — иначе затёрла бы ваш столбец. "
+    "Сообщение сохранила: поправьте заголовок и пришлите /rebuild."
+)
 UNKNOWN_COMMAND_TEXT = (
     "Не знаю такой команды. Сообщение сохранила, но в таблицу "
     "не записала — если это был факт, пришлите его без слэша."
@@ -112,23 +117,32 @@ async def _ingest(
         content, registry, config, config.localized(tg_date), model
     )
 
-    async with session.begin():
-        msg_row = await store.get_message(session, chat.id, message.message_id)
-        if msg_row is None:  # cannot happen; the upsert above flushed it
-            log.error("message %s vanished between transactions", message.message_id)
-            return
-        old = await store.facts_for_message(session, message_pk)
-        written = await apply_changes(
-            ags,
-            session,
-            registry,
-            config,
-            chat,
-            msg_row,
-            diff_facts(old, facts),
-            model=used_model,
-            prompt_version=llm.PROMPT_VERSION,
-        )
+    try:
+        async with session.begin():
+            msg_row = await store.get_message(session, chat.id, message.message_id)
+            if msg_row is None:  # cannot happen; the upsert above flushed it
+                log.error(
+                    "message %s vanished between transactions", message.message_id
+                )
+                return
+            old = await store.facts_for_message(session, message_pk)
+            written = await apply_changes(
+                ags,
+                session,
+                registry,
+                config,
+                chat,
+                msg_row,
+                diff_facts(old, facts),
+                model=used_model,
+                prompt_version=llm.PROMPT_VERSION,
+            )
+    except HeaderMismatchError as exc:
+        # The message row is already committed, so nothing is lost: fix the
+        # header or the registry row and /rebuild puts the fact in place.
+        log.warning("header collision while projecting: %s", exc)
+        await message.reply(f"{HEADER_MISMATCH_TEXT}\n\n<code>{exc}</code>")
+        return
 
     await message.reply(format_records(written))
 
