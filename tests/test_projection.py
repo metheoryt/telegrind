@@ -193,7 +193,7 @@ class FakeSession:
         return None
 
 
-NO_SHEET_REGISTRY = Registry((EXPENSE,))
+ONE_CATEGORY = Registry((EXPENSE,))
 MSG = SimpleNamespace(
     id=7, message_id=4821, tg_date=datetime(2026, 9, 9, 15, 40, tzinfo=UTC)
 )
@@ -211,7 +211,7 @@ async def test_apply_changes_records_a_fact_with_no_workbook() -> None:
     written = await apply_changes(
         None,
         session,  # type: ignore[arg-type]
-        NO_SHEET_REGISTRY,
+        ONE_CATEGORY,
         Config(),
         SimpleNamespace(id=1),  # type: ignore[arg-type]
         MSG,  # type: ignore[arg-type]
@@ -246,7 +246,7 @@ async def test_delete_facts_drops_the_fact_with_no_workbook() -> None:
     deleted = await delete_facts(
         None,
         session,  # type: ignore[arg-type]
-        NO_SHEET_REGISTRY,
+        ONE_CATEGORY,
         [fact],
     )
 
