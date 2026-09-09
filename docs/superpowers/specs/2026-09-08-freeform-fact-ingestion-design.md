@@ -493,13 +493,30 @@ extraction prompt never has to be re-touched for this.
 Not open questions — **prerequisites**. Each is the first task of the phase it
 gates, and its outcome can still change that phase's shape.
 
-1. **Gates Phase 1.** Does structured outputs accept `anyOf` *inside an array's
-   `items`*? A top-level `anyOf` passing proves nothing about the nested case, which
-   is the shape this schema needs. Test the exact schema from the spec with two
-   categories carrying differently-typed fields, and confirm a `date` field comes
-   back as a parseable string rather than a format the model invented. If it fails,
-   the flat `category` enum + string-map fallback becomes the schema and coercion
-   carries more weight.
+1. **Gates Phase 1 — PASSED 2026-09-09** on `claude-haiku-4-5`,
+   `anthropic` 0.97.0. `anyOf` *inside an array's `items`* is accepted, so the
+   discriminated-union schema in this spec is the schema, and the flat `category`
+   enum + string-map fallback is not needed. What the probe settled:
+
+   - Call shape: `messages.create(..., output_config={"format": {"type":
+     "json_schema", "schema": <dict>}})`, then `json.loads(resp.content[0].text)`.
+     Not `messages.parse`, which wants a static type. `stop_reason` was `end_turn`,
+     never `refusal`.
+   - Cyrillic property names (`Сумма`, `Заёмщик`) work verbatim, so column headers
+     really can be the field names.
+   - `{"type": "string", "format": "date-time"}` is honored — the model returned
+     `2026-09-09T21:40:00+06:00`, offset included, from the timestamp in the user
+     message. No invented format.
+   - **A partial `required` list is accepted**, so a column can be optional. The key
+     is then *absent* from the object rather than empty — coercion must handle a
+     missing key, not just an empty string.
+   - `additionalProperties: false` on every branch is accepted.
+   - Multi-fact works: `4500 такси и вес 82.4` returned one `expense` and one
+     `telemetry` in one call. `позвонил маме` fell to `facts` unprompted.
+   - **`cache_control` silently no-ops below the model's minimum cacheable prefix.**
+     At 1047 input tokens `cache_creation_input_tokens` was 0. Keep the breakpoint —
+     it costs nothing and starts working as the registry grows — but never assert a
+     cache hit in a test.
 2. **Gates Phase 3.** `faster-whisper` latency and resident memory for a ~10s
    Russian clip on the homeserver, which picks the model size and confirms the RAM
    floor is acceptable in the prod container.
