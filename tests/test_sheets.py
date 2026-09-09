@@ -7,6 +7,8 @@ from telegrind.sheets import (
     Worksheet,
     check_headers,
     data_range,
+    invalidate_config,
+    load_config,
     parse_config,
 )
 
@@ -272,3 +274,15 @@ async def test_agw_refuses_a_worksheet_whose_headers_collide() -> None:
         await ws.agw()
     assert agw.updates == []
     assert agw.cleared == []
+
+
+async def test_load_config_with_no_workbook_returns_the_defaults() -> None:
+    """Timezone is what dates a fact, so it cannot come only from a sheet.
+
+    With nothing linked the defaults stand — +06:00 and KZT — which is what
+    lets `Дата` resolve correctly on the very first message.
+    """
+    invalidate_config()
+    cfg = await load_config(None, "chat-1")
+    assert cfg.dt_offset == 6
+    assert str(cfg.currency) == "KZT"

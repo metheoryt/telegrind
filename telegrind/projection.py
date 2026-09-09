@@ -3,6 +3,13 @@
 Row indices are never stored: delete_rows shifts them. A fact stores its
 worksheet and its sheet_key, so a single-row operation is one DB read plus
 one find() in one known sheet.
+
+`ags=None` means there is no workbook — not an error. Postgres is the
+source of truth, so every write here does its Postgres half unconditionally
+and its Sheets half only when there is a sheet to write to. A fact recorded
+with no workbook is projected by the first /rebuild after one is linked,
+which is exactly the recovery path a fact recorded *before* projection
+already used.
 """
 
 import logging
@@ -103,7 +110,7 @@ def unaccounted_keys(sheet_keys: set[str], fact_keys: set[str]) -> set[str]:
 
 
 async def apply_changes(
-    ags: AsyncioGspreadSpreadsheet,
+    ags: AsyncioGspreadSpreadsheet | None,
     session: AsyncSession,
     registry: Registry,
     cfg: Config,
@@ -118,7 +125,8 @@ async def apply_changes(
 
     Postgres first, then Sheets: a fact recorded but not yet projected is
     recoverable with /rebuild, and a row written with no fact behind it is
-    exactly the unaccounted state /rebuild refuses over.
+    exactly the unaccounted state /rebuild refuses over. With no workbook
+    (`ags is None`) only the Postgres half runs.
     """
     written: list[Fact] = []
 
@@ -138,7 +146,7 @@ async def apply_changes(
             cat, change.raw.fields, cfg, cfg.localized(msg_row.tg_date)
         )
         row = fact_row(cat, key, fields)
-        ws = _worksheet(ags, cat)
+        ws = _worksheet(ags, cat) if ags is not None else None
 
         kind = change.kind
         if kind is ChangeKind.MOVE and change.fact is not None:
@@ -156,11 +164,12 @@ async def apply_changes(
             fact.model = model
             fact.prompt_version = prompt_version
             fact.extracted_at = datetime.now(tz=cfg.tz)
-            row_no = await ws.find_key(key)
-            if row_no is None:
-                await ws.append([row])
-            else:
-                await ws.update_row(row_no, row)
+            if ws is not None:
+                row_no = await ws.find_key(key)
+                if row_no is None:
+                    await ws.append([row])
+                else:
+                    await ws.update_row(row_no, row)
         else:
             fact = Fact(
                 chat_pk=chat.id,
@@ -176,7 +185,8 @@ async def apply_changes(
                 sheet_key=key,
             )
             session.add(fact)
-            await ws.append([row])
+            if ws is not None:
+                await ws.append([row])
 
         await session.flush()
         written.append(fact)
@@ -185,24 +195,26 @@ async def apply_changes(
 
 
 async def delete_facts(
-    ags: AsyncioGspreadSpreadsheet,
+    ags: AsyncioGspreadSpreadsheet | None,
     session: AsyncSession,
     registry: Registry,
     facts: list[Fact],
 ) -> int:
     """Delete each fact's row from its own worksheet, then the fact itself.
 
-    The message row stays: a delete does not rewrite the log.
+    The message row stays: a delete does not rewrite the log. With no
+    workbook there is no row to remove, and the fact goes anyway — the
+    projection is rebuilt from what survives, never from what was deleted.
     """
     deleted = 0
     for fact in facts:
         cat = registry.by_worksheet(fact.worksheet)
-        if cat is not None:
+        if cat is not None and ags is not None:
             ws = _worksheet(ags, cat)
             row_no = await ws.find_key(fact.sheet_key)
             if row_no is not None:
                 await ws.delete_row(row_no)
-        else:
+        elif cat is None:
             log.warning(
                 "fact %s points at worksheet %r which the registry no longer "
                 "declares; dropping the fact and leaving the row",

@@ -322,27 +322,38 @@ _config_cache: dict[str, tuple[float, Config]] = {}
 CONFIG_TTL_SECONDS = 60.0
 
 
-def invalidate_config(sheet_url: str | None = None) -> None:
-    """Drop the cached config for one workbook, or for all of them."""
-    if sheet_url is None:
+def invalidate_config(cache_key: str | None = None) -> None:
+    """Drop the cached config for one chat, or for all of them."""
+    if cache_key is None:
         _config_cache.clear()
     else:
-        _config_cache.pop(sheet_url, None)
+        _config_cache.pop(cache_key, None)
 
 
 async def load_config(
-    ags: AsyncioGspreadSpreadsheet, sheet_url: str, *, now: float | None = None
+    ags: AsyncioGspreadSpreadsheet | None,
+    cache_key: str,
+    *,
+    now: float | None = None,
 ) -> Config:
-    """Read `_config`, cached for CONFIG_TTL_SECONDS, keyed by sheet_url.
+    """Read `_config`, cached for CONFIG_TTL_SECONDS, keyed by chat.
 
-    Today's code builds a fresh ConfigSheet per Transaction, so the
-    three-sheet edit loop does three separate _config reads for one message.
+    With no workbook the defaults stand: +06:00 and KZT. Timezone matters
+    before any workbook exists — it is what dates a fact — so this cannot
+    be an error path.
+
+    Keyed by chat rather than by URL for the same reason as the registry
+    cache: `invalidate_config(chat.sheet_url)` with a null URL cleared every
+    chat's config.
     """
+    if ags is None:
+        return Config()
+
     at = time.monotonic() if now is None else now
-    cached = _config_cache.get(sheet_url)
+    cached = _config_cache.get(cache_key)
     if cached and at - cached[0] < CONFIG_TTL_SECONDS:
         return cached[1]
 
     cfg = await ConfigSheet(ags).get_data()
-    _config_cache[sheet_url] = (at, cfg)
+    _config_cache[cache_key] = (at, cfg)
     return cfg

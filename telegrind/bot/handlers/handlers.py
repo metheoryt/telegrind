@@ -4,18 +4,17 @@ Registration order is match order: the two reply forms first, then voice,
 then the catch-all text handler. `edited_message` is a separate observer and
 does not compete with them.
 
-The `sheet_url` gate moved. Every handler here writes the message log
-*first* and gates on the workbook only before projection. A fact recorded
-before onboarding finishes is recoverable with /rebuild; a message dropped
-at the handler is gone — and "nothing you write is ever lost" is the
-property this design claims.
+The `sheet_url` gate is gone. There is no onboarding to finish and no
+workbook to wait for: the message log and the fact table are the product,
+and the workbook is an optional projection of them. Every handler writes
+Postgres unconditionally and projects only if a workbook is linked, which
+is what makes "nothing you write is ever lost" true from the first message.
 """
 
 import logging
 from collections.abc import Callable
 
 from aiogram import Bot, F, flags
-from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, ReactionTypeEmoji
 from gspread_asyncio import AsyncioGspreadSpreadsheet
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,13 +26,8 @@ from telegrind.projection import apply_changes, delete_facts, diff_facts
 from telegrind.registry import Registry
 from telegrind.sheets import Config, HeaderMismatchError
 
-from .start import Form
-
 log = logging.getLogger(__name__)
 
-LINK_MISSING_TEXT = (
-    "Ссылка на вашу таблицу потерялась. Пожалуйста, отправьте её мне ещё раз."
-)
 NOTHING_TEXT = "Ничего не распознала, но сообщение сохранила."
 MISSING_TEXT = "Отсутствует в книге..."
 VOICE_PENDING_TEXT = (
@@ -92,23 +86,21 @@ async def _ingest(
     chat: Chat,
     session: AsyncSession,
     ags: AsyncioGspreadSpreadsheet | None,
-    registry: Registry | None,
-    config: Config | None,
-    state: FSMContext,
+    registry: Registry,
+    config: Config,
     *,
     model: str | None = None,
 ) -> None:
-    """Log, extract, diff, project, echo."""
+    """Log, extract, diff, project, echo.
+
+    `ags` may be None — no workbook is linked. Extraction and storage do not
+    care; only the projection step does.
+    """
     async with session.begin():
         msg_row, _ = await store.upsert_message(session, chat, message)
         message_pk = msg_row.id
         content = msg_row.content
         tg_date = msg_row.tg_date
-
-    if ags is None or registry is None or config is None:
-        await state.set_state(Form.request_sheet_url)
-        await message.reply(LINK_MISSING_TEXT)
-        return
 
     if not content.strip():
         return
@@ -154,9 +146,8 @@ async def delete_record(
     chat: Chat,
     session: AsyncSession,
     ags: AsyncioGspreadSpreadsheet | None,
-    registry: Registry | None,
+    registry: Registry,
     bot: Bot,
-    state: FSMContext,
 ) -> None:
     """Delete the replied message's facts. The message row stays.
 
@@ -165,11 +156,6 @@ async def delete_record(
     falls off the end returning None — the handler matched, so aiogram stops
     propagation, and every reply that is not "-" is silently swallowed.
     """
-    if ags is None or registry is None:
-        await state.set_state(Form.request_sheet_url)
-        await message.reply(LINK_MISSING_TEXT)
-        return
-
     target = message.reply_to_message
     try:
         async with session.begin():
@@ -245,11 +231,10 @@ async def record_text(
     chat: Chat,
     session: AsyncSession,
     ags: AsyncioGspreadSpreadsheet | None,
-    registry: Registry | None,
-    config: Config | None,
-    state: FSMContext,
+    registry: Registry,
+    config: Config,
 ) -> None:
-    await _ingest(message, chat, session, ags, registry, config, state)
+    await _ingest(message, chat, session, ags, registry, config)
 
 
 @router.edited_message(F.text)
@@ -259,9 +244,8 @@ async def record_edited(
     chat: Chat,
     session: AsyncSession,
     ags: AsyncioGspreadSpreadsheet | None,
-    registry: Registry | None,
-    config: Config | None,
-    state: FSMContext,
+    registry: Registry,
+    config: Config,
 ) -> None:
     """Re-extract and diff. A category change moves the row between sheets."""
-    await _ingest(edited_message, chat, session, ags, registry, config, state)
+    await _ingest(edited_message, chat, session, ags, registry, config)

@@ -306,3 +306,19 @@ async def test_a_populated_registry_worksheet_is_never_seeded(
     reg = await load_registry(object(), "url-i", now=0.0)
     assert ws.appended == []
     assert reg.by_name("only") is not None
+
+
+async def test_load_registry_with_no_workbook_returns_the_seeded_categories() -> None:
+    """Extraction has to work before any spreadsheet exists.
+
+    `_categories` is a sheet the user may edit, but it cannot be a
+    *prerequisite* for recording a fact — that was the onboarding gate, and
+    it is what made the bot's first answer a refusal. With no workbook the
+    seeds are the registry.
+    """
+    invalidate()
+    reg = await load_registry(None, "chat-1")
+    assert reg.categories == SEED_CATEGORIES
+    assert reg.errors == ()
+    assert reg.by_name("expense") is not None
+    assert reg.by_name("facts") is not None

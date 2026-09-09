@@ -41,23 +41,25 @@ async def populate_chat_data(
         agcm: AsyncioGspreadClientManager = data["agcm"]
         agc: AsyncioGspreadClient = await agcm.authorize()
 
-        # The workbook, the registry and the config are per-update, so no
-        # handler opens the spreadsheet itself. All three are None before
-        # onboarding finishes — and handlers gate on that *after* writing the
-        # message log, never before.
+        # The workbook is per-update, so no handler opens it itself. It is
+        # also optional, and its absence is the *normal* state: it is a
+        # projection of the fact table, and it exists only once the user
+        # links one with /link.
         ags = None
-        registry = None
-        config = None
         if chat.sheet_url:
             try:
                 ags = await agc.open_by_url(chat.sheet_url)
-                config = await load_config(ags, chat.sheet_url)
-                registry = await load_registry(ags, chat.sheet_url)
             except APIError, NoValidUrlKeyFound:
                 log.warning("cannot open %s for chat %s", chat.sheet_url, chat.chat_id)
                 ags = None
-                registry = None
-                config = None
+
+        # The registry and the config are therefore never None. With no
+        # workbook they fall back to the seeded categories and to +06:00 /
+        # KZT, which is what lets a fact be extracted and stored before any
+        # spreadsheet exists. Both caches are keyed by chat, not by URL.
+        cache_key = str(chat.id)
+        config = await load_config(ags, cache_key)
+        registry = await load_registry(ags, cache_key)
 
         data["agc"] = agc
         data["ags"] = ags

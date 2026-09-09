@@ -289,6 +289,12 @@ def to_rows(categories: tuple[Category, ...]) -> list[list[str]]:
     ]
 
 
+#: The registry when there is no workbook at all. The workbook is a
+#: projection, so ingestion must not depend on one existing: with no
+#: workbook the seeded categories *are* the registry, and being able to
+#: edit them is what linking a workbook buys.
+NO_SHEET_REGISTRY = Registry(SEED_CATEGORIES)
+
 _cache: dict[str, tuple[float, Registry]] = {}
 
 
@@ -299,26 +305,37 @@ def _worksheet(ags: AsyncioGspreadSpreadsheet, headers: list[str]) -> Worksheet:
     return Worksheet(ags, REGISTRY_WORKSHEET, headers)
 
 
-def invalidate(sheet_url: str | None = None) -> None:
-    """Drop the cached registry for one workbook, or for all of them."""
-    if sheet_url is None:
+def invalidate(cache_key: str | None = None) -> None:
+    """Drop the cached registry for one chat, or for all of them."""
+    if cache_key is None:
         _cache.clear()
     else:
-        _cache.pop(sheet_url, None)
+        _cache.pop(cache_key, None)
 
 
 async def load_registry(
-    ags: AsyncioGspreadSpreadsheet,
-    sheet_url: str,
+    ags: AsyncioGspreadSpreadsheet | None,
+    cache_key: str,
     *,
     now: float | None = None,
 ) -> Registry:
     """Read `_categories`, seeding it if empty. Cached for CACHE_TTL_SECONDS.
 
+    With no workbook there is nothing to read and nothing worth caching —
+    the seeded categories are a constant.
+
+    `cache_key` is the chat, not the workbook URL, because a chat with no
+    workbook still has a registry and still needs /reload to reach it. The
+    URL made `invalidate(chat.sheet_url)` mean "every chat" the moment the
+    URL was None.
+
     `now` is injectable so the TTL is testable without sleeping.
     """
+    if ags is None:
+        return NO_SHEET_REGISTRY
+
     at = time.monotonic() if now is None else now
-    cached = _cache.get(sheet_url)
+    cached = _cache.get(cache_key)
     if cached and at - cached[0] < CACHE_TTL_SECONDS:
         return cached[1]
 
@@ -339,5 +356,5 @@ async def load_registry(
     for error in registry.errors:
         log.warning("_categories: %s", error)
 
-    _cache[sheet_url] = (at, registry)
+    _cache[cache_key] = (at, registry)
     return registry

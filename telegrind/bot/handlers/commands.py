@@ -1,25 +1,56 @@
-"""Maintenance commands: /import, /rebuild, /reload."""
+"""Maintenance commands: /link, /import, /rebuild, /reload."""
 
 import logging
 
 from aiogram import flags
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
-from gspread_asyncio import AsyncioGspreadSpreadsheet
+from gspread.exceptions import APIError, NoValidUrlKeyFound
+from gspread_asyncio import AsyncioGspreadClient, AsyncioGspreadSpreadsheet
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from telegrind.bot.const import SERVICE_ACCOUNT_EMAIL
 from telegrind.bot.router import router
 from telegrind.importer import ImportedRow, apply_import, plan_import
 from telegrind.models import Chat
 from telegrind.projection import RebuildReport, rebuild
 from telegrind.registry import Registry, invalidate
-from telegrind.sheets import invalidate_config
+from telegrind.sheets import ConfigSheet, invalidate_config
 
 log = logging.getLogger(__name__)
 
 NOT_READY_TEXT = (
-    "Сначала пришлите ссылку на таблицу — без неё мне некуда писать. "
-    "Отправьте /start, если ссылка потерялась."
+    "Таблица не подключена, так что писать мне некуда — но всё, что вы "
+    "присылали, лежит у меня в базе. Пришлите /link, чтобы подключить таблицу."
+)
+
+LINK_HELP_TEXT = (
+    "Таблица не обязательна: всё, что вы пишете, я храню у себя. "
+    "Если хотите видеть данные в Google Sheets:\n\n"
+    "1. создайте пустую таблицу;\n"
+    "2. дайте права редактора вот на эту почту:\n"
+    f"<pre>{SERVICE_ACCOUNT_EMAIL}</pre>\n"
+    "3. пришлите <code>/link ссылка-на-таблицу</code>\n\n"
+    "Создать таблицу за вас я не могу — у моего служебного аккаунта нет "
+    "своего Google Диска. Зато владельцем таблицы остаётесь вы, и удалить "
+    "её тоже можете только вы."
+)
+
+BAD_URL_TEXT = (
+    "Не удалось распознать ссылку. Убедитесь, что скопировали "
+    "правильную ссылку на Google Sheets документ."
+)
+
+NO_ACCESS_TEXT = (
+    "Не удалось получить доступ к документу. Убедитесь, что выдали права "
+    f"редактора на <pre>{SERVICE_ACCOUNT_EMAIL}</pre> и пришлите ссылку снова."
+)
+
+LINKED_TEXT = (
+    "Таблица подключена. Дальше по порядку:\n"
+    "/import — если в листах уже есть строки, которые надо забрать в базу "
+    "(сначала это, иначе /rebuild откажется их затирать);\n"
+    "/rebuild — заполнить таблицу из базы."
 )
 
 
@@ -60,6 +91,51 @@ def format_rebuild_report(report: RebuildReport) -> str:
     return "\n".join(lines)
 
 
+@router.message(Command("link"))
+@flags.chat_action(action="typing", initial_sleep=0.5)
+async def cmd_link(
+    message: Message,
+    command: CommandObject,
+    chat: Chat,
+    session: AsyncSession,
+    agc: AsyncioGspreadClient,
+) -> None:
+    """Attach a workbook, or report the attached one.
+
+    This is what onboarding used to be, minus the FSM: it is a command the
+    user reaches for when they want a spreadsheet, not a gate they have to
+    pass before the bot will record anything.
+    """
+    url = (command.args or "").strip()
+    if not url:
+        if chat.sheet_url:
+            await message.reply(f"Сейчас подключена:\n{chat.sheet_url}")
+        else:
+            await message.reply(LINK_HELP_TEXT)
+        return
+
+    try:
+        ags = await agc.open_by_url(url)
+        # Touching `_config` is the access probe: opening a workbook can
+        # succeed on read-only sharing, and writing is the permission that
+        # actually matters.
+        await ConfigSheet(ags).get_agw()
+    except NoValidUrlKeyFound:
+        await message.reply(BAD_URL_TEXT)
+        return
+    except APIError:
+        await message.reply(NO_ACCESS_TEXT)
+        return
+
+    async with session.begin():
+        chat.sheet_url = url
+    # The caches are keyed by chat, so a chat that just swapped workbooks
+    # would otherwise keep the old one's registry for up to a minute.
+    invalidate(str(chat.id))
+    invalidate_config(str(chat.id))
+    await message.reply(LINKED_TEXT)
+
+
 @router.message(Command("import"))
 @flags.chat_action(action="typing", initial_sleep=0.5)
 async def cmd_import(
@@ -68,13 +144,13 @@ async def cmd_import(
     chat: Chat,
     session: AsyncSession,
     ags: AsyncioGspreadSpreadsheet | None,
-    registry: Registry | None,
+    registry: Registry,
 ) -> None:
     """Import pre-bot worksheet rows as facts. `--dry-run` reports only.
 
     Idempotent on (chat_pk, worksheet, sheet_key), so it is safe to re-run.
     """
-    if ags is None or registry is None:
+    if ags is None:
         await message.reply(NOT_READY_TEXT)
         return
 
@@ -97,10 +173,10 @@ async def cmd_rebuild(
     chat: Chat,
     session: AsyncSession,
     ags: AsyncioGspreadSpreadsheet | None,
-    registry: Registry | None,
+    registry: Registry,
 ) -> None:
     """Re-project the workbook from fact rows. No LLM cost."""
-    if ags is None or registry is None:
+    if ags is None:
         await message.reply(NOT_READY_TEXT)
         return
 
@@ -113,6 +189,6 @@ async def cmd_rebuild(
 @router.message(Command("reload"))
 async def cmd_reload(message: Message, chat: Chat) -> None:
     """Drop the cached `_categories` and `_config` reads."""
-    invalidate(chat.sheet_url)
-    invalidate_config(chat.sheet_url)
+    invalidate(str(chat.id))
+    invalidate_config(str(chat.id))
     await message.reply("Реестр категорий и настройки будут прочитаны заново.")

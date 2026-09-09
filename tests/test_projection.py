@@ -1,15 +1,21 @@
 import re
+from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from telegrind.llm import RawFact
 from telegrind.models import Fact
 from telegrind.projection import (
+    Change,
     ChangeKind,
+    apply_changes,
+    delete_facts,
     diff_facts,
     fact_row,
     sheet_key,
     unaccounted_keys,
 )
-from telegrind.registry import Category, Column
+from telegrind.registry import Category, Column, Registry
+from telegrind.sheets import Config
 
 EXPENSE = Category(
     name="expense",
@@ -168,3 +174,81 @@ def test_a_fact_with_no_sheet_row_is_not_unaccounted() -> None:
 def test_an_untouched_workbook_is_entirely_unaccounted() -> None:
     """Bare integers are what pre-bot history has in column A."""
     assert unaccounted_keys({"1", "2"}, set()) == {"1", "2"}
+
+
+class FakeSession:
+    """Just enough AsyncSession for apply_changes and delete_facts."""
+
+    def __init__(self) -> None:
+        self.added: list[object] = []
+        self.deleted: list[object] = []
+
+    def add(self, obj: object) -> None:
+        self.added.append(obj)
+
+    async def delete(self, obj: object) -> None:
+        self.deleted.append(obj)
+
+    async def flush(self) -> None:
+        return None
+
+
+NO_SHEET_REGISTRY = Registry((EXPENSE,))
+MSG = SimpleNamespace(
+    id=7, message_id=4821, tg_date=datetime(2026, 9, 9, 15, 40, tzinfo=UTC)
+)
+
+
+async def test_apply_changes_records_a_fact_with_no_workbook() -> None:
+    """The workbook is a projection, so ingestion cannot depend on one.
+
+    `ags=None` is the normal state now — nothing is linked until /link — and
+    a fact stored here is projected by the first /rebuild afterwards. That is
+    the same recovery path a fact written before projection already used, so
+    this adds no new failure mode, only a new starting point.
+    """
+    session = FakeSession()
+    written = await apply_changes(
+        None,
+        session,  # type: ignore[arg-type]
+        NO_SHEET_REGISTRY,
+        Config(),
+        SimpleNamespace(id=1),  # type: ignore[arg-type]
+        MSG,  # type: ignore[arg-type]
+        [
+            Change(
+                ChangeKind.APPEND,
+                1,
+                raw=RawFact("expense", {"Сумма": 4500, "Комментарий": "такси"}),
+            )
+        ],
+        model="claude-haiku-4-5",
+        prompt_version="test",
+    )
+
+    assert len(written) == 1
+    assert written[0].worksheet == "Expenses"
+    assert written[0].sheet_key == "4821_1"
+    assert written[0].fields["Комментарий"] == "такси"
+    assert session.added == written
+
+
+async def test_delete_facts_drops_the_fact_with_no_workbook() -> None:
+    """No row to remove is not a reason to keep the fact.
+
+    /rebuild projects what survives, never what was deleted, so the fact
+    table stays the source of truth either way.
+    """
+    session = FakeSession()
+    fact = stored(1, "expense")
+    fact.worksheet = "Expenses"
+
+    deleted = await delete_facts(
+        None,
+        session,  # type: ignore[arg-type]
+        NO_SHEET_REGISTRY,
+        [fact],
+    )
+
+    assert deleted == 1
+    assert session.deleted == [fact]
