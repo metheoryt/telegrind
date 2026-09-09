@@ -7,6 +7,7 @@ from telegrind.projection import (
     diff_facts,
     fact_row,
     sheet_key,
+    unaccounted_keys,
 )
 from telegrind.registry import Category, Column
 
@@ -149,3 +150,21 @@ def test_diff_is_ordered_by_seq() -> None:
         [RawFact("expense", {}), RawFact("expense", {}), RawFact("expense", {})],
     )
     assert [c.seq for c in changes] == [1, 2, 3]
+
+
+def test_no_unaccounted_keys_when_the_sheet_matches_the_facts() -> None:
+    assert unaccounted_keys({"4821_1", "4821_2"}, {"4821_1", "4821_2"}) == set()
+
+
+def test_a_sheet_row_with_no_fact_is_unaccounted() -> None:
+    assert unaccounted_keys({"4821_1", "9_1"}, {"4821_1"}) == {"9_1"}
+
+
+def test_a_fact_with_no_sheet_row_is_not_unaccounted() -> None:
+    """A missing row is what /rebuild is for. An extra row is what it refuses over."""
+    assert unaccounted_keys({"4821_1"}, {"4821_1", "4821_2"}) == set()
+
+
+def test_an_untouched_workbook_is_entirely_unaccounted() -> None:
+    """Bare integers are what pre-bot history has in column A."""
+    assert unaccounted_keys({"1", "2"}, set()) == {"1", "2"}
