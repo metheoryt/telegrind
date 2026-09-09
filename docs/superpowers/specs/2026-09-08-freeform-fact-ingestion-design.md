@@ -95,6 +95,22 @@ load. A broken registry row must never cost you a message. (Contrast
 `_config` is bot-created and 2×2; a user-editable registry has a much wider blast
 radius.)
 
+**Widening a category can collide with a column you own, and is refused rather
+than written.** Every write is positional: projection puts `len(headers)` values at
+`A<row>` and clears `data_range(len(headers))`. So on a workbook where the bot
+declares 5 columns and the sheet has 11, adding a sixth column in `_categories`
+retargets the write onto the seventh — a formula column, filled down every row.
+`check_headers` therefore requires the declared headers to be a **prefix** of the
+worksheet's real header row: an empty cell is unclaimed and fine to write into, but
+a differing non-empty header raises and nothing is written. `/rebuild` reports it
+per worksheet and still projects the others, `/import` skips that sheet (`map_row`
+reads by header, so importing it would mint facts with the wrong fields), and
+ingest answers with the collision — the message row is already committed, so
+`/rebuild` restores the fact once the header is fixed. To widen such a category,
+move your own column to the right of the new range first.
+
+The one case row 1 cannot reveal is a user column carrying formulas but no header.
+
 **Caching.** The registry is loaded once per update in `populate_chat_data` and
 injected into handlers, with an in-process TTL cache (60s) keyed by `sheet_url`.
 `/reload` clears it. Without this, N categories would mean N `_config` reads and N
@@ -182,12 +198,43 @@ the resolved day, not just the category — verified passing 2026-09-09 on
 ambiguity and for the `dateparser` fallback — not a gate on which direction a fact
 may point.
 
-**Future facts need a consumer, not a mechanism.** Recording one is free today;
-nothing reads it. Phase 6 below ("schedules derived from facts") is exactly that
-consumer: a fact whose date is still ahead is what generates its own reminder.
-Until then a future-dated expense is a note to self that projects and rebuilds
-correctly and does nothing else. That is the honest state, and it is why nothing is
-being built for it now.
+**A date the message mentions is not necessarily the date of the fact.**
+`купил билеты на самолёт на 15 октября за 50000` dated the expense to 15 October,
+and `билеты в Тбилиси 12.10 за 90000` to 12 October. The money moved today; October
+is the flight. Two of six realistic messages landed a month forward, in the wrong
+`sum_by_period` bucket — a silent misfiling, since the row looks perfectly
+well-formed.
+
+The fix is definitional, in the prompt (`PROMPT_VERSION` 2026-09-09.2): a `date`
+column is **when the fact happened** — when the money moved, when the measurement
+was taken — and a date mentioned *about* the subject is not that. It belongs in a
+`due` column if the category has one, and otherwise stays in the text field, where
+`билеты на самолёт на 15 октября` keeps it verbatim. `due` is correspondingly
+redefined as *a date the fact points at*: a deadline, a due date, the date
+something is booked for.
+
+Both halves matter. Without the `date` half a booking date silently becomes the
+spend date; without the `due` half there is nowhere legitimate for the booking date
+to go, and the rule would just be asking the model to throw information away. It is
+also the answer to a gap the probe exposed: `дал Саре 1000 до 20 сентября` keeps
+"до 20 сентября" only as prose, because the seeded `loan` category declares no
+`due` column. Adding `Срок:due` to it is a `_categories` edit, not a code change —
+but see the header-collision guard before widening a category on a workbook that
+has your own columns to the right of the declared range.
+
+**Future-dated facts are not inert, and an aggregating category is where that
+bites.** `в пятницу заплачу 5000 за интернет` stays an `expense` dated forward
+(stable 3/3), so `sum_by_period` counts it in this month's total before the money
+moves. Recording a future fact is free; *aggregating* one is not. Two consequences:
+
+- An unrealized intention is not an expense. `12 октября куплю подарок за 20000`
+  lands in `wish` — stable 3/3, and correct: nothing was spent. The eval fixture
+  that asserted `expense` for it was a bad oracle and has been changed.
+- A committed future payment is a real fact with nowhere good to live yet. It sits
+  in `expense` and inflates the current period until Phase 6 ("schedules derived
+  from facts") gives it a home. The clean resolution is a rollup that filters on
+  `Дата <= today`, which is a formula change and belongs with the rollup work in
+  Phase 2 — noted here so it is not rediscovered from a wrong monthly total.
 
 ## Voice
 
@@ -479,110 +526,151 @@ Three independently shippable phases. Phase 1 is the whole point and stands alon
    for the whisper model cache so it is not re-downloaded on every `docker compose
    up -d --force-recreate`.
 
-## Roadmap — states and periods (Phase 4, not in scope here)
+## Roadmap — subject-keyed aggregates: balances and periods (Phase 4, not in scope here)
 
-Two messages, sent at different times, describing one interval:
+Two requests that turn out to be one mechanism.
+
+**A period spans two messages.**
 
 ```
 Tue: заболел
 Fri: выздоровел          → болезнь: 08.09 – 11.09, 3 дня
-```
-
-```
 01.08: бросил курить
 (nothing yet)            → не курю: с 01.08, 39 дней и идёт
 ```
 
-Habit tracking is the same shape as the sickness case, and the open-ended one is
-the point of it: the answer is "how long so far", recomputed on every read.
+**A loan balance spans many.**
 
-### Why it does not fit as a category
+```
+дал Саре 1000
+дал Саре ещё 1000
+Сара вернула 100   (x8)  → Сара: должна 1200
+```
 
-Everything in this spec is a fact about one message. A period spans two, and a
-naive implementation gives one row two owners — which breaks `sheet_key`
-(`<message_id>_<seq>`), `facts_for_message`, and all four rows of the edit-diff
-table at once. That is too much blast radius for a feature this small.
+Both are a **fold over a stream of facts, grouped by a subject column, read as
+current state.** Neither is a new kind of record: the facts are already there, one
+per message, and what is missing is the view. That distinguishes them from
+`sum_by_period`, which groups by *time bucket* — a time-keyed fold needs nothing
+from the subject, and is the reason to say two kinds rather than three templates of
+one.
 
-### The design: boundary events are facts, periods are a second projection
+### `rollup` is the right home, and periods are a template in it
+
+Last revision of this section called a periods sheet "a third kind of sheet". That
+was wrong. The registry already has a `rollup` cell naming a template with column
+arguments, rendered onto `<Worksheet>_summary` — which is exactly the interface a
+fold needs:
+
+| template | fold | rendered as |
+|---|---|---|
+| `balance(Заёмщик, Сумма)` | signed sum per subject | native formula (`SUMIF` per subject) |
+| `periods(Состояние, Событие, Время)` | pair open/close per subject | bot-written rows |
+| `sum_by_period(Дата, Сумма)` | sum per month | native formula |
+
+The interface unifies; only the implementation splits, and one flag on the template
+says which side it is on. Pairing consecutive rows per subject is miserable as a
+formula, so `periods` is computed by the bot and rewritten on every write to that
+worksheet and on `/rebuild`. The *open* period's duration is still written as a live
+`=NOW()-<start>` formula rather than a number, so it keeps ticking while the bot is
+down — the same reasoning that puts the other two in formulas.
+
+### The load-bearing asymmetry: "closed" is derived for balances, declared for periods
+
+This is what makes loans the easy case and periods the hard one, and it is worth
+stating before either design:
+
+- **A balance needs no closing event.** The sign carries the direction, the
+  extraction prompt already states the convention, and "settled" is *derived* —
+  the balance reached zero. Nothing has to be said, so nothing can be said wrong.
+- **A period needs a declared close**, and the close arrives in a separate message
+  possibly months later.
+
+So the loan case needs no new machinery beyond the `balance` template that Phase 2
+already owes. Its gap today is only that `balance` is unimplemented: the `Loans`
+sheet holds correctly signed amounts and offers no aggregate view of them.
+
+**Scope call: a net balance per counterparty, not per-loan lots.** Sarah's 100 is
+not matched against loan #1 or loan #2. "How much does she owe me" is answered by
+the net; FIFO lot matching is a different feature and not this one.
+
+### Periods: two new column types, and the subject-naming problem
 
 **One message still produces one fact and owns one row.** The fact is a *boundary
-event*, not a period. Pairing happens in projection, where a fold over that
-worksheet's events — ordered by time, grouped by subject — writes a derived
-`<Worksheet>_periods` sheet. Nothing above this line changes: no new diff cases, no
-shared row ownership, no schema change beyond what `fields` already holds.
-
-Two column types carry it:
+event*, not a period. That is the whole reason this design is cheap: nothing above
+it changes — not `sheet_key` (`<message_id>_<seq>`), not `facts_for_message`, not
+any of the four rows of the edit-diff table. A period spanning two messages would
+otherwise give one row two owners and break all three at once.
 
 - **`state`** — what the period is about (`болезнь`, `не курю`). The grouping key.
 - **`boundary`** — `начало` or `конец`.
 
-A category declaring both *is* an interval category; the periods derivation is
-triggered by the types, not by an extra registry cell. That is the same grain as
-the rest of the registry, where types drive behavior.
-
-The seeded category — a Phase 4 decision, **not** a change to Phase 1's
-`SEED_CATEGORIES`:
+A category declaring both *is* an interval category, and gets the `periods`
+template. Types drive behavior, as everywhere else in the registry. The seeded
+category — a Phase 4 decision, **not** a change to Phase 1's `SEED_CATEGORIES`:
 
 | name | worksheet | when to use | columns |
 |---|---|---|---|
 | `state` | `States` | начало или конец состояния, привычки, периода | `Состояние:state, Событие:boundary, Время:date, Комментарий:text` |
 
 Re-opening needs no special case: open/close/open/close over one subject folds into
-two periods. The ongoing period's duration is written as a live `=NOW()-<start>`
-formula rather than a computed number, so it keeps ticking while the bot is down —
-the same reasoning that puts rollups in native formulas.
+two periods.
 
-### Closing a period months later is the hard part
-
-The fold groups by subject string, so `выздоровел` in November must produce the
-same `Состояние` the September `заболел` did. Free text will not do that on its own.
-
-**The currently-open subjects go into the user message**, so the model closes an
-existing state by name instead of inventing a near-miss. It cannot go in the system
+**The subject string must survive months.** `выздоровел` in November has to produce
+the same `Состояние` that `заболел` produced in September, and free text will not do
+that unaided. **The currently-open subjects go into the user message**, so the model
+closes an existing state by name rather than inventing a near-miss. Not the system
 prompt: that prefix is cached, and per-chat state there would invalidate the cache
 on every message — the same constraint that already puts the timestamp in the user
-message.
+message. For `/reparse` to stay reproducible the list is reconstructed **as of the
+message's own timestamp** from the fact table, not as of now; and the read is
+skipped entirely for a workbook with no interval category, so the ingest path costs
+nothing until the feature is used.
 
-For `/reparse` to stay reproducible, the injected list is reconstructed **as of the
-message's own timestamp** from the fact table, not as of now. And the read is
-skipped entirely for a workbook with no interval category, so the feature costs
-nothing on the ingest path until it is used.
+**Why that mitigation is the right one: look at what loans do differently.** A
+counterparty is a name from a small recurring set, so the model reproduces it
+without help. A state's subject is free phrasing, so it needs the set supplied.
+Same fold, and the difference between them is precisely the stability of the
+grouping key — which is the argument for injecting it.
 
-**Known risk, named because it will produce wrong data quietly: polarity.** The two
-examples above open on opposite events — sickness opens on the bad one, abstinence
-on the good one. So `покурил` is as plausibly the *opening* of a `курение` period as
-the *closing* of a `не курю` one. One lived state, two namings, and the fold simply
-never pairs them. The open-subject injection is the main mitigation; `??`
-re-extraction and the edit path are the manual one. This is the part to watch in
-testing, not the fold.
+**Known risk, named because it fails quietly: polarity.** The two examples open on
+opposite events — sickness opens on the bad one, abstinence on the good one. So
+`покурил` is as plausibly the *opening* of a `курение` period as the *closing* of a
+`не курю` one. One lived state, two namings, and the fold never pairs them. Loans
+have no equivalent exposure: a sign is unambiguous where a boundary label is not.
+Watch this in testing rather than the fold itself; `??` re-extraction and the edit
+path are the manual repair.
 
 ### Degenerate folds are non-fatal
 
 A `конец` with no matching `начало`, and a `начало` with no `конец` — the second
-being the whole point of the habit case. Both are reported on the periods sheet as
-what they are, never dropped and never an error: a malformed pairing must not cost
-a message, for the same reason a malformed registry row does not.
+being the whole point of the habit case. A balance is never degenerate, which is
+another way of saying the same asymmetry. Both period cases are reported on the
+summary sheet as what they are, never dropped and never an error: a malformed
+pairing must not cost a message, for the same reason a malformed registry row does
+not.
 
 ### Interaction with `/rebuild`
 
-A periods sheet is a **third kind of sheet**: bot-owned and wholly rewritten, unlike
-a data sheet (declared column range only) and unlike a `_summary` sheet (formulas
-scaffolded once). `/rebuild` must rewrite it, and must **exclude it from the
-unaccounted-keys guard** — its rows are folds, not facts, so every key there is
-unaccounted for by construction and the guard would refuse every rebuild.
+A bot-written `periods` sheet must be rewritten by `/rebuild` and **excluded from
+the unaccounted-keys guard** — its rows are folds, not facts, so every key there is
+unaccounted for by construction and the guard would refuse every rebuild. Formula
+rollups do not have this problem, which is exactly why the flag distinguishing them
+is not cosmetic.
 
 ### Reading it back
 
-`/state` lists open periods with their durations. That is the actual answer to "how
-long have I not smoked", and it is cheap: the fold already exists.
+`/state` lists open periods with their durations — the actual answer to "сколько я
+не курю", and cheap once the fold exists. Balances need no command: the
+`<Worksheet>_summary` sheet already shows them, and there is no open-period
+equivalent that has no natural row.
 
 **Depends on date resolution**, which is why the fixtures above matter here and not
-only for expenses — `заболел в пятницу` is a past-dated boundary, and a boundary
-placed on the wrong day silently mis-measures the period it opens.
+only for expenses: `заболел в пятницу` is a past-dated boundary, and a boundary on
+the wrong day silently mis-measures the period it opens.
 
-**This is not reminders.** A period is derived and immutable, recomputable from its
-events; an occurrence is mutable per-occurrence state. Phases 5 and 6 stay a
-separate axis, and neither depends on this one.
+**Neither of these is reminders.** A balance and a period are derived and
+recomputable from their facts; an occurrence is mutable per-occurrence state. Phases
+5 and 6 stay a separate axis, and neither depends on this one.
 
 ## Roadmap — reminders (Phases 5 and 6, not in scope here)
 
