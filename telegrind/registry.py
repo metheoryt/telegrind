@@ -4,8 +4,20 @@ Every cell here is untrusted input. A malformed row is collected as a
 validation error and dropped; it must never cost the user a message.
 """
 
+import logging
 import re
+import time
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from gspread_asyncio import AsyncioGspreadSpreadsheet
+
+    from telegrind.sheets import Worksheet
+
+log = logging.getLogger(__name__)
+
+CACHE_TTL_SECONDS = 60.0
 
 FIELD_TYPES: frozenset[str] = frozenset(
     {"text", "number", "money", "currency", "date", "due"}
@@ -275,3 +287,60 @@ def to_rows(categories: tuple[Category, ...]) -> list[list[str]]:
         ]
         for c in categories
     ]
+
+
+_cache: dict[str, tuple[float, Registry]] = {}
+
+
+def _worksheet(ags: AsyncioGspreadSpreadsheet, headers: list[str]) -> Worksheet:
+    """Factory seam, so load_registry is testable without Sheets."""
+    from telegrind.sheets import Worksheet
+
+    return Worksheet(ags, REGISTRY_WORKSHEET, headers)
+
+
+def invalidate(sheet_url: str | None = None) -> None:
+    """Drop the cached registry for one workbook, or for all of them."""
+    if sheet_url is None:
+        _cache.clear()
+    else:
+        _cache.pop(sheet_url, None)
+
+
+async def load_registry(
+    ags: AsyncioGspreadSpreadsheet,
+    sheet_url: str,
+    *,
+    now: float | None = None,
+) -> Registry:
+    """Read `_categories`, seeding it if empty. Cached for CACHE_TTL_SECONDS.
+
+    `now` is injectable so the TTL is testable without sleeping.
+    """
+    at = time.monotonic() if now is None else now
+    cached = _cache.get(sheet_url)
+    if cached and at - cached[0] < CACHE_TTL_SECONDS:
+        return cached[1]
+
+    ws = _worksheet(ags, REGISTRY_HEADERS)
+    rows = await ws.all_values()
+
+    if len(rows) <= 1:
+        # Absent or header-only: seed the five defaults. The worksheets
+        # themselves are still created lazily on first write, so a seeded
+        # category you never use adds no clutter.
+        #
+        # `Worksheet.agw()` writes the headers only when it *creates* the
+        # sheet. A `_categories` that already exists but is empty returns no
+        # rows at all, and appending straight into row 1 would put a category
+        # where `parse_registry` expects the header — so write it here too.
+        header = [] if rows else [REGISTRY_HEADERS]
+        await ws.append([*header, *to_rows(SEED_CATEGORIES)])
+        rows = await ws.all_values()
+
+    registry = parse_registry(rows)
+    for error in registry.errors:
+        log.warning("_categories: %s", error)
+
+    _cache[sheet_url] = (at, registry)
+    return registry

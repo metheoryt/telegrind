@@ -1,8 +1,14 @@
+import pytest
+
+import telegrind.registry as registry_module
 from telegrind.registry import (
+    CACHE_TTL_SECONDS,
     FACTS_FALLBACK,
     REGISTRY_HEADERS,
     SEED_CATEGORIES,
     Column,
+    invalidate,
+    load_registry,
     parse_columns,
     parse_registry,
     to_rows,
@@ -185,3 +191,115 @@ def test_to_rows_round_trips_through_parse_registry() -> None:
     reg = parse_registry([REGISTRY_HEADERS, *to_rows(SEED_CATEGORIES)])
     assert reg.errors == ()
     assert reg.categories == SEED_CATEGORIES
+
+
+class FakeWorksheet:
+    """Stands in for telegrind.sheets.Worksheet. Counts round trips."""
+
+    def __init__(self, values: list[list[str]]) -> None:
+        self.values = values
+        self.reads = 0
+        self.appended: list[list[str]] = []
+
+    async def all_values(self) -> list[list[str]]:
+        self.reads += 1
+        return self.values
+
+    async def append(self, rows: list[list[object]]) -> None:
+        self.appended.extend(rows)
+        self.values = self.values + [[str(c) for c in r] for r in rows]
+
+
+def _one_category() -> FakeWorksheet:
+    return FakeWorksheet(
+        [REGISTRY_HEADERS, ["expense", "Expenses", "?", "Сумма:money", ""]]
+    )
+
+
+async def test_load_registry_parses_the_worksheet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalidate()
+    ws = _one_category()
+    monkeypatch.setattr(registry_module, "_worksheet", lambda ags, headers: ws)
+    reg = await load_registry(object(), "url-a", now=0.0)
+    assert reg.by_name("expense") is not None
+    assert ws.reads == 1
+
+
+async def test_load_registry_caches_within_the_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalidate()
+    ws = _one_category()
+    monkeypatch.setattr(registry_module, "_worksheet", lambda ags, headers: ws)
+    await load_registry(object(), "url-b", now=100.0)
+    await load_registry(object(), "url-b", now=100.0 + CACHE_TTL_SECONDS - 1)
+    assert ws.reads == 1
+
+
+async def test_load_registry_refreshes_after_the_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalidate()
+    ws = _one_category()
+    monkeypatch.setattr(registry_module, "_worksheet", lambda ags, headers: ws)
+    await load_registry(object(), "url-c", now=100.0)
+    await load_registry(object(), "url-c", now=100.0 + CACHE_TTL_SECONDS + 1)
+    assert ws.reads == 2
+
+
+async def test_the_cache_is_keyed_by_sheet_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalidate()
+    ws = _one_category()
+    monkeypatch.setattr(registry_module, "_worksheet", lambda ags, headers: ws)
+    await load_registry(object(), "url-d", now=0.0)
+    await load_registry(object(), "url-e", now=0.0)
+    assert ws.reads == 2
+
+
+async def test_invalidate_drops_one_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    invalidate()
+    ws = _one_category()
+    monkeypatch.setattr(registry_module, "_worksheet", lambda ags, headers: ws)
+    await load_registry(object(), "url-f", now=0.0)
+    invalidate("url-f")
+    await load_registry(object(), "url-f", now=0.0)
+    assert ws.reads == 2
+
+
+async def test_an_empty_registry_worksheet_is_seeded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalidate()
+    ws = FakeWorksheet([])
+    monkeypatch.setattr(registry_module, "_worksheet", lambda ags, headers: ws)
+    reg = await load_registry(object(), "url-g", now=0.0)
+    # A `_categories` that exists but holds no rows at all gets the header
+    # row too — otherwise the first seeded category lands in row 1 and
+    # `parse_registry` reads it as the header.
+    assert ws.appended == [REGISTRY_HEADERS, *to_rows(SEED_CATEGORIES)]
+    assert reg.categories == SEED_CATEGORIES
+
+
+async def test_a_header_only_registry_worksheet_is_seeded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalidate()
+    ws = FakeWorksheet([REGISTRY_HEADERS])
+    monkeypatch.setattr(registry_module, "_worksheet", lambda ags, headers: ws)
+    await load_registry(object(), "url-h", now=0.0)
+    assert ws.appended == to_rows(SEED_CATEGORIES)
+
+
+async def test_a_populated_registry_worksheet_is_never_seeded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalidate()
+    ws = FakeWorksheet([REGISTRY_HEADERS, ["only", "Only", "?", "Текст", ""]])
+    monkeypatch.setattr(registry_module, "_worksheet", lambda ags, headers: ws)
+    reg = await load_registry(object(), "url-i", now=0.0)
+    assert ws.appended == []
+    assert reg.by_name("only") is not None
