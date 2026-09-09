@@ -21,20 +21,23 @@ log = logging.getLogger(__name__)
 #: Bump whenever the prompt or the schema shape changes. Every fact records
 #: the version that produced it, which is what makes `/reparse --stale`
 #: answerable in Phase 2.
-PROMPT_VERSION = "2026-09-09.1"
+PROMPT_VERSION = "2026-09-09.2"
 
 DEFAULT_MODEL = "claude-haiku-4-5"
 MAX_TOKENS = 2048
 
 _DATE_DESCRIPTION = (
-    "ISO 8601 date-time with a UTC offset. If the message gives no date, use "
-    "the current time from the user message. An ambiguous reference resolves "
-    "to the nearest matching moment in the past."
+    "ISO 8601 date-time with a UTC offset. When the fact itself happened: when "
+    "the money moved, when the measurement was taken, when the thing was done. "
+    "NOT a date the message mentions *about* its subject. If the message gives "
+    "no date for the fact itself, use the current time from the user message. "
+    "An ambiguous reference resolves to the nearest matching moment in the past."
 )
 _DUE_DESCRIPTION = (
-    "ISO 8601 date-time with a UTC offset. This is a deadline or a due date, "
-    "so an ambiguous reference resolves to the nearest matching moment in the "
-    "future."
+    "ISO 8601 date-time with a UTC offset. A date the fact points at rather "
+    "than happened on: a deadline, a due date, the date something is booked or "
+    "planned for. An ambiguous reference resolves to the nearest matching "
+    "moment in the future."
 )
 _CURRENCY_DESCRIPTION = (
     "Three-letter uppercase ISO 4217 code, e.g. KZT, USD, EUR, THB. Translate "
@@ -128,6 +131,11 @@ def build_system_prompt(registry: Registry, cfg: Config) -> str:
         "- Do not invent fields. Do not invent values. An unstated text field",
         "  is an empty string.",
         "- Keep the user's own wording in text fields; do not translate it.",
+        "- A date the message mentions *about* the thing is not the date of the",
+        "  fact. `билеты на 15 октября` was bought now and the flight is on the",
+        "  15th; `оплатил квартиру за октябрь` was paid now. Date the fact to",
+        "  when it happened, put the mentioned date in a `due` field if the",
+        "  category has one, and otherwise keep it in the text field.",
     ]
     return "\n".join(lines)
 

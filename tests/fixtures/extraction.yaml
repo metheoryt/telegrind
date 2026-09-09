@@ -38,6 +38,23 @@
 - message: "в пятницу заплачу 5000 за интернет"
   category: expense
   date: "2026-09-11"
+# An unrealized intention is a wish, not an expense — stable 3/3 on
+# 2026-09-09. Deliberate: an `expense` row dated in the future would be
+# counted by `sum_by_period` before the money moved. No date assertion —
+# `wish` has `Добавлено`, and 12 октября survives only in the text.
 - message: "12 октября куплю подарок за 20000"
+  category: wish
+
+# A date the message mentions *about* the purchase is not the date of the
+# expense: the tickets were bought now, the flight is in October. Before the
+# rule that says so, both of these dated the expense to October and misfiled
+# it a month forward in `sum_by_period`. Measured 2026-09-09.
+- message: "купил билеты на самолёт на 15 октября за 50000"
   category: expense
-  date: "2026-10-12"
+  date: "2026-09-09"
+- message: "билеты в Тбилиси 12.10 за 90000 тенге"
+  category: expense
+  date: "2026-09-09"
+- message: "купил вчера билеты на концерт 3 ноября, 25000"
+  category: expense
+  date: "2026-09-08"
