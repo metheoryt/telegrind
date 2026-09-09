@@ -57,6 +57,9 @@ lint.select = [
 lint.ignore = [
     "S101",   # Use of assert (common in tests)
     "ANN401", # allow explicit Any where deliberate
+    "RUF001", # Cyrillic is the app's language, not an ambiguous glyph
+    "RUF002", # ditto, in docstrings
+    "RUF003", # ditto, in comments
 ]
 
 # Directories to exclude from linting
