@@ -171,13 +171,23 @@ async def delete_record(
         return
 
     target = message.reply_to_message
-    async with session.begin():
-        msg_row = await store.get_message(session, chat.id, target.message_id)
-        facts = await store.facts_for_message(session, msg_row.id) if msg_row else []
-        if not facts:
-            await message.reply(MISSING_TEXT)
-            return
-        await delete_facts(ags, session, registry, facts)
+    try:
+        async with session.begin():
+            msg_row = await store.get_message(session, chat.id, target.message_id)
+            facts = (
+                await store.facts_for_message(session, msg_row.id) if msg_row else []
+            )
+            if not facts:
+                await message.reply(MISSING_TEXT)
+                return
+            await delete_facts(ags, session, registry, facts)
+    except HeaderMismatchError as exc:
+        # delete_facts probes the header too, and delete_row shifts rows —
+        # so the raise is correct, but an uncaught one here dies with no
+        # reply at all, which is the failure this handler exists to fix.
+        log.warning("header collision while deleting: %s", exc)
+        await message.reply(f"{HEADER_MISMATCH_TEXT}\n\n<code>{exc}</code>")
+        return
 
     await bot.set_message_reaction(
         chat_id=target.chat.id,
