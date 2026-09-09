@@ -1,3 +1,4 @@
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from re import Pattern
@@ -5,10 +6,21 @@ from re import Pattern
 from aiogram.types import Message
 from dateparser.search import search_dates
 from gspread import Cell, WorksheetNotFound
-from gspread.utils import ValueInputOption
+from gspread.utils import ValueInputOption, rowcol_to_a1
 from gspread_asyncio import AsyncioGspreadSpreadsheet, AsyncioGspreadWorksheet
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from pydantic_extra_types.currency_code import Currency
+
+from telegrind.registry import KEY_HEADER
+
+log = logging.getLogger(__name__)
+
+#: (`_config` row label, `Config` field, converter). Hoisted out of
+#: `ConfigSheet` so `parse_config` can sit anywhere in this module.
+CONFIG_KEYS: list[tuple[str, str, object]] = [
+    ("Часовой пояс (в часах)", "dt_offset", int),
+    ("Основная валюта", "currency", lambda x: x.strip().upper()),
+]
 
 
 class Sheet:
@@ -57,14 +69,49 @@ class Config(BaseModel):
         return self.now().strftime("%z")
 
 
+def parse_config(rows: list[list[str]]) -> Config:
+    """Parse the `_config` worksheet. Any unreadable cell falls back to a default.
+
+    `_config` is small and bot-created, but it is still a spreadsheet a user
+    can edit, and an IndexError here costs them a message.
+    """
+    values: dict[str, str] = {}
+    for row in rows:
+        if len(row) >= 2 and row[0]:
+            values[row[0].strip()] = row[1].strip()
+
+    data: dict[str, object] = {}
+    for label, field, converter in CONFIG_KEYS:
+        raw = values.get(label)
+        if not raw:
+            continue
+        try:
+            data[field] = converter(raw)
+        except ValueError, TypeError:
+            log.warning("_config: cannot read %s from %r, using default", field, raw)
+
+    try:
+        return Config(**data)
+    except ValidationError:
+        log.warning("_config: %r failed validation, using all defaults", data)
+        return Config()
+
+
+def data_range(ncols: int, first_row: int = 2) -> str:
+    """`"A2:E"` — the declared column range, unbounded downward.
+
+    Used by /rebuild so that clearing a category's data never reaches a
+    column the user added themselves.
+    """
+    last = rowcol_to_a1(1, ncols).rstrip("1")
+    return f"A{first_row}:{last}"
+
+
 class ConfigSheet(Sheet):
     ws_name = "_config"
     ws_dim = (2, 2)
 
-    keys = [
-        ("Часовой пояс (в часах)", "dt_offset", int),
-        ("Основная валюта", "currency", lambda x: x.strip().upper()),
-    ]
+    keys = CONFIG_KEYS
 
     def __init__(self, ags: AsyncioGspreadSpreadsheet):
         super().__init__(ags)
@@ -90,9 +137,7 @@ class ConfigSheet(Sheet):
     async def get_data(self) -> Config:
         if not self._cfg:
             agw, _ = await self.get_agw()
-            rows = await agw.get_values()
-            data = {k[1]: k[2](rows[i][1]) for i, k in enumerate(self.keys)}
-            self._cfg = Config(**data)
+            self._cfg = parse_config(await agw.get_values())
         return self._cfg
 
 
@@ -252,3 +297,89 @@ class Wish(Transaction):
     async def record(self, *args, **kwargs) -> None:
         row = await self.make_row(*args, **kwargs)
         return await self.write_row(row)
+
+
+class Worksheet:
+    """A single worksheet, addressed by name, with a key column in A.
+
+    Replaces the `Sheet` -> `Transaction` -> `Outcome`/`Loan`/`Wish`
+    hierarchy: a category is a row of registry data now, so there is
+    nothing left for a subclass to express.
+    """
+
+    def __init__(
+        self, ags: AsyncioGspreadSpreadsheet, name: str, headers: list[str]
+    ) -> None:
+        self.ags = ags
+        self.name = name
+        self.headers = headers
+        self._agw: AsyncioGspreadWorksheet | None = None
+
+    async def agw(self) -> AsyncioGspreadWorksheet:
+        """Get or lazily create the worksheet, writing headers on creation."""
+        if self._agw is not None:
+            return self._agw
+        try:
+            self._agw = await self.ags.worksheet(self.name)
+        except WorksheetNotFound:
+            self._agw = await self.ags.add_worksheet(
+                self.name, rows=1, cols=len(self.headers)
+            )
+            await self._agw.append_row(self.headers, table_range="A1")
+            await self.apply_filter()
+        return self._agw
+
+    async def all_values(self) -> list[list[str]]:
+        agw = await self.agw()
+        return await agw.get_values()
+
+    async def append(self, rows: list[list[object]]) -> None:
+        if not rows:
+            return
+        agw = await self.agw()
+        await agw.append_rows(
+            rows,
+            value_input_option=ValueInputOption.user_entered,
+            table_range="A1",
+        )
+
+    async def keys(self) -> dict[str, int]:
+        """Map every key in column A to its 1-based row number."""
+        agw = await self.agw()
+        column = await agw.col_values(1)
+        return {
+            value: number
+            for number, value in enumerate(column, start=1)
+            if value and value != KEY_HEADER
+        }
+
+    async def find_key(self, key: str) -> int | None:
+        agw = await self.agw()
+        cell = await agw.find(str(key), in_column=1)
+        return cell.row if cell else None
+
+    async def update_row(self, row_no: int, row: list[object]) -> None:
+        agw = await self.agw()
+        await agw.update(
+            [row],
+            range_name=f"A{row_no}",
+            value_input_option=ValueInputOption.user_entered,
+        )
+
+    async def delete_row(self, row_no: int) -> None:
+        agw = await self.agw()
+        await agw.delete_rows(row_no)
+
+    async def clear_data(self) -> None:
+        """Clear the declared column range below the header row.
+
+        Never `clear()`: user-added columns outside the declared range are
+        theirs, and the projection is one-way by design.
+        """
+        agw = await self.agw()
+        await agw.batch_clear([data_range(len(self.headers))])
+
+    async def apply_filter(self) -> None:
+        # "A:A" specifically, so a user-added column is never captured.
+        agw = await self.agw()
+        await agw.set_basic_filter("A:A")
