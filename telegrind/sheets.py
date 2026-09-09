@@ -12,6 +12,11 @@ from telegrind.registry import KEY_HEADER
 
 log = logging.getLogger(__name__)
 
+#: Rows to give a newly created worksheet. Creating it with 1 row makes
+#: every append grow the grid, and makes "A2:E" an invalid range until
+#: something is written — which is how /rebuild first died on Telemetry.
+NEW_WORKSHEET_ROWS = 1000
+
 #: (`_config` row label, `Config` field, converter). Hoisted out of
 #: `ConfigSheet` so `parse_config` can sit anywhere in this module.
 CONFIG_KEYS: list[tuple[str, str, object]] = [
@@ -172,7 +177,7 @@ class Worksheet:
             self._agw = await self.ags.worksheet(self.name)
         except WorksheetNotFound:
             self._agw = await self.ags.add_worksheet(
-                self.name, rows=1, cols=len(self.headers)
+                self.name, rows=NEW_WORKSHEET_ROWS, cols=len(self.headers)
             )
             await self._write_header()
         else:
@@ -200,6 +205,30 @@ class Worksheet:
             rows,
             value_input_option=ValueInputOption.user_entered,
             table_range="A1",
+        )
+
+    async def write_rows(self, rows: list[list[object]], first_row: int = 2) -> None:
+        """Write rows at an explicit range starting at `first_row`.
+
+        Deliberately not `append`: `values.append` places rows after the
+        sheet's *data extent*, not after the last row of the declared range.
+        On a worksheet carrying the user's own formula columns — filled down
+        every row — that extent sits far below the range /rebuild just
+        cleared, so appending left 3501 expenses starting at row 3505 with
+        3503 blank rows above them. Measured on a real workbook, 2026-09-09.
+        """
+        if not rows:
+            return
+        agw = await self.agw()
+        needed = first_row + len(rows) - 1
+        if agw.row_count < needed:
+            # Never shrink: the columns past the declared range are the
+            # user's, and they run the height of the sheet.
+            await agw.resize(rows=needed)
+        await agw.update(
+            rows,
+            range_name=f"A{first_row}",
+            value_input_option=ValueInputOption.user_entered,
         )
 
     async def keys(self) -> dict[str, int]:
@@ -236,6 +265,10 @@ class Worksheet:
         theirs, and the projection is one-way by design.
         """
         agw = await self.agw()
+        if agw.row_count <= 1:
+            # A grid with only the header row has nothing to clear, and
+            # "A2:E" against it is a 400 from the API, not a no-op.
+            return
         await agw.batch_clear([data_range(len(self.headers))])
 
     async def apply_filter(self) -> None:

@@ -11,6 +11,7 @@ from dataclasses import field as dataclass_field
 from datetime import datetime
 from enum import StrEnum
 
+from gspread.exceptions import APIError
 from gspread_asyncio import AsyncioGspreadSpreadsheet
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -218,10 +219,12 @@ async def delete_facts(
 class RebuildReport:
     rebuilt: dict[str, int] = dataclass_field(default_factory=dict)
     refused: dict[str, int] = dataclass_field(default_factory=dict)
+    #: worksheet -> the API error that stopped it.
+    failed: dict[str, str] = dataclass_field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
-        return not self.refused
+        return not self.refused and not self.failed
 
 
 async def rebuild(
@@ -240,29 +243,53 @@ async def rebuild(
     """
     rebuilt: dict[str, int] = {}
     refused: dict[str, int] = {}
+    failed: dict[str, str] = {}
 
     for cat in registry.categories:
-        ws = _worksheet(ags, cat)
-        values = await ws.all_values()
-        sheet_keys: set[str] = set()
-        if len(values) > 1:
-            sheet_keys = {
-                row[0].strip()
-                for row in values[1:]
-                if row and row[0] and row[0].strip()
-            }
-
-        fact_keys = await fact_keys_for_worksheet(session, chat.id, cat.worksheet)
-        orphans = unaccounted_keys(sheet_keys, fact_keys)
-        if orphans and not force:
-            refused[cat.worksheet] = len(orphans)
+        try:
+            counted = await _rebuild_one(ags, session, registry, chat, cat, force=force)
+        except APIError as exc:
+            # One worksheet's API error must not abandon the rest: rebuild
+            # walks every category, and aborting midway leaves the workbook
+            # half-rewritten with no report of how far it got.
+            log.exception("rebuild of %s failed", cat.worksheet)
+            failed[cat.worksheet] = str(exc)
             continue
+        rewritten, orphans = counted
+        if orphans:
+            refused[cat.worksheet] = orphans
+        else:
+            rebuilt[cat.worksheet] = rewritten
 
-        facts = await facts_for_chat(session, chat.id, cat.worksheet)
-        rows = [fact_row(cat, f.sheet_key, f.fields) for f in facts]
-        await ws.clear_data()
-        await ws.append(rows)
-        await ws.apply_filter()
-        rebuilt[cat.worksheet] = len(rows)
+    return RebuildReport(rebuilt, refused, failed)
 
-    return RebuildReport(rebuilt, refused)
+
+async def _rebuild_one(
+    ags: AsyncioGspreadSpreadsheet,
+    session: AsyncSession,
+    registry: Registry,
+    chat: Chat,
+    cat: Category,
+    *,
+    force: bool,
+) -> tuple[int, int]:
+    """Re-project one worksheet. Returns `(rows written, orphans refused)`."""
+    ws = _worksheet(ags, cat)
+    values = await ws.all_values()
+    sheet_keys: set[str] = set()
+    if len(values) > 1:
+        sheet_keys = {
+            row[0].strip() for row in values[1:] if row and row[0] and row[0].strip()
+        }
+
+    fact_keys = await fact_keys_for_worksheet(session, chat.id, cat.worksheet)
+    orphans = unaccounted_keys(sheet_keys, fact_keys)
+    if orphans and not force:
+        return 0, len(orphans)
+
+    facts = await facts_for_chat(session, chat.id, cat.worksheet)
+    rows = [fact_row(cat, f.sheet_key, f.fields) for f in facts]
+    await ws.clear_data()
+    await ws.write_rows(rows)
+    await ws.apply_filter()
+    return len(rows), 0

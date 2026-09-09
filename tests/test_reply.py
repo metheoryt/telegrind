@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from telegrind.bot.handlers.handlers import COMMAND_LIKE, format_records
+from telegrind.bot.handlers.handlers import COMMAND_LIKE, format_records, is_marker
 from telegrind.models import Fact
 
 
@@ -70,3 +70,20 @@ def test_a_mistyped_command_is_not_treated_as_a_fact() -> None:
 def test_an_ordinary_message_is_not_command_like() -> None:
     assert not COMMAND_LIKE.resolve(SimpleNamespace(text="4500 такси"))
     assert not COMMAND_LIKE.resolve(SimpleNamespace(text="вес 82.4"))
+
+
+def test_a_reply_with_no_text_does_not_crash_the_filter() -> None:
+    """F.text is None for a reply to a photo, a sticker or a voice note.
+    Raising inside a filter aborts the whole update before any handler runs,
+    which is how a plain reply took the bot down in live testing."""
+    assert is_marker("-")(None) is False
+    assert is_marker("??")(None) is False
+    assert COMMAND_LIKE.resolve(SimpleNamespace(text=None)) is not True
+
+
+def test_the_markers_still_match_their_own_token() -> None:
+    assert is_marker("-")("-") is True
+    assert is_marker("-")("  -  ") is True
+    assert is_marker("??")("??") is True
+    assert is_marker("-")("") is False
+    assert is_marker("-")("- 500") is False

@@ -51,3 +51,22 @@ def test_rebuild_report_names_refusals_and_how_to_recover() -> None:
 
 def test_a_rebuild_that_did_nothing_still_says_something() -> None:
     assert format_rebuild_report(RebuildReport()).strip()
+
+
+def test_rebuild_report_names_a_worksheet_the_api_rejected() -> None:
+    """One worksheet's API error must be reported, not swallowed with the
+    rest of the run — /rebuild died mid-walk on Telemetry in live testing
+    and the user got no reply at all."""
+    out = format_rebuild_report(
+        RebuildReport(rebuilt={"Expenses": 3501}, failed={"Telemetry": "exceeds grid"})
+    )
+    assert "Expenses" in out
+    assert "3501" in out
+    assert "Telemetry" in out
+    assert "exceeds grid" in out
+
+
+def test_a_report_with_a_failure_is_not_ok() -> None:
+    assert not RebuildReport(failed={"Telemetry": "boom"}).ok
+    assert not RebuildReport(refused={"Loans": 3}).ok
+    assert RebuildReport(rebuilt={"Expenses": 1}).ok

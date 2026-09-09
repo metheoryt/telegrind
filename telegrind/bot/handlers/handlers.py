@@ -12,6 +12,7 @@ property this design claims.
 """
 
 import logging
+from collections.abc import Callable
 
 from aiogram import Bot, F, flags
 from aiogram.fsm.context import FSMContext
@@ -43,6 +44,18 @@ UNKNOWN_COMMAND_TEXT = (
     "Не знаю такой команды. Сообщение сохранила, но в таблицу "
     "не записала — если это был факт, пришлите его без слэша."
 )
+
+
+def is_marker(marker: str) -> Callable[[str | None], bool]:
+    """A filter predicate for a bare one-token reply like `-` or `??`.
+
+    `F.text` is None for a reply that carries no text — a reply to a photo,
+    a sticker, a voice note — and calling .strip() on it inside a filter
+    raises *during filter evaluation*, which aborts the whole update before
+    any handler runs. Guard the None here, not at the call site.
+    """
+    return lambda text: bool(text) and text.strip() == marker
+
 
 #: A slash-prefixed message that no Command filter claimed. Registered
 #: immediately before the catch-all so a mistyped /rebiuld is not
@@ -120,7 +133,7 @@ async def _ingest(
     await message.reply(format_records(written))
 
 
-@router.message(F.reply_to_message & F.text.func(lambda t: t.strip() == "-"))
+@router.message(F.reply_to_message & F.text.func(is_marker("-")))
 @flags.chat_action(action="typing", initial_sleep=0.5)
 async def delete_record(
     message: Message,
@@ -164,7 +177,7 @@ async def delete_record(
     )
 
 
-@router.message(F.reply_to_message & F.text.func(lambda t: t.strip() == "??"))
+@router.message(F.reply_to_message & F.text.func(is_marker("??")))
 async def escalate_stub(message: Message) -> None:
     """Answer a `??` reply instead of recording it.
 

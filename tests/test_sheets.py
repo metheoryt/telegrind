@@ -50,10 +50,14 @@ def test_parse_config_keeps_the_readable_field_when_another_is_invalid() -> None
 class FakeAgw:
     """Minimal AsyncioGspreadWorksheet stand-in."""
 
-    def __init__(self, values: list[list[str]]) -> None:
+    def __init__(self, values: list[list[str]], row_count: int = 1000) -> None:
         self.values = values
         self.appended: list[list[str]] = []
         self.filtered = False
+        self.cleared: list[str] = []
+        self.updates: list[tuple[str, list[list[object]]]] = []
+        self.resized_to: int | None = None
+        self._row_count = row_count
 
     async def row_values(self, row: int) -> list[str]:
         return self.values[row - 1] if row <= len(self.values) else []
@@ -65,6 +69,27 @@ class FakeAgw:
     async def set_basic_filter(self, rng: str) -> None:
         self.filtered = True
 
+    @property
+    def row_count(self) -> int:
+        return self._row_count
+
+    async def batch_clear(self, ranges: list[str]) -> None:
+        self.cleared.extend(ranges)
+
+    async def update(
+        self, values: list[list[object]], range_name: str, value_input_option: object
+    ) -> None:
+        self.updates.append((range_name, values))
+
+    async def resize(self, rows: int) -> None:
+        self.resized_to = rows
+        self._row_count = rows
+
+    async def append_rows(
+        self, rows: list[list[object]], value_input_option: object, table_range: str
+    ) -> None:
+        self.appended.extend(rows)
+
 
 class FakeAgs:
     """Minimal AsyncioGspreadSpreadsheet stand-in."""
@@ -72,6 +97,7 @@ class FakeAgs:
     def __init__(self, existing: dict[str, FakeAgw]) -> None:
         self.existing = existing
         self.created: list[str] = []
+        self.created_rows: dict[str, int] = {}
 
     async def worksheet(self, name: str) -> FakeAgw:
         if name not in self.existing:
@@ -80,7 +106,8 @@ class FakeAgs:
 
     async def add_worksheet(self, name: str, rows: int, cols: int) -> FakeAgw:
         self.created.append(name)
-        agw = FakeAgw([])
+        self.created_rows[name] = rows
+        agw = FakeAgw([], row_count=rows)
         self.existing[name] = agw
         return agw
 
@@ -130,3 +157,61 @@ async def test_agw_is_cached_so_the_header_probe_happens_once() -> None:
 
 def test_pytest_import_is_used() -> None:
     assert pytest is not None
+
+
+async def test_clear_data_skips_a_grid_with_only_a_header_row() -> None:
+    """batch_clear("A2:E") against a 1-row grid is a 400 from the API, not a
+    no-op. A freshly created Telemetry sheet took /rebuild down this way."""
+    agw = FakeAgw([HEADERS], row_count=1)
+    ws = Worksheet(FakeAgs({"Telemetry": agw}), "Telemetry", HEADERS)
+    await ws.clear_data()
+    assert agw.cleared == []
+
+
+async def test_clear_data_clears_the_declared_range_on_a_real_grid() -> None:
+    agw = FakeAgw([HEADERS], row_count=1000)
+    ws = Worksheet(FakeAgs({"Expenses": agw}), "Expenses", HEADERS)
+    await ws.clear_data()
+    assert agw.cleared == ["A2:C"]
+
+
+async def test_a_created_worksheet_gets_a_usable_grid() -> None:
+    """rows=1 would make every append grow the grid and "A2:E" invalid."""
+    ags = FakeAgs({})
+    await Worksheet(ags, "Telemetry", HEADERS).agw()
+    assert ags.created_rows["Telemetry"] > 1
+
+
+def _ws(agw: FakeAgw) -> Worksheet:
+    return Worksheet(FakeAgs({"Expenses": agw}), "Expenses", HEADERS)
+
+
+async def test_write_rows_writes_at_a2_and_never_appends() -> None:
+    """append places rows after the sheet's data extent, which the user's own
+    formula columns push to the bottom of the sheet. On a real workbook that
+    put 3501 rebuilt expenses at row 3505 under 3503 blank rows."""
+    agw = FakeAgw([HEADERS], row_count=1000)
+    await _ws(agw).write_rows([["1_1", 1, "x"], ["1_2", 2, "y"]])
+    assert agw.updates == [("A2", [["1_1", 1, "x"], ["1_2", 2, "y"]])]
+    assert agw.appended == []
+
+
+async def test_write_rows_grows_the_grid_when_the_rows_do_not_fit() -> None:
+    agw = FakeAgw([HEADERS], row_count=10)
+    await _ws(agw).write_rows([[f"1_{i}", i, ""] for i in range(50)])
+    assert agw.resized_to == 51
+
+
+async def test_write_rows_never_shrinks_the_grid() -> None:
+    """Columns past the declared range are the user's and run the sheet's
+    height; shrinking would delete them."""
+    agw = FakeAgw([HEADERS], row_count=5000)
+    await _ws(agw).write_rows([["1_1", 1, "x"]])
+    assert agw.resized_to is None
+
+
+async def test_write_rows_of_nothing_touches_nothing() -> None:
+    agw = FakeAgw([HEADERS], row_count=1000)
+    await _ws(agw).write_rows([])
+    assert agw.updates == []
+    assert agw.resized_to is None

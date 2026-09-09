@@ -46,6 +46,9 @@ def format_rebuild_report(report: RebuildReport) -> str:
             "Сначала выполните /import, либо повторите как "
             "<code>/rebuild --force</code>, чтобы затереть эти строки."
         )
+    if report.failed:
+        lines.append("<b>Ошибка</b> — эти листы перезаписать не удалось:")
+        lines += [f"{ws}: {err}" for ws, err in sorted(report.failed.items())]
     if not lines:
         lines.append("Нечего перезаписывать — в базе нет фактов для этих листов.")
     return "\n".join(lines)
