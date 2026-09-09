@@ -1,11 +1,7 @@
 import logging
-import re
 import time
 from datetime import datetime, timedelta, timezone
-from re import Pattern
 
-from aiogram.types import Message
-from dateparser.search import search_dates
 from gspread import Cell, WorksheetNotFound
 from gspread.utils import ValueInputOption, rowcol_to_a1
 from gspread_asyncio import AsyncioGspreadSpreadsheet, AsyncioGspreadWorksheet
@@ -24,35 +20,12 @@ CONFIG_KEYS: list[tuple[str, str, object]] = [
 ]
 
 
-class Sheet:
-    ws_name: str
-    ws_dim: tuple[int, int]
-
-    def __init__(self, ags: AsyncioGspreadSpreadsheet):
-        self.ags = ags
-        self._agw = None
-
-    async def get_agw(self) -> tuple[AsyncioGspreadWorksheet, bool]:
-        if self._agw:
-            return self._agw, False
-        try:
-            self._agw, created = await self.ags.worksheet(self.ws_name), False
-        except WorksheetNotFound:
-            self._agw, created = (
-                await self.ags.add_worksheet(
-                    self.ws_name, rows=self.ws_dim[0], cols=self.ws_dim[1]
-                ),
-                True,
-            )
-        return self._agw, created
-
-
 class Config(BaseModel):
     dt_offset: int = 6
     currency: Currency = Currency("KZT")
 
     @property
-    def tz(self):
+    def tz(self) -> timezone:
         return timezone(timedelta(hours=self.dt_offset))
 
     def now(self) -> datetime:
@@ -65,7 +38,7 @@ class Config(BaseModel):
         return dt.astimezone(self.tz)
 
     @property
-    def tzname(self):
+    def tzname(self) -> str:
         """Return timezone in +0600 format."""
         return self.now().strftime("%z")
 
@@ -119,26 +92,41 @@ def data_range(ncols: int, first_row: int = 2) -> str:
     return f"A{first_row}:{last}"
 
 
-class ConfigSheet(Sheet):
+class ConfigSheet:
+    """The `_config` worksheet: timezone and default currency.
+
+    Standalone rather than built on `Worksheet`, because `Worksheet.agw()`
+    returns only the worksheet and this needs the `created` flag to write
+    its defaults exactly once. The two Russian labels and the 2x2 shape are
+    already sitting in real spreadsheets and must not change.
+    """
+
     ws_name = "_config"
     ws_dim = (2, 2)
-
     keys = CONFIG_KEYS
 
-    def __init__(self, ags: AsyncioGspreadSpreadsheet):
-        super().__init__(ags)
-        self._cfg = None
+    def __init__(self, ags: AsyncioGspreadSpreadsheet) -> None:
+        self.ags = ags
+        self._agw: AsyncioGspreadWorksheet | None = None
+        self._cfg: Config | None = None
 
     async def get_agw(self) -> tuple[AsyncioGspreadWorksheet, bool]:
-        agw: AsyncioGspreadWorksheet
-        agw, created = await super().get_agw()
+        if self._agw is not None:
+            return self._agw, False
+        created = False
+        try:
+            self._agw = await self.ags.worksheet(self.ws_name)
+        except WorksheetNotFound:
+            self._agw = await self.ags.add_worksheet(
+                self.ws_name, rows=self.ws_dim[0], cols=self.ws_dim[1]
+            )
+            created = True
         if created:
             await self.write_data(Config())
-        return agw, created
+        return self._agw, created
 
-    async def write_data(self, conf: Config):
-        agw: AsyncioGspreadWorksheet
-        agw, created = await super().get_agw()
+    async def write_data(self, conf: Config) -> None:
+        agw, _ = await self.get_agw()
         cells = []
         cells.extend([Cell(i + 1, 1, k[0]) for i, k in enumerate(self.keys)])
         cells.extend(
@@ -151,164 +139,6 @@ class ConfigSheet(Sheet):
             agw, _ = await self.get_agw()
             self._cfg = parse_config(await agw.get_values())
         return self._cfg
-
-
-class Transaction(Sheet):
-    # TODO lock the sheet while updating. We wight want to use redis lock for that.
-    pattern: Pattern
-    headers: list
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.cfg: ConfigSheet = ConfigSheet(self.ags)
-
-    async def apply_filter(self, agw: AsyncioGspreadWorksheet):
-        # make it take whole table space,
-        # so we don't mess with user-added columns
-        await agw.set_basic_filter("A:A")
-
-    async def get_agw(self) -> tuple[AsyncioGspreadWorksheet, bool]:
-        agw, created = await super().get_agw()
-        if created:
-            await agw.append_row(self.headers, table_range="A1")
-        return agw, created
-
-    @classmethod
-    def parse(cls, text: str) -> tuple:
-        match = cls.pattern.match(text)
-        if not match:
-            raise ValueError(f"text does not match pattern of {cls.__name__}")
-        return match.groups()
-
-    async def make_row(self, message: Message) -> list:
-        pass
-
-    async def record(self, *args, **kwargs) -> None:
-        pass
-
-    async def write_rows(self, rows: list):
-        agw, _ = await self.get_agw()
-        await agw.append_rows(
-            rows, value_input_option=ValueInputOption.user_entered, table_range="A1"
-        )
-        await self.apply_filter(agw)
-
-    async def write_row(self, row: list[str]) -> None:
-        agw, _ = await self.get_agw()
-        await agw.append_row(
-            row, value_input_option=ValueInputOption.user_entered, table_range="A1"
-        )
-        # await self.apply_filter(agw)
-
-    async def search_row(self, message_id: int) -> Cell | None:
-        agw, _ = await self.get_agw()
-        return await agw.find(str(message_id), in_column=1)
-
-    async def change_row(self, row_id: int, row: list):
-        agw, _ = await self.get_agw()
-        cells = [Cell(row=row_id, col=i + 1, value=v) for i, v in enumerate(row)]
-        await agw.update_cells(cells, value_input_option=ValueInputOption.user_entered)
-        await self.apply_filter(agw)
-
-    async def delete_row(self, row_id: int):
-        agw, _ = await self.get_agw()
-        return await agw.delete_rows(row_id)
-
-
-_amount = r"(\d+(?:[\.,]\d+)?)"
-_curr = r"([A-Za-z]{3})"
-_date = r"(\d{2}\.\d{2}\.\d{4})"
-
-
-class Outcome(Transaction):
-    pattern = re.compile(rf"^{_amount}\b")
-    ws_name = "Expenses"
-    headers = ["#", "Сумма", "Валюта", "Дата", "Комментарий"]
-    ws_dim = (1, len(headers))
-
-    async def make_row(self, message: Message) -> list:
-        conf: Config = await self.cfg.get_data()
-        text = message.text
-
-        # amount is mandatory
-        amount = re.search(rf"^{_amount}\b", text).group()
-        # extracting amount from text
-        text = re.sub(rf"^{_amount}\b", "", text).strip()
-        amount = float(amount.replace(",", "."))
-
-        # currency is optional
-        curr = conf.currency.upper()
-        match = re.search(rf"^{_curr}\b", text)
-        if match:
-            # no currency
-            curr = match.group()
-            text = re.sub(rf"^{_curr}\b", "", text).strip()
-            curr = curr.upper()
-
-        # date is optional
-        date = conf.now()
-        matches = search_dates(
-            text,
-            languages=["ru", "en"],
-            settings={"TIMEZONE": conf.tzname, "RETURN_AS_TIMEZONE_AWARE": True},
-        )
-        if matches:
-            # take first found date
-            sub, date = matches[0]
-            text = text.replace(sub, "", 1).strip()
-        desc = text
-
-        return [message.message_id, amount, curr, date.strftime("%d.%m.%y %H:%M"), desc]
-
-    async def record(self, *args, **kwargs) -> None:
-        row = await self.make_row(*args, **kwargs)
-        return await self.write_row(row)
-
-
-class Loan(Outcome):
-    pattern = re.compile(
-        rf"^(?:долг|за[еёйи]м) (.*?) ([+-])?{_amount}(?: {_curr})?(?: {_date})?(?: (.*))?$",
-        flags=re.I,
-    )
-    ws_name = "Loans"
-    headers = ["#", "Сумма", "Валюта", "Заёмщик", "Дата", "Комментарий"]
-    ws_dim = (1, len(headers))
-
-    async def make_row(self, message: Message) -> list:
-        conf: Config = await self.cfg.get_data()
-
-        who, direction, amount, curr, date, desc = self.parse(message.text)
-        who = who.strip() if who else "Неизвестно"
-        direction = (
-            -1 if direction in ("-", None) else 1
-        )  # -100 and 100 both mean loan, +100 means payback
-        amount = float(amount.replace(",", ".")) * direction
-        curr = curr or conf.currency
-        date = datetime.strptime(date, "%d.%m.%Y") if date else conf.now()
-        return [
-            message.message_id,
-            amount,
-            curr,
-            who,
-            date.strftime("%d.%m.%y %H:%M"),
-            desc,
-        ]
-
-
-class Wish(Transaction):
-    ws_name = "Wishlist"
-    ws_dim = (1, 4)
-    headers = ["#", "Желание", "Добавлено", "Исполнено"]
-    pattern = re.compile(r"^хочу\s+(.*?)$", re.IGNORECASE)
-
-    async def make_row(self, message: Message) -> list:
-        (wish,) = self.parse(message.text)
-        conf: Config = await self.cfg.get_data()
-        return [message.message_id, wish, conf.nowstr(), ""]
-
-    async def record(self, *args, **kwargs) -> None:
-        row = await self.make_row(*args, **kwargs)
-        return await self.write_row(row)
 
 
 class Worksheet:

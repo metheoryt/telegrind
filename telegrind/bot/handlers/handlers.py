@@ -1,144 +1,207 @@
-import asyncio
+"""Freeform ingestion.
+
+Registration order is match order: the two reply forms first, then voice,
+then the catch-all text handler. `edited_message` is a separate observer and
+does not compete with them.
+
+The `sheet_url` gate moved. Every handler here writes the message log
+*first* and gates on the workbook only before projection. A fact recorded
+before onboarding finishes is recoverable with /rebuild; a message dropped
+at the handler is gone — and "nothing you write is ever lost" is the
+property this design claims.
+"""
+
 import logging
 
-import marvin
 from aiogram import Bot, F, flags
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, ReactionTypeEmoji
-from gspread_asyncio import AsyncioGspreadClient, AsyncioGspreadSpreadsheet
+from gspread_asyncio import AsyncioGspreadSpreadsheet
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from telegrind.bot.const import TIP_TEXT
+from telegrind import llm, store
 from telegrind.bot.router import router
-from telegrind.models import Chat
-from telegrind.services.expense import ExpenseService
-from telegrind.sheets import Loan, Outcome, Wish
+from telegrind.models import Chat, Fact
+from telegrind.projection import apply_changes, delete_facts, diff_facts
+from telegrind.registry import Registry
+from telegrind.sheets import Config
 
 from .start import Form
 
 log = logging.getLogger(__name__)
 
-log.info("marvin default model is %s", marvin.defaults.model)
-
-
 LINK_MISSING_TEXT = (
     "Ссылка на вашу таблицу потерялась. Пожалуйста, отправьте её мне ещё раз."
 )
+NOTHING_TEXT = "Ничего не распознала, но сообщение сохранила."
+MISSING_TEXT = "Отсутствует в книге..."
+VOICE_PENDING_TEXT = (
+    "Голосовые пока не расшифровываю, но сообщение сохранила — разберу, когда научусь."
+)
+ESCALATE_PENDING_TEXT = "Повторный разбор появится в следующей версии."
 
 
-@router.message(F.text.regexp(Loan.pattern))
-@flags.chat_action(action="typing", initial_sleep=0.5)
-async def record_loan(
-    message: Message, agc: AsyncioGspreadClient, chat: Chat, state: FSMContext
-):
-    if not chat.sheet_url:
+def format_records(facts: list[Fact]) -> str:
+    """Echo what was written.
+
+    Every write echoes: the transparency is worth the extra message, and it
+    is what makes the edit and delete affordances discoverable.
+    """
+    if not facts:
+        return NOTHING_TEXT
+
+    lines = ["Записано:" if len(facts) == 1 else f"Записей: {len(facts)}"]
+    for fact in facts:
+        values = " · ".join(str(v) for v in fact.fields.values() if v not in (None, ""))
+        lines.append(
+            f"<b>{fact.worksheet}</b> · {values} "
+            f"<tg-spoiler>{fact.sheet_key}@{fact.worksheet}</tg-spoiler>"
+        )
+    return "\n".join(lines)
+
+
+async def _ingest(
+    message: Message,
+    chat: Chat,
+    session: AsyncSession,
+    ags: AsyncioGspreadSpreadsheet | None,
+    registry: Registry | None,
+    config: Config | None,
+    state: FSMContext,
+    *,
+    model: str | None = None,
+) -> None:
+    """Log, extract, diff, project, echo."""
+    async with session.begin():
+        msg_row, _ = await store.upsert_message(session, chat, message)
+        message_pk = msg_row.id
+        content = msg_row.content
+        tg_date = msg_row.tg_date
+
+    if ags is None or registry is None or config is None:
         await state.set_state(Form.request_sheet_url)
-        return await message.reply(LINK_MISSING_TEXT)
+        await message.reply(LINK_MISSING_TEXT)
+        return
 
-    ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
-    await Loan(ags).record(message)
-    return await message.react([ReactionTypeEmoji(emoji="👌")])
+    if not content.strip():
+        return
 
+    facts, used_model = await llm.extract(
+        content, registry, config, config.localized(tg_date), model
+    )
 
-@router.message(F.text.regexp(Wish.pattern))
-@flags.chat_action(action="typing", initial_sleep=0.5)
-async def record_wish(
-    message: Message, agc: AsyncioGspreadClient, chat: Chat, state: FSMContext
-):
-    if not chat.sheet_url:
-        await state.set_state(Form.request_sheet_url)
-        return await message.reply(LINK_MISSING_TEXT)
+    async with session.begin():
+        msg_row = await store.get_message(session, chat.id, message.message_id)
+        if msg_row is None:  # cannot happen; the upsert above flushed it
+            log.error("message %s vanished between transactions", message.message_id)
+            return
+        old = await store.facts_for_message(session, message_pk)
+        written = await apply_changes(
+            ags,
+            session,
+            registry,
+            config,
+            chat,
+            msg_row,
+            diff_facts(old, facts),
+            model=used_model,
+            prompt_version=llm.PROMPT_VERSION,
+        )
 
-    ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
-    await Wish(ags).record(message)
-    return await message.react([ReactionTypeEmoji(emoji="👌")])
-
-
-@router.edited_message(F.text)
-@flags.chat_action(action="typing", initial_sleep=0.5)
-async def update_changed_message(
-    edited_message: Message, agc: AsyncioGspreadClient, chat: Chat, state: FSMContext
-):
-    if not chat.sheet_url:
-        await state.set_state(Form.request_sheet_url)
-        return await edited_message.reply(LINK_MISSING_TEXT)
-
-    wb: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
-
-    # first, check for expense
-    service = ExpenseService(wb)
-    expense_exists = await service.expense_exists(edited_message)
-    if expense_exists:
-        edited_expense = await service.extract_expense(edited_message)
-        updated = await service.update_expense(edited_message, edited_expense)
-        if updated:
-            return await edited_message.react([ReactionTypeEmoji(emoji="✍")])
-
-    # second, check for other legacy types
-    for sheet in (Loan(wb), Wish(wb)):
-        cell = await sheet.search_row(edited_message.message_id)
-        if cell:
-            row = await sheet.make_row(edited_message)
-            await sheet.change_row(cell.row, row)
-            return await edited_message.react([ReactionTypeEmoji(emoji="✍")])
-
-    return await edited_message.reply("Отсутствует в книге...")
+    await message.reply(format_records(written))
 
 
-@router.message(F.reply_to_message.text)
+@router.message(F.reply_to_message & F.text.func(lambda t: t.strip() == "-"))
 @flags.chat_action(action="typing", initial_sleep=0.5)
 async def delete_record(
-    message: Message, agc: AsyncioGspreadClient, chat: Chat, bot: Bot, state: FSMContext
-):
-    if not chat.sheet_url:
-        await state.set_state(Form.request_sheet_url)
-        return await message.reply(LINK_MISSING_TEXT)
+    message: Message,
+    chat: Chat,
+    session: AsyncSession,
+    ags: AsyncioGspreadSpreadsheet | None,
+    registry: Registry | None,
+    bot: Bot,
+    state: FSMContext,
+) -> None:
+    """Delete the replied message's facts. The message row stays.
 
-    if message.text and message.text.strip() == "-":
-        # delete record
-        msg: Message = message.reply_to_message
-        ags: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
-        for sheet in (Outcome(ags), Loan(ags), Wish(ags)):
-            cell = await sheet.search_row(msg.message_id)
-            if cell:
-                await sheet.delete_row(cell.row)
-                return await asyncio.gather(
-                    bot.set_message_reaction(
-                        chat_id=msg.chat.id,
-                        message_id=msg.message_id,
-                        reaction=[ReactionTypeEmoji(emoji="💩")],
-                    ),
-                    bot.set_message_reaction(
-                        chat_id=message.chat.id,
-                        message_id=message.message_id,
-                        reaction=[ReactionTypeEmoji(emoji="👌")],
-                    ),
-                )
-        return await msg.reply("Отсутствует в книге...")
+    The filter is `F.reply_to_message & (text == "-")`, not
+    `F.reply_to_message.text`. Today's filter matches *every* reply and then
+    falls off the end returning None — the handler matched, so aiogram stops
+    propagation, and every reply that is not "-" is silently swallowed.
+    """
+    if ags is None or registry is None:
+        await state.set_state(Form.request_sheet_url)
+        await message.reply(LINK_MISSING_TEXT)
+        return
+
+    target = message.reply_to_message
+    async with session.begin():
+        msg_row = await store.get_message(session, chat.id, target.message_id)
+        facts = await store.facts_for_message(session, msg_row.id) if msg_row else []
+        if not facts:
+            await message.reply(MISSING_TEXT)
+            return
+        await delete_facts(ags, session, registry, facts)
+
+    await bot.set_message_reaction(
+        chat_id=target.chat.id,
+        message_id=target.message_id,
+        reaction=[ReactionTypeEmoji(emoji="💩")],
+    )
+    await bot.set_message_reaction(
+        chat_id=message.chat.id,
+        message_id=message.message_id,
+        reaction=[ReactionTypeEmoji(emoji="👌")],
+    )
+
+
+@router.message(F.reply_to_message & F.text.func(lambda t: t.strip() == "??"))
+async def escalate_stub(message: Message) -> None:
+    """Answer a `??` reply instead of recording it.
+
+    Escalated re-extraction is Phase 2. Without this handler the text would
+    fall through to record_text and land in the Facts sheet.
+    """
+    await message.reply(ESCALATE_PENDING_TEXT)
+
+
+@router.message(F.voice)
+@flags.chat_action(action="typing", initial_sleep=0.5)
+async def record_voice(message: Message, chat: Chat, session: AsyncSession) -> None:
+    """Log the voice note without transcribing it.
+
+    Transcription is Phase 3, but logging it now means /retranscribe can
+    reach back over everything recorded in the meantime.
+    """
+    async with session.begin():
+        await store.upsert_message(session, chat, message)
+    await message.reply(VOICE_PENDING_TEXT)
 
 
 @router.message(F.text)
 @flags.chat_action(action="typing", initial_sleep=0.5)
-async def record_outcome_llm(
-    message: Message, agc: AsyncioGspreadClient, chat: Chat, state: FSMContext
-):
-    if not chat.sheet_url:
-        await state.set_state(Form.request_sheet_url)
-        return await message.reply(LINK_MISSING_TEXT)
+async def record_text(
+    message: Message,
+    chat: Chat,
+    session: AsyncSession,
+    ags: AsyncioGspreadSpreadsheet | None,
+    registry: Registry | None,
+    config: Config | None,
+    state: FSMContext,
+) -> None:
+    await _ingest(message, chat, session, ags, registry, config, state)
 
-    # support AI parsing only for expenses for now
-    is_expense = await ExpenseService.is_expense(message.text)
-    if not is_expense:
-        return await message.reply(TIP_TEXT)
 
-    wb: AsyncioGspreadSpreadsheet = await agc.open_by_url(chat.sheet_url)
-
-    service = ExpenseService(wb)
-    try:
-        expense = await service.extract_expense(message)
-    except ValueError:
-        return await message.reply(
-            "Не удалось распознать расход. Уточните сумму и попробуйте снова."
-        )
-
-    await service.add_expense(message, expense)
-    return await message.react([ReactionTypeEmoji(emoji="👌")])
+@router.edited_message(F.text)
+@flags.chat_action(action="typing", initial_sleep=0.5)
+async def record_edited(
+    edited_message: Message,
+    chat: Chat,
+    session: AsyncSession,
+    ags: AsyncioGspreadSpreadsheet | None,
+    registry: Registry | None,
+    config: Config | None,
+    state: FSMContext,
+) -> None:
+    """Re-extract and diff. A category change moves the row between sheets."""
+    await _ingest(edited_message, chat, session, ags, registry, config, state)

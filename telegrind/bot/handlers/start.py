@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from aiogram import Bot, flags
+from aiogram import Bot, F, flags
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -27,7 +27,7 @@ class Form(StatesGroup):
 @flags.chat_action(action="typing", initial_sleep=0.5)
 async def start(
     message: Message, state: FSMContext, chat: Chat, session: AsyncSession, bot: Bot
-):
+) -> None:
     await state.set_state(Form.request_sheet_url)
 
     filename = "intro.mp4"
@@ -43,7 +43,8 @@ async def start(
         message = await message.answer_video(
             video,
             caption="""\
-Пожалуйста, создайте свежий <a href="https://docs.google.com/spreadsheets">Google Sheets документ</a>, \
+Пожалуйста, создайте свежий \
+<a href="https://docs.google.com/spreadsheets">Google Sheets документ</a>, \
 и поделитесь им со мной:
 Укажите в качестве моей почты
 <pre>telegrind-bot@telegrind.iam.gserviceaccount.com</pre>
@@ -61,7 +62,10 @@ async def start(
             )
 
 
-@router.message(Form.request_sheet_url)
+# The state filter alone matches *anything* while the state is set, so a
+# command sent mid-onboarding would be read as a spreadsheet link. No
+# Google Sheets URL starts with a slash.
+@router.message(Form.request_sheet_url, ~F.text.startswith("/"))
 @flags.chat_action(action="typing", initial_sleep=0.5)
 async def obtain_sheet_url(
     message: Message,
@@ -70,14 +74,15 @@ async def obtain_sheet_url(
     state: FSMContext,
     agc: AsyncioGspreadClient,
     bot: Bot,
-):
+) -> Message | None:
     sheet_url = message.text
     try:
         ags = await agc.open_by_url(sheet_url)
         await ConfigSheet(ags).get_agw()
     except NoValidUrlKeyFound:
         return await message.answer(
-            "Не удалось распознать ссылку. Убедитесь, что скопировали правильную ссылку на Google Sheets документ."
+            "Не удалось распознать ссылку. Убедитесь, что скопировали "
+            "правильную ссылку на Google Sheets документ."
         )
     except APIError:
         return await message.answer(

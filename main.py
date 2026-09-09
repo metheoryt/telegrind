@@ -7,12 +7,12 @@ from aiogram.client.default import DefaultBotProperties
 from dotenv import load_dotenv
 from google.oauth2.service_account import Credentials
 from gspread_asyncio import AsyncioGspreadClientManager
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from telegrind.bot.setup import setup_dispatcher
 
 
-def get_creds():
+def get_creds() -> Credentials:
     # To obtain a service account JSON file, follow these steps:
     # https://gspread.readthedocs.io/en/latest/oauth2.html#for-bots-using-service-account
     creds = Credentials.from_service_account_file(
