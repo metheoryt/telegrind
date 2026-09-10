@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 #: Bump whenever the prompt or the schema shape changes. Every fact records
 #: the version that produced it, which is what makes `/reparse --stale`
 #: answerable in Phase 2.
-PROMPT_VERSION = "2026-09-09.2"
+PROMPT_VERSION = "2026-09-10.1"
 
 DEFAULT_MODEL = "claude-haiku-4-5"
 MAX_TOKENS = 2048
@@ -124,6 +124,12 @@ def build_system_prompt(registry: Registry, cfg: Config) -> str:
         "- Return an empty array only for a message that states no fact at all.",
         "- Anything you cannot confidently place goes to the `facts` category,",
         "  with the message text kept verbatim. Never drop a fact.",
+        "- When a message opens with an amount of money and no other category",
+        "  fits it, it is an `expense`, and the rest of the message is the",
+        "  comment: `4500 такси`, `444 куколд`, `300 фигня`, and `444` on its",
+        "  own with an empty comment. Do not fall back to `facts` because the",
+        "  comment names nothing you recognise as buyable — what it was spent",
+        "  on is not your judgement to make.",
         f"- When no currency is given, use {str(cfg.currency).upper()}.",
         "- Loan amounts carry a sign convention: a loan given out is negative",
         "  (-100), a repayment received is positive (+100). A bare amount with",

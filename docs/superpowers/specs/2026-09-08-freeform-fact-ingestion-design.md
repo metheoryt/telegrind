@@ -433,6 +433,30 @@ and the tips; attaching a workbook is `/link <url>`, a command the user reaches
 for when they want a spreadsheet rather than a gate they must pass before the bot
 will record anything.
 
+### A leading amount is an expense, whatever follows it
+
+`444 куколд` landed in `facts`. So did `444 кукольный`, `444 абракадабра` and a
+bare `444`, while `444 тенге` was an expense and one run of `444 хуйня`
+extracted nothing at all. It was never about the word: the model only read a
+leading number as money when the trailing word named something it recognised as
+buyable. That shape — an amount, then whatever — is what the regex bot matched
+as an expense and the most common thing written to this bot, so the miss is
+expensive.
+
+The fix is one rule, and its hedge is load-bearing:
+
+> When a message opens with an amount of money **and no other category fits
+> it**, it is an `expense`, and the rest of the message is the comment.
+
+Two stronger wordings were measured and both did damage. "Begins with a bare
+number … and it is never `facts`" dragged `12 октября куплю подарок за 20000`
+out of `wish` and into `facts` — told that a leading number must be an expense
+and never `facts`, the model could not reconcile that with an intention being a
+wish, and escaped to `facts` anyway. Adding an explicit carve-out for a leading
+*date* made it worse, taking `в пятницу заплачу 5000 за интернет` down with it:
+naming those cases inside the rule pulled them into its orbit. Leaving the
+model room to prefer another category is what keeps them out of it.
+
 ### Why the bot cannot create the spreadsheet itself
 
 The obvious version of this — the bot creates a fresh workbook and shares it —

@@ -47,6 +47,15 @@ container out from under the local build and silently undo a deploy.
 
 Full runbook: `vps/homeserver/DEPLOYING-A-REPO.md`.
 
+## Telegram Bot API
+
+`docs/telegram-bot-api.md` is the curated Bot API surface for this bot: what
+telegrind already uses, what is callable at the pinned aiogram version, what
+needs a bump, and what is ruled out and why. **Read it before proposing or
+building anything that touches the Telegram side** — it is verified against
+the installed `aiogram` tree, not against the changelog, so it says what can
+actually be called here.
+
 ## Architecture
 
 ### Request Flow
