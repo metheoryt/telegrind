@@ -1,48 +1,33 @@
 """Freeform ingestion.
 
-Registration order is match order: the two reply forms first, then voice,
-then the catch-all text handler. `edited_message` is a separate observer and
+Registration order is match order: voice, then the slash catch-all, then
+the catch-all text handler. `edited_message` is a separate observer and
 does not compete with them.
 
-The `sheet_url` gate is gone. There is no onboarding to finish and no
-workbook to wait for: the message log and the fact table are the product,
-and the workbook is an optional projection of them. Every handler writes
-Postgres unconditionally and projects only if a workbook is linked, which
-is what makes "nothing you write is ever lost" true from the first message.
+Extraction and projection are gone with the workbook. What is left here
+is the invariant: every handler writes the message row to Postgres
+unconditionally. Task 5 of the Phase 1 plan replaces the replies with a
+reaction; until then the bot still says something.
 """
 
 import logging
 from collections.abc import Callable
 
-from aiogram import Bot, F, flags
-from aiogram.types import Message, ReactionTypeEmoji
-from gspread_asyncio import AsyncioGspreadSpreadsheet
+from aiogram import F, flags
+from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from telegrind import llm, store
+from telegrind import store
 from telegrind.bot.router import router
-from telegrind.models import Chat, Fact
-from telegrind.projection import apply_changes, delete_facts, diff_facts
-from telegrind.registry import Registry
-from telegrind.sheets import Config, HeaderMismatchError
+from telegrind.models import Chat
 
 log = logging.getLogger(__name__)
 
-NOTHING_TEXT = "Ничего не распознала, но сообщение сохранила."
-MISSING_TEXT = "Отсутствует в книге..."
+STORED_TEXT = "Сохранила."
 VOICE_PENDING_TEXT = (
     "Голосовые пока не расшифровываю, но сообщение сохранила — разберу, когда научусь."
 )
-ESCALATE_PENDING_TEXT = "Повторный разбор появится в следующей версии."
-HEADER_MISMATCH_TEXT = (
-    "Столбцы в <code>_categories</code> разошлись с заголовками листа, и я "
-    "не стала ничего перезаписывать — иначе затёрла бы ваш столбец. "
-    "Сообщение сохранила: поправьте заголовок и пришлите /rebuild."
-)
-UNKNOWN_COMMAND_TEXT = (
-    "Не знаю такой команды. Сообщение сохранила, но в таблицу "
-    "не записала — если это был факт, пришлите его без слэша."
-)
+UNKNOWN_COMMAND_TEXT = "Не знаю такой команды. Сообщение сохранила."
 
 
 def is_marker(marker: str) -> Callable[[str | None], bool]:
@@ -57,154 +42,14 @@ def is_marker(marker: str) -> Callable[[str | None], bool]:
 
 
 #: A slash-prefixed message that no Command filter claimed. Registered
-#: immediately before the catch-all so a mistyped /rebiuld is not
-#: extracted into the Facts sheet.
+#: immediately before the catch-all so a mistyped /rebiuld is not extracted.
 COMMAND_LIKE = F.text.startswith("/")
-
-
-def format_records(facts: list[Fact]) -> str:
-    """Echo what was written.
-
-    Every write echoes: the transparency is worth the extra message, and it
-    is what makes the edit and delete affordances discoverable.
-    """
-    if not facts:
-        return NOTHING_TEXT
-
-    lines = ["Записано:" if len(facts) == 1 else f"Записей: {len(facts)}"]
-    for fact in facts:
-        values = " · ".join(str(v) for v in fact.fields.values() if v not in (None, ""))
-        lines.append(
-            f"<b>{fact.worksheet}</b> · {values} "
-            f"<tg-spoiler>{fact.sheet_key}@{fact.worksheet}</tg-spoiler>"
-        )
-    return "\n".join(lines)
-
-
-async def _ingest(
-    message: Message,
-    chat: Chat,
-    session: AsyncSession,
-    ags: AsyncioGspreadSpreadsheet | None,
-    registry: Registry,
-    config: Config,
-    *,
-    model: str | None = None,
-) -> None:
-    """Log, extract, diff, project, echo.
-
-    `ags` may be None — no workbook is linked. Extraction and storage do not
-    care; only the projection step does.
-    """
-    async with session.begin():
-        msg_row, _ = await store.upsert_message(session, chat, message)
-        message_pk = msg_row.id
-        content = msg_row.content
-        tg_date = msg_row.tg_date
-
-    if not content.strip():
-        return
-
-    facts, used_model = await llm.extract(
-        content, registry, config, config.localized(tg_date), model
-    )
-
-    try:
-        async with session.begin():
-            msg_row = await store.get_message(session, chat.id, message.message_id)
-            if msg_row is None:  # cannot happen; the upsert above flushed it
-                log.error(
-                    "message %s vanished between transactions", message.message_id
-                )
-                return
-            old = await store.facts_for_message(session, message_pk)
-            written = await apply_changes(
-                ags,
-                session,
-                registry,
-                config,
-                chat,
-                msg_row,
-                diff_facts(old, facts),
-                model=used_model,
-                prompt_version=llm.PROMPT_VERSION,
-            )
-    except HeaderMismatchError as exc:
-        # The message row is already committed, so nothing is lost: fix the
-        # header or the registry row and /rebuild puts the fact in place.
-        log.warning("header collision while projecting: %s", exc)
-        await message.reply(f"{HEADER_MISMATCH_TEXT}\n\n<code>{exc}</code>")
-        return
-
-    await message.reply(format_records(written))
-
-
-@router.message(F.reply_to_message & F.text.func(is_marker("-")))
-@flags.chat_action(action="typing", initial_sleep=0.5)
-async def delete_record(
-    message: Message,
-    chat: Chat,
-    session: AsyncSession,
-    ags: AsyncioGspreadSpreadsheet | None,
-    registry: Registry,
-    bot: Bot,
-) -> None:
-    """Delete the replied message's facts. The message row stays.
-
-    The filter is `F.reply_to_message & (text == "-")`, not
-    `F.reply_to_message.text`. Today's filter matches *every* reply and then
-    falls off the end returning None — the handler matched, so aiogram stops
-    propagation, and every reply that is not "-" is silently swallowed.
-    """
-    target = message.reply_to_message
-    try:
-        async with session.begin():
-            msg_row = await store.get_message(session, chat.id, target.message_id)
-            facts = (
-                await store.facts_for_message(session, msg_row.id) if msg_row else []
-            )
-            if not facts:
-                await message.reply(MISSING_TEXT)
-                return
-            await delete_facts(ags, session, registry, facts)
-    except HeaderMismatchError as exc:
-        # delete_facts probes the header too, and delete_row shifts rows —
-        # so the raise is correct, but an uncaught one here dies with no
-        # reply at all, which is the failure this handler exists to fix.
-        log.warning("header collision while deleting: %s", exc)
-        await message.reply(f"{HEADER_MISMATCH_TEXT}\n\n<code>{exc}</code>")
-        return
-
-    await bot.set_message_reaction(
-        chat_id=target.chat.id,
-        message_id=target.message_id,
-        reaction=[ReactionTypeEmoji(emoji="💩")],
-    )
-    await bot.set_message_reaction(
-        chat_id=message.chat.id,
-        message_id=message.message_id,
-        reaction=[ReactionTypeEmoji(emoji="👌")],
-    )
-
-
-@router.message(F.reply_to_message & F.text.func(is_marker("??")))
-async def escalate_stub(message: Message) -> None:
-    """Answer a `??` reply instead of recording it.
-
-    Escalated re-extraction is Phase 2. Without this handler the text would
-    fall through to record_text and land in the Facts sheet.
-    """
-    await message.reply(ESCALATE_PENDING_TEXT)
 
 
 @router.message(F.voice)
 @flags.chat_action(action="typing", initial_sleep=0.5)
 async def record_voice(message: Message, chat: Chat, session: AsyncSession) -> None:
-    """Log the voice note without transcribing it.
-
-    Transcription is Phase 3, but logging it now means /retranscribe can
-    reach back over everything recorded in the meantime.
-    """
+    """Log the voice note without transcribing it."""
     async with session.begin():
         await store.upsert_message(session, chat, message)
     await message.reply(VOICE_PENDING_TEXT)
@@ -212,12 +57,9 @@ async def record_voice(message: Message, chat: Chat, session: AsyncSession) -> N
 
 @router.message(COMMAND_LIKE)
 async def unknown_command(message: Message, chat: Chat, session: AsyncSession) -> None:
-    """Answer an unrecognised command instead of recording it as a fact.
+    """Store an unrecognised command instead of treating it as a fact.
 
-    Without this, /help — or a typo like /rebiuld — falls through to
-    record_text and lands in the Facts worksheet. It still logs the message:
-    the claim is that nothing you write is ever lost, so declining to
-    *extract* something is not licence to drop it.
+    Declining to *extract* something is never licence to drop it.
     """
     async with session.begin():
         await store.upsert_message(session, chat, message)
@@ -226,26 +68,16 @@ async def unknown_command(message: Message, chat: Chat, session: AsyncSession) -
 
 @router.message(F.text)
 @flags.chat_action(action="typing", initial_sleep=0.5)
-async def record_text(
-    message: Message,
-    chat: Chat,
-    session: AsyncSession,
-    ags: AsyncioGspreadSpreadsheet | None,
-    registry: Registry,
-    config: Config,
-) -> None:
-    await _ingest(message, chat, session, ags, registry, config)
+async def record_text(message: Message, chat: Chat, session: AsyncSession) -> None:
+    async with session.begin():
+        await store.upsert_message(session, chat, message)
+    await message.reply(STORED_TEXT)
 
 
 @router.edited_message(F.text)
 @flags.chat_action(action="typing", initial_sleep=0.5)
 async def record_edited(
-    edited_message: Message,
-    chat: Chat,
-    session: AsyncSession,
-    ags: AsyncioGspreadSpreadsheet | None,
-    registry: Registry,
-    config: Config,
+    edited_message: Message, chat: Chat, session: AsyncSession
 ) -> None:
-    """Re-extract and diff. A category change moves the row between sheets."""
-    await _ingest(edited_message, chat, session, ags, registry, config)
+    async with session.begin():
+        await store.upsert_message(session, chat, edited_message)

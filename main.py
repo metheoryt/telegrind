@@ -5,27 +5,9 @@ import os
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from dotenv import load_dotenv
-from google.oauth2.service_account import Credentials
-from gspread_asyncio import AsyncioGspreadClientManager
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from telegrind.bot.setup import setup_dispatcher
-
-
-def get_creds() -> Credentials:
-    # To obtain a service account JSON file, follow these steps:
-    # https://gspread.readthedocs.io/en/latest/oauth2.html#for-bots-using-service-account
-    creds = Credentials.from_service_account_file(
-        os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
-    )
-    scoped = creds.with_scopes(
-        [
-            "https://spreadsheets.google.com/feeds",
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive",
-        ]
-    )
-    return scoped
 
 
 async def main() -> None:
@@ -35,9 +17,7 @@ async def main() -> None:
 
     token = os.environ["BOT_TOKEN"]
     bot = Bot(token, default=DefaultBotProperties(parse_mode="HTML"))
-    await dp.start_polling(
-        bot, async_session=async_session, agcm=AsyncioGspreadClientManager(get_creds)
-    )
+    await dp.start_polling(bot, async_session=async_session)
 
     await engine.dispose()
 

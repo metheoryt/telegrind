@@ -11,9 +11,6 @@ dependencies = [
     "asyncpg>=0.30.0",
     "psycopg[binary]>=3.1.0",
     "dateparser>=1.2.2",
-    "gspread-asyncio>=2.0.0",
-    "pycountry>=24.6.1",
-    "pydantic-extra-types>=2.10.6",
     "python-dotenv>=1.1.1",
     "sqlalchemy[asyncio]>=2.0.44",
 ]
@@ -25,6 +22,7 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "pyyaml>=6.0",
     "ruff>=0.14.8",
+    "ty>=0.0.1a14",
 ]
 
 # Ruff configuration
@@ -123,8 +121,5 @@ error-on-warning = false
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-# So one test module can import another's fakes (FakeAgs/FakeAgw live in
-# test_sheets.py, and both test_sheets and test_importer need them).
-pythonpath = ["tests"]
 markers = ["llm: hits the Anthropic API; costs tokens; opt in with -m llm"]
 addopts = "-m 'not llm'"
