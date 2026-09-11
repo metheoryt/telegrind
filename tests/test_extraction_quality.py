@@ -14,6 +14,12 @@ from telegrind.models import KIND_TEXT, LoggedMessage
 pytestmark = pytest.mark.llm
 
 CFG = ChatConfig(tz_offset=6, currency="KZT")
+#: The gate used to run with an empty vocabulary, which is the one
+#: condition under which the catch-all cannot swallow anything — there is
+#: no catch-all to reuse yet. Every real pass runs against a chat that has
+#: already coined `facts`, so that is what the corpus is measured against.
+TAXONOMY = "- expense (128): amount, comment, currency\n- facts (12): text"
+
 CASES = yaml.safe_load(
     (Path(__file__).parent / "fixtures" / "extraction.yaml").read_text()
 )
@@ -51,7 +57,7 @@ def is_number(value: object) -> bool:
 @pytest.mark.parametrize("case", CASES, ids=lambda c: " / ".join(texts_of(c)))
 async def test_the_corpus_still_extracts(case: dict) -> None:
     rows = rows_for(case)
-    prompt = build_prompt(rows, [], "(пусто)", CFG, chat_id=1)
+    prompt = build_prompt(rows, [], TAXONOMY, CFG, chat_id=1)
     payload = await use_tool(EXTRACT_SYSTEM, prompt, EXTRACT_TOOL)
 
     drafts, complaints = drafts_from(payload, rows, CFG)
@@ -62,6 +68,10 @@ async def test_the_corpus_still_extracts(case: dict) -> None:
 
     if "date" in case:
         assert CFG.localized(drafts[0].at).date().isoformat() == case["date"]
+
+    if "not_kind" in case:
+        # Landing in the catch-all is not a near miss: nothing can query it.
+        assert all(d.kind != case["not_kind"] for d in drafts), shape
 
     if case.get("numeric"):
         # The measurement bug: the quantity survived only inside a text

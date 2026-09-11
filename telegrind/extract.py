@@ -90,6 +90,14 @@ def build_prompt(
         "# Словарь этого чата",
         "Переиспользуй существующий kind и существующие имена полей, если "
         "подходят. Заводи новые, только если ничего не подходит.",
+        # `facts` is the catch-all, so «reuse what fits» reads as «it fits»
+        # for everything. Measured 2026-09-11: with `facts` in the vocabulary
+        # «вес 82.5» went to `facts`; with an empty vocabulary the same
+        # message and the same prompt coined `health {"weight": 82.5}`.
+        "Исключение — `facts`. Это свалка для сообщений, в которых нечего "
+        "измерить, и переиспользовать его нельзя: если в сообщении есть "
+        "число или измерение, заведи нормальный kind, даже если такого в "
+        "словаре ещё нет.",
         taxonomy,
         "",
         f"# Валюта по умолчанию\n{cfg.currency}",
