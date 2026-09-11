@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from telegrind import llm, store, taxonomy
 from telegrind.coerce import to_instant, to_json_value
 from telegrind.config import ChatConfig
-from telegrind.models import Chat, LoggedMessage
+from telegrind.models import VERDICT_SYSTEM, Chat, LoggedMessage
 
 log = logging.getLogger(__name__)
 
@@ -30,8 +30,13 @@ def author_of(row: LoggedMessage, chat_id: int) -> str:
     and no id, so "is this me?" has no answer — and every rule that
     branches on authorship dies on that `None` if the third arm is
     missing. Nothing is dropped for where it came from: authorship
-    changes what a fact *means*, and meaning is the model's job.
+    changes what a fact *means*, and meaning is the model's job. A fourth
+    arm handles the bot's own messages, now that they are in the window too.
     """
+    if row.verdict == VERDICT_SYSTEM:
+        # The bot's own messages are in the window since the outbound store
+        # landed. Attributed to «я» they read as the user asserting them.
+        return "бот"
     origin = (row.raw or {}).get("forward_origin")
     if not origin:
         return "я"

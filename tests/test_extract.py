@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from telegrind.config import ChatConfig
 from telegrind.extract import Report, author_of, build_prompt, drafts_from, run
-from telegrind.models import KIND_TEXT, LoggedMessage
+from telegrind.models import KIND_TEXT, VERDICT_SYSTEM, LoggedMessage
 
 CFG = ChatConfig(tz_offset=6, currency="KZT")
 OWNER = 111
@@ -299,3 +299,10 @@ async def test_a_failed_call_leaves_the_tail_pending_and_countable() -> None:
     assert report.extracted == 0
     assert tail[0].extracted_at is None
     assert "503" in tail[0].extract_error
+
+
+def test_a_stored_bot_message_is_not_attributed_to_the_user() -> None:
+    """The bot's own messages are in the window now. Left as «я» they read
+    as the user asserting whatever the bot said."""
+    row = LoggedMessage(raw={}, verdict=VERDICT_SYSTEM)
+    assert author_of(row, chat_id=7) == "бот"

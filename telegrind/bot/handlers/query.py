@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from telegrind import answer as answers
 from telegrind import extract, query, store, taxonomy
+from telegrind.bot import outbound
 from telegrind.bot.handlers.receipts import RECEIPT_EMOJI, acknowledge
 from telegrind.bot.router import router
 from telegrind.config import ChatConfig
@@ -96,8 +97,8 @@ async def ask(
     async with session.begin():
         pending = len(await store.unextracted_tail(session, chat.id))
     if pending:
-        await bot.send_message(message.chat.id, f"Разбираю {pending} сообщений…")
+        await outbound.say(bot, session, chat, f"Разбираю {pending} сообщений…")
 
     async with session.begin():
         text = await answer_for(question_of(message.text), chat, config, session)
-    await bot.send_message(message.chat.id, text)
+    await outbound.say(bot, session, chat, text, reply_to=message.message_id)
