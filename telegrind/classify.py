@@ -57,11 +57,11 @@ async def verdict_for(
 
     try:
         payload = await call(llm.CLASSIFY_SYSTEM, text or "", llm.CLASSIFY_TOOL)
+        verdict = str(payload.get("verdict") or "")
     except Exception as exc:
         log.warning("classifier failed, defaulting to a fact: %s", exc)
         return VERDICT_FACT
 
-    verdict = str(payload.get("verdict") or "")
     if verdict not in _ASKED:
         log.warning("classifier returned %r, defaulting to a fact", verdict)
         return VERDICT_FACT

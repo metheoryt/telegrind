@@ -60,3 +60,21 @@ async def test_a_classifier_failure_defaults_to_fact() -> None:
 
 async def test_a_verdict_the_model_invented_defaults_to_fact() -> None:
     assert await classify.verdict_for("x", call=answering("чепуха")) == VERDICT_FACT
+
+
+async def test_a_payload_with_no_verdict_key_defaults_to_fact() -> None:
+    async def empty(*args: Any, **kwargs: Any) -> dict:
+        return {}
+
+    assert await classify.verdict_for("x", call=empty) == VERDICT_FACT
+
+
+async def test_a_non_dict_payload_defaults_to_fact() -> None:
+    """The seam the plan mandates for fakes is not private: a fake that
+    returns None rather than raising must not escape as an
+    AttributeError. This is the test that would have caught the gap."""
+
+    async def nothing(*args: Any, **kwargs: Any) -> dict:
+        return None  # type: ignore[return-value]
+
+    assert await classify.verdict_for("x", call=nothing) == VERDICT_FACT
