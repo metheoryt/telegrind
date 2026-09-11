@@ -107,7 +107,7 @@ already use. This task reads it and renders it, and nothing else.
   `async observed(session: AsyncSession, chat_pk: int) -> list[KindUsage]`;
   `render(usages: list[KindUsage]) -> str`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_taxonomy.py
@@ -173,12 +173,12 @@ async def test_render_says_so_when_nothing_has_been_observed_yet():
     assert "пока" in render([])
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `uv run pytest tests/test_taxonomy.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'telegrind.taxonomy'`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```python
 # telegrind/taxonomy.py
@@ -257,12 +257,12 @@ def render(usages: list[KindUsage]) -> str:
     )
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `uv run pytest tests/test_taxonomy.py -v`
 Expected: PASS, 4 tests
 
-- [ ] **Step 5: Lint, type-check, commit**
+- [x] **Step 5: Lint, type-check, commit**
 
 ```bash
 uv run ruff check && uv run ruff format && uv run ty check && uv run pytest
@@ -302,7 +302,7 @@ Which messages a pass reads. Two queries, no prompt, no model.
   is already extracted or not extractable. On the first-ever pass the context is
   empty, and that is correct rather than a bug.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_store.py`:
 
@@ -345,12 +345,12 @@ async def test_context_before_comes_back_oldest_first():
     assert [row.message_id for row in context] == [8, 9]
 ```
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `uv run pytest tests/test_store.py -v -k "tail or context_before"`
 Expected: FAIL with `AttributeError: module 'telegrind.store' has no attribute 'unextracted_tail'`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Add to the imports in `telegrind/store.py`: `from sqlalchemy import func, select, tuple_`.
 
@@ -413,12 +413,12 @@ async def context_before(
     return list(reversed(list(result.scalars())))
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `uv run pytest tests/test_store.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Lint, type-check, commit**
+- [x] **Step 5: Lint, type-check, commit**
 
 ```bash
 uv run ruff check && uv run ruff format && uv run ty check && uv run pytest
@@ -472,7 +472,7 @@ Pure string assembly — no session, no model. What the extractor sees.
   first one, because extraction state is per-message (`extracted_at`).
   Fixing that is its own phase, not this task.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_extract.py
@@ -601,12 +601,12 @@ def test_the_prompt_numbers_the_tail_and_labels_the_context():
     assert "KZT" in prompt
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `uv run pytest tests/test_extract.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'telegrind.extract'`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```python
 # telegrind/extract.py
@@ -720,12 +720,12 @@ def build_prompt(
     return "\n".join(blocks)
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `uv run pytest tests/test_extract.py -v`
 Expected: PASS, 9 tests
 
-- [ ] **Step 5: Lint, type-check, commit**
+- [x] **Step 5: Lint, type-check, commit**
 
 ```bash
 uv run ruff check && uv run ruff format && uv run ty check && uv run pytest
@@ -762,7 +762,7 @@ Turning the model's array into coerced drafts. Still pure — no session.
 - `seq` is 1-based *within its message*, assigned in the order the model
   returned the facts.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `tests/test_extract.py`:
 
@@ -864,12 +864,12 @@ def test_seq_restarts_within_each_message():
     assert [d.seq for d in drafts] == [1, 2]
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `uv run pytest tests/test_extract.py -v`
 Expected: FAIL with `ImportError: cannot import name 'Draft'`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Add to `telegrind/extract.py`:
 
@@ -933,12 +933,12 @@ def drafts_from(
     return drafts, complaints
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `uv run pytest tests/test_extract.py -v`
 Expected: PASS, 16 tests
 
-- [ ] **Step 5: Lint, type-check, commit**
+- [x] **Step 5: Lint, type-check, commit**
 
 ```bash
 uv run ruff check && uv run ruff format && uv run ty check && uv run pytest
@@ -987,7 +987,7 @@ updates it in place; a seq with no draft is tombstoned; a tombstone is never
 lifted here — only the user's reaction clears `deleted_at`. The partial unique
 index is what makes the insert-over-a-tombstone case work.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_store.py`:
 
@@ -1140,12 +1140,12 @@ async def test_a_failed_call_leaves_the_tail_pending_and_countable():
     assert "503" in tail[0].extract_error
 ```
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `uv run pytest tests/test_extract.py tests/test_store.py -v`
 Expected: FAIL with `ImportError: cannot import name 'run'` / `AttributeError: … 'replace_facts'`
 
-- [ ] **Step 3: Write the store half**
+- [x] **Step 3: Write the store half**
 
 ```python
 # telegrind/store.py
@@ -1227,7 +1227,7 @@ async def replace_facts(
 Put `Draft` behind `if TYPE_CHECKING:` and quote the annotation — the cycle
 is then a type-checker concern only, and `ty` resolves it.
 
-- [ ] **Step 4: Write the llm half**
+- [x] **Step 4: Write the llm half**
 
 ```python
 # telegrind/llm.py
@@ -1316,7 +1316,7 @@ async def say(system: str, user: str, *, model: str | None = None) -> str:
     ).strip()
 ```
 
-- [ ] **Step 5: Write `run`**
+- [x] **Step 5: Write `run`**
 
 ```python
 # telegrind/extract.py
@@ -1393,12 +1393,12 @@ async def run(
     )
 ```
 
-- [ ] **Step 6: Run the tests**
+- [x] **Step 6: Run the tests**
 
 Run: `uv run pytest -v`
 Expected: PASS
 
-- [ ] **Step 7: Lint, type-check, commit**
+- [x] **Step 7: Lint, type-check, commit**
 
 ```bash
 uv run ruff check && uv run ruff format && uv run ty check && uv run pytest
@@ -1441,7 +1441,7 @@ Deterministic arithmetic. No model in this task at all.
   parseable value a real JSON number. Rows that fail it are counted as
   `skipped` and reported, not silently left out of the total.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_query.py
@@ -1536,12 +1536,12 @@ async def test_run_groups_when_asked():
     assert [row.group for row in answer.rows] == ["Вася", "Петя"]
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `uv run pytest tests/test_query.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'telegrind.query'`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```python
 # telegrind/query.py
@@ -1720,12 +1720,12 @@ async def _last(session: AsyncSession, where: list, spec: Spec) -> Answer:
     return Answer(rows=[Row(group=None, value=float(row[0]), n=1)], skipped=0)
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `uv run pytest tests/test_query.py -v`
 Expected: PASS, 7 tests
 
-- [ ] **Step 5: Lint, type-check, commit**
+- [x] **Step 5: Lint, type-check, commit**
 
 ```bash
 uv run ruff check && uv run ruff format && uv run ty check && uv run pytest
@@ -1753,7 +1753,7 @@ The two model calls that bracket the SQL.
 - `spec_for` raises `query.Unanswerable`, which the handler turns into
   «не понял, переформулируй».
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_answer.py
@@ -1842,12 +1842,12 @@ async def test_render_says_plainly_when_there_is_nothing():
     assert "нет" in text.lower()
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `uv run pytest tests/test_answer.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'telegrind.answer'`
 
-- [ ] **Step 3: Add the prompts to `llm.py`**
+- [x] **Step 3: Add the prompts to `llm.py`**
 
 ```python
 QUERY_SYSTEM_TEMPLATE = """\
@@ -1901,7 +1901,7 @@ ANSWER_SYSTEM = """\
 """
 ```
 
-- [ ] **Step 4: Write `answer.py`**
+- [x] **Step 4: Write `answer.py`**
 
 ```python
 # telegrind/answer.py
@@ -1967,12 +1967,12 @@ async def render(
     )
 ```
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `uv run pytest tests/test_answer.py -v`
 Expected: PASS, 5 tests
 
-- [ ] **Step 6: Lint, type-check, commit**
+- [x] **Step 6: Lint, type-check, commit**
 
 ```bash
 uv run ruff check && uv run ruff format && uv run ty check && uv run pytest
@@ -2015,7 +2015,7 @@ The trigger. Everything above becomes reachable here.
 - Backlog latency is accepted: the first `/q` after a quiet week pays for the
   week. No background flush in this version.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_qhandler.py
@@ -2141,12 +2141,12 @@ async def test_a_question_the_spec_cannot_express_is_refused_honestly():
     assert "переформулируй" in text
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `uv run pytest tests/test_qhandler.py -v`
 Expected: FAIL with `ImportError: cannot import name 'query'`
 
-- [ ] **Step 3: Write the handler**
+- [x] **Step 3: Write the handler**
 
 ```python
 # telegrind/bot/handlers/query.py
@@ -2256,7 +2256,7 @@ async def ask(
     await bot.send_message(message.chat.id, text)
 ```
 
-- [ ] **Step 4: Register it ahead of the catch-all**
+- [x] **Step 4: Register it ahead of the catch-all**
 
 ```python
 # telegrind/bot/handlers/__init__.py
@@ -2277,12 +2277,12 @@ Ruff's isort rule will want these alphabetised. Add `# noqa: I001` on the
 block — and check that it is *needed* before leaving it in, because an unused
 noqa is itself an RUF100 error. (This bit twice in Phase 1.)
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `uv run pytest -v`
 Expected: PASS
 
-- [ ] **Step 6: Verify the registration order is real, not assumed**
+- [x] **Step 6: Verify the registration order is real, not assumed**
 
 ```bash
 uv run python -c "
@@ -2299,7 +2299,7 @@ off the **sub-router**, not off `dp.message` — everything here is registered
 on `telegrind.bot.router.router`, so `dp.message.handlers` is empty and prints
 a reassuring `[]` that proves nothing.
 
-- [ ] **Step 7: Lint, type-check, commit**
+- [x] **Step 7: Lint, type-check, commit**
 
 ```bash
 uv run ruff check && uv run ruff format && uv run ty check && uv run pytest
@@ -2336,7 +2336,7 @@ for one whose facts are now stale.
 - The re-extraction shares `replace_facts`, so a fact that disappeared from the
   edited text is tombstoned and one that changed is updated in place.
 
-- [ ] **Step 1: Refactor `run` around a shared `_pass`**
+- [x] **Step 1: Refactor `run` around a shared `_pass`**
 
 ```python
 # telegrind/extract.py
@@ -2379,7 +2379,7 @@ async def run_for(
     return await _pass(session, chat, cfg, [row], context_size=context_size, call=call)
 ```
 
-- [ ] **Step 2: Write the failing handler test**
+- [x] **Step 2: Write the failing handler test**
 
 Append to `tests/test_ingest.py`:
 
@@ -2524,12 +2524,12 @@ async def test_editing_a_command_leaves_it_out_of_the_extractor(monkeypatch):
 `handlers.py` must call `extract.run_for(...)` — not `from … import run_for`,
 which would bind the real function at import time and make the patch useless.
 
-- [ ] **Step 3: Run it to verify it fails**
+- [x] **Step 3: Run it to verify it fails**
 
 Run: `uv run pytest tests/test_ingest.py -v -k edit`
 Expected: FAIL — `record_edited` makes no call today.
 
-- [ ] **Step 4: Change `record_edited`**
+- [x] **Step 4: Change `record_edited`**
 
 ```python
 @router.edited_message()
@@ -2571,12 +2571,12 @@ async def record_edited(
 `config: ChatConfig` is a new kwarg on this handler; the middleware already
 injects it, so nothing else changes.
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `uv run pytest -v`
 Expected: PASS
 
-- [ ] **Step 6: Lint, type-check, commit**
+- [x] **Step 6: Lint, type-check, commit**
 
 ```bash
 uv run ruff check && uv run ruff format && uv run ty check && uv run pytest
@@ -2610,7 +2610,7 @@ problems, both fixable:
   each row with a `date:` gains a `sent:`, and the test builds a message with
   that `tg_date`.
 
-- [ ] **Step 1: Rewrite the fixture header and rows**
+- [x] **Step 1: Rewrite the fixture header and rows**
 
 ```yaml
 # message -> what the extractor must get right about it.
@@ -2630,7 +2630,7 @@ problems, both fixable:
 # ...the rest of the corpus, `category:` removed throughout
 ```
 
-- [ ] **Step 2: Write the gate**
+- [x] **Step 2: Write the gate**
 
 ```python
 # tests/test_extraction_quality.py
@@ -2678,20 +2678,20 @@ async def test_the_corpus_still_extracts(case: dict):
         assert CFG.localized(drafts[0].at).date().isoformat() == case["date"]
 ```
 
-- [ ] **Step 3: Run the gate against the real model**
+- [x] **Step 3: Run the gate against the real model**
 
 Run: `uv run pytest -m llm -v`
 Expected: PASS. If a row fails, **fix the prompt, not the fixture** — the
 corpus is real messages and the labels are what the bot is supposed to do.
 Record any row you deliberately relax, and why.
 
-- [ ] **Step 4: Fix the `.env.dist` comment**
+- [x] **Step 4: Fix the `.env.dist` comment**
 
 `LLM_MODEL_ESCALATE` says "reserved for Phase 2 re-extraction" and Phase 2
 does not use it. Change the comment to say it is not wired up yet, or delete
 the variable — do not leave it describing a feature that does not exist.
 
-- [ ] **Step 5: Update the docs**
+- [x] **Step 5: Update the docs**
 
 - `CLAUDE.md`: the `## What This Is` paragraph loses "a later batch pass
   derives facts" as future tense; `## Architecture` gains the `/q` flow and
@@ -2769,3 +2769,50 @@ git commit -m "docs: Phase 2 walked end to end on the dev stack"
   starts showing `expense`/`расход`/`spending` as three kinds, the fix is
   probably a merge pass, not a stronger prompt — but do not build it before
   seeing it.
+
+---
+
+## Execution outcome — 2026-09-11, inline
+
+Tasks 1–9 and Task 10 steps 1–5 are done, each on its own commit. The default
+suite is 124 tests; the `-m llm` gate is 23 and passes 23/23 against
+`claude-haiku-4-5`. `ruff check`, `ruff format` and `ty check` are clean at
+every commit. Steps 6–8 below are the manual walkthrough and are not done.
+
+**Five deviations from the plan as written, all found by running it:**
+
+1. **`session.begin()` cannot be called twice.** Task 8's `ask` read the
+   pending count outside a transaction and then opened one; SQLAlchemy 2
+   autobegins on the read, so the second `begin()` raises *«A transaction is
+   already begun on this Session»* (measured against a live `Session`). The
+   count now runs in a transaction of its own. The plan text is corrected.
+2. **`handlers/__init__.py` alone does not win the registration race.**
+   `query.py` needs `RECEIPT_EMOJI` and `acknowledge`, and importing them from
+   `handlers.py` runs that module to completion — registering the
+   `COMMAND_LIKE` catch-all — before `/q`'s own decorator. The decorator-free
+   half moved to `telegrind/bot/handlers/receipts.py`, re-exported from
+   `handlers.py` so existing imports still work. Verified: the router's
+   handlers are `['ask', 'record_command', 'record_voice', 'record_text']`.
+   The plan's own verification command was also wrong — it printed
+   `dp.message.handlers`, which is empty here because everything registers on
+   the sub-router, so it returned a reassuring `[]` that proved nothing.
+3. **`dateparser` returns None for «вчера вечером».** Not a wrong date — no
+   date at all, for every Russian `<day> <time-of-day>` compound
+   (`вчера утром`, `позавчера вечером`, `в понедельник утром`, …). The whole
+   phrase then fell through to the message's own timestamp, so «вчера» quietly
+   became today. This is the most common way he writes a date, and the
+   `-m llm` gate is what caught it. `coerce.to_instant` now strips the
+   time-of-day qualifier and re-parses; the day, which is what a fact is filed
+   under, survives. `coerce.py` was named as untouched in the Global
+   Constraints — that was about the numeric guard, which is unchanged.
+4. **`tests/conftest.py` loads `.env` through python-dotenv.** `.env` has CRLF
+   line endings; sourcing it in a shell carries the `\r` into
+   `ANTHROPIC_API_KEY`, and the Anthropic client reports the resulting illegal
+   header *by printing the whole key*. Loading it in-process avoids both the
+   failure and the disclosure, and makes `uv run pytest -m llm` work as the
+   plan says it does.
+5. **Lint fixes the plan's code did not anticipate:** `ANN` wants a return
+   annotation on every test and nested fake; `N818` wants an `Error` suffix on
+   `Unanswerable` (kept, with a `noqa` — it reads as the refusal, not an
+   error); `ty` rejects a bare `dict` for the Anthropic `tools` parameter, so
+   `EXTRACT_TOOL` and `QUERY_TOOL` are typed `ToolParam`.
