@@ -224,8 +224,10 @@ user. Two replacements:
 - **Extraction failures are reported, not silent.** A message whose extraction
   errored keeps `extracted_at` null and records the reason in `extract_error`;
   `/q` reports «N сообщений не удалось разобрать» alongside the answer.
-- **Receipt** is either nothing at all, or a reaction on the incoming message.
-  Gated on the probe below.
+- **Receipt is a reaction the bot places on the incoming message** — 👀, one
+  `setMessageReaction` per stored message. It says "received and kept", and it
+  is also the delete affordance: see below. One call does both jobs, and at
+  roughly one request per second per chat it costs nothing for a personal bot.
 
 ## Edit and delete
 
@@ -237,12 +239,32 @@ today.
 `deleted_business_messages`, which requires a `business_connection_id`; for a
 plain bot a user deleting a message is invisible. This is settled, not open.
 
-So deletion is explicit, and it is a **reaction on the message**: one designated
-emoji tombstones that message's facts, and removing it clears `deleted_at`.
-Measured 2026-09-11 against the live bot — `message_reaction` does arrive in a
-private chat with no administrator, and removal arrives as its own update with
-an empty `new_reaction`, so both halves of the gesture are observable. The bare
-`-` marker goes.
+So deletion is explicit, and it is **any reaction the user puts on their own
+message**: it tombstones that message's facts, and removing the reaction clears
+`deleted_at`. The bare `-` marker goes.
+
+**Why any reaction rather than a designated one.** The Bot API cannot restrict
+which emoji a chat offers — `setMessageReaction` sets the *bot's* reaction and
+`available_reactions` is read-only, and even in the client the restriction is a
+group/channel admin feature that a private chat does not have. Since the picker
+cannot be narrowed, the accepted set is widened instead: whatever is nearest to
+hand works, and hunting for one specific emoji is never required.
+
+**The receipt reaction is the affordance.** Because the bot has already placed
+👀 on the message, the user taps that existing bubble — one tap, no picker —
+and that is the delete gesture. 👎 stays a documented convention, not a
+condition.
+
+Measured 2026-09-11 against the live bot, all four halves of this:
+
+- `message_reaction` arrives in a private chat with no administrator.
+- Removing a reaction arrives as its own update with an empty `new_reaction`.
+- A bot may react to the *user's* message; the bot's own reaction produces no
+  update, so there is no feedback loop.
+- Tapping a bubble the bot already placed produces a full update from the user
+  — and `old_reaction` came back empty even though the bot's 👀 was on the
+  message. **The two reaction lists are per-user, not the message's total**, so
+  the handler never has to work out whose reaction it is looking at.
 
 ## Importing existing history
 
@@ -350,7 +372,7 @@ design — is answered by that same first commit.
 
 ## Probes
 
-**Does `message_reaction` reach a bot in a private chat? — RESOLVED, yes**
+**Reaction mechanics — RESOLVED, see *Edit and delete*.** In summary, yes:
 (2026-09-11, measured against `@assinstantbot`). The schema's "the bot must be
 an administrator in the chat" is vacuous in a private chat: with
 `allowed_updates` including `message_reaction`, setting a reaction produced
@@ -370,6 +392,6 @@ in *Importing existing history*.
 3. Ingest: store unconditionally, mark `extractable`, no reply.
 4. Batch extraction over a window, with the observed taxonomy in the prompt.
 5. `/q`: extract the tail, then the query spec, SQL, prose answer.
-6. Reaction-driven delete: a `message_reaction` handler that tombstones and
-   restores.
+6. Reaction-driven delete: 👀 placed on ingest as the receipt, and a
+   `message_reaction` handler that tombstones and restores.
 7. History import.

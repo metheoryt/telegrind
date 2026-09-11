@@ -31,6 +31,11 @@ One bullet per fact, under a topical heading. No secrets.
   separate update with an empty `new_reaction`. So reaction-driven UX is
   reachable, and removal is observable too — do not re-derive this from the
   docs, they do not settle it.
+- **`old_reaction`/`new_reaction` are that one user's reactions, not the
+  message's total.** A bot can react to the user's own message, its reaction
+  never appears in those lists, and it generates no update — so the bot can
+  place a reaction as an affordance and the user taps that existing bubble to
+  react with one tap. Measured 2026-09-11.
 - **Message deletion cannot be observed at all.** The only deletion update is
   `deleted_business_messages`, and `getMe` reports `can_connect_to_business:
   false` for this bot. Dead twice over.
