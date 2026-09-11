@@ -61,6 +61,17 @@ def test_values_lift_the_voice_file_and_duration() -> None:
     assert values["text"] is None
 
 
+def test_an_edit_timestamp_arrives_as_a_unix_int() -> None:
+    """aiogram parses `date` into a datetime and leaves `edit_date` an int.
+
+    Production sent 1789094740 straight into a timestamptz column and the
+    whole edit died. The fake used to pass a datetime here, which is
+    exactly why the suite stayed green while the bot did not.
+    """
+    values = message_values(text_message(edit_date=1789094740))
+    assert values["edited_at"] == datetime(2026, 9, 11, 2, 45, 40, tzinfo=UTC)
+
+
 def test_values_carry_the_edit_timestamp() -> None:
     edited = datetime(2026, 9, 9, 16, 0, tzinfo=UTC)
     values = message_values(text_message(edit_date=edited))

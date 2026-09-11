@@ -4,7 +4,7 @@ The log is append-on-first-sight, overwrite-on-edit. Nothing here deletes a
 message row: a Telegram delete removes facts, never the log.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from aiogram.types import Message
@@ -16,6 +16,20 @@ from telegrind.models import KIND_TEXT, KIND_VOICE, Chat, Fact, LoggedMessage
 
 def message_kind(msg: Message) -> str:
     return KIND_VOICE if getattr(msg, "voice", None) else KIND_TEXT
+
+
+def edited_at(msg: Message) -> datetime | None:
+    """The edit timestamp, as a datetime.
+
+    aiogram parses `date` into a datetime but leaves `edit_date` a raw
+    Unix int, and the column is a timestamptz — so handing it straight
+    over kills the whole edit with a DataError. Telegram's timestamps are
+    UTC.
+    """
+    raw = getattr(msg, "edit_date", None)
+    if raw is None or isinstance(raw, datetime):
+        return raw
+    return datetime.fromtimestamp(raw, tz=UTC)
 
 
 def message_values(msg: Message) -> dict[str, Any]:
@@ -38,7 +52,7 @@ def message_values(msg: Message) -> dict[str, Any]:
         "audio_file_id": voice.file_id if voice else None,
         "audio_duration": voice.duration if voice else None,
         "tg_date": origin.date if origin else msg.date,
-        "edited_at": getattr(msg, "edit_date", None),
+        "edited_at": edited_at(msg),
         "raw": msg.model_dump(mode="json"),
     }
 
