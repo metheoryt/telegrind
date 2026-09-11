@@ -164,3 +164,74 @@ every send. One line of interest, not a plan.
 - <https://core.telegram.org/bots/api> — the reference
 - <https://core.telegram.org/bots/api-changelog> — version history
 - the installed `aiogram` package — the authority on what is callable *here*
+
+## Corrections and additions (2026-09-12)
+
+**"What telegrind uses today", above, describes a bot that no longer exists.**
+That section was written 2026-09-10; the workbook layer was deleted and
+ingestion rewritten the next day. `format_records`, `delete_record`, `_ingest`,
+`TIP_TEXT`, the `sendVideo` intro and the `ChatActionMiddleware` are all gone,
+`/q` is the only registered command, and there is no Sheets projection to be
+"the only way to see a fact". What telegrind actually calls now is
+`setMessageReaction` (💔 / ❤‍🔥 / 💘 as the receipt cycle), `sendMessage` for
+`/q` answers, and long polling over `message` + `edited_message` +
+`message_reaction`. The rest of this file — version state, update types, the
+available-now survey, the bump list, the ruled-out list and the hard limits —
+was checked against the installed aiogram tree and still stands.
+<!-- src: telegrind 35574a2 | 2026-09-12 -->
+
+### aiogram types and filters
+
+<!-- src: telegrind 35574a2 | 2026-09-12 -->
+
+- **`Message.date` is parsed into a `datetime`; `Message.edit_date` is left a
+  raw Unix integer.** Handing it straight to a `timestamptz` column kills the
+  whole edit transaction with a `DataError`, so the message keeps its old text
+  and its old reaction and the failure reads as "the bot ignored my edit".
+  Convert with `datetime.fromtimestamp(raw, tz=UTC)` — Telegram timestamps are
+  UTC.
+- **`F.text.startswith("/")` resolves to `None` and does not raise when
+  `message.text` is `None`** (a voice note, a photo, a sticker). Measured
+  directly against aiogram 3.27, contradicting the assumption that it would blow
+  up during filter evaluation. A slash catch-all can therefore sit safely ahead
+  of media handlers in registration order.
+- **But an exception raised *inside* a filter aborts the whole update** before
+  any handler runs — no reply, and nothing logged as a handler error. Calling
+  `.strip()` on a `None` text inside a marker filter silently killed every
+  reply-to-a-photo update. Guard the `None` inside the predicate, never at the
+  call site.
+- **`reply_to_message_id` is deprecated as of aiogram 3.27** — the installed
+  `aiogram/methods/send_message.py` carries `json_schema_extra={"deprecated":
+  True}` on the field. Use `ReplyParameters(message_id=...)` on every reply.
+- **`dp.message.handlers` is EMPTY when handlers register on a sub-router** the
+  dispatcher includes; it lists only handlers bound directly to the dispatcher.
+  A verification command that prints it returns a reassuring `[]` that proves
+  nothing. Iterate `dp.sub_routers` and read `r.message.handlers`.
+- **`managed_bot` / `getManagedBotToken` / `replaceManagedBotToken` are a bot
+  *factory* feature** — a bot that creates other bots and fetches their tokens —
+  not bot-to-bot collaboration in a chat. Do not reach for them when looking for
+  a way to make two runtimes cooperate.
+
+### Bot API semantics worth knowing before designing against them
+
+<!-- src: telegrind 35574a2 | 2026-09-12 -->
+
+- **Telegram includes exactly one level of reply.**
+  `message.reply_to_message.reply_to_message` is always `None`. Anything that
+  needs the grandparent has to look it up in the bot's own stored rows — which
+  is one of the reasons to store the messages the bot itself sends.
+- **`MessageOriginHiddenUser` carries no user id**, only a display-name string,
+  so "is this forward from me?" is unanswerable for that variant of the
+  `forward_origin` union. Any rule branching on a forwarded message's authorship
+  needs a third "unknown" arm or it dies on a `None`.
+- **Long polling is exclusive, `sendMessage` is not.** Only one process can
+  consume a bot's updates, so a second runtime cannot subscribe to the same bot
+  — it has to read what the first one persisted. The asymmetry is the trap:
+  sending keeps working even when the polling process is dead, so a
+  send-only second runtime looks alive while it is deaf. Check the freshness of
+  the stored messages before replying.
+- **Telegram queues updates a bot did not collect**, so restarting a dead bot
+  delivers everything sent while it was down — nothing the user typed is lost.
+  The practical consequence: "I sent a message and nothing happened" has two
+  indistinguishable causes, a dead process and a raising handler, and only a
+  unit test driving the handler tells them apart.

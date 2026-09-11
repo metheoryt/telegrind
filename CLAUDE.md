@@ -186,3 +186,85 @@ tombstoned fact does not collide with the row that replaces it.
 and is what `fact.prompt_version` records; the query and prose prompts persist
 nothing and are not versioned.
 
+
+## Working in this repo — traps that have already cost time
+
+**The suite is not the gate the prompt is.** `addopts = "-m 'not llm'"`, so a
+plain `uv run pytest` deselects `tests/test_extraction_quality.py` entirely.
+Run it with `uv run pytest -m llm`; it hits the Anthropic API and costs tokens,
+and it needs `ANTHROPIC_API_KEY` in the environment or every case **silently
+SKIPs rather than fails**. It is also a stochastic oracle — real API, default
+temperature — so a case measured 10/10 in isolation can still fail roughly 2
+runs in 18. Probe a suspect case several times before believing one failure.
+<!-- src: telegrind 35574a2 | 2026-09-12 -->
+
+**A gate that runs under conditions production never sees is worth nothing.**
+The `-m llm` gate went 24/24 green while the live chat kept filing measurements
+in the catch-all kind, because the gate rendered the chat vocabulary as
+`"(пусто)"` — the one condition under which a catch-all cannot swallow
+anything. When fixing a prompt defect, write the assertion that can see it
+first and watch it fail; then check that the fixture's conditions match a real
+pass. And when a prompt change flips a fixture, decide which of the two is
+wrong before reverting the prompt — twice the fixture was the wrong oracle
+(`12 октября куплю подарок за 20000` is a `wish`, not an `expense`, because an
+expense dated in the future would be counted before the money moved).
+<!-- src: telegrind 35574a2 | 2026-09-12 -->
+
+**The manual walkthrough on the dev stack is not ceremony.** Every end-to-end
+walk has found a defect the unit suite structurally could not see: an edit
+timestamp arriving as a raw Unix int and killing every edit; a database URL
+right on the host and wrong inside the container; a measurement landing in the
+catch-all kind where no aggregate could reach its number; and two independent
+facts collapsing onto one message, double-counting a sum after an edit. Do not
+skip it because the suite is green.
+<!-- src: telegrind 35574a2 | 2026-09-12 -->
+
+**Never `source` this repo's `.env` in a shell.** It has CRLF line endings, so
+`source` / `set -a` carries a trailing `\r` into every value — and when that
+reaches an HTTP header the Anthropic client reports the illegal header *by
+printing the whole API key* into the failure output. `tests/conftest.py` loads
+it in-process with python-dotenv for exactly this reason. Pass `load_dotenv` an
+explicit path (with no argument it resolves relative to the calling script, and
+it asserts on `frame.f_back` under a `python -` heredoc), and pipe anything that
+could surface a key through `sed -E 's/sk-ant-[A-Za-z0-9_-]+/sk-ant-***/g'`.
+Likewise never dump `docker compose config --format json` — it prints every
+resolved secret.
+<!-- src: telegrind 35574a2 | 2026-09-12 -->
+
+**A configured tool is not a running tool.** `ty` sat in `pyproject.toml` for
+weeks without ever being installed, so a plan that said "expect PASS" was
+written against a baseline nobody had measured — installing it surfaced 13
+diagnostics. Confirm the binary exists and run it once before trusting a gate.
+<!-- src: telegrind 35574a2 | 2026-09-12 -->
+
+**Lint specifics that look like bugs and are not.** An unused `# noqa` is itself
+an error here (`RUF100`), and `BLE` is not among the enabled rule sets — so
+`# noqa: BLE001` on a broad `except Exception` is flagged as an unused
+suppression. Write the reason as a plain comment instead. `ANN` wants a return
+annotation on every function including every test and nested fake; `T20` bans
+`print`; `RUF001-003` are ignored because Cyrillic literals are the app's
+language. On Python 3.14, PEP 758 makes unparenthesized
+`except APIError, NoValidUrlKeyFound:` valid and deferred annotations make
+quoted forward references wrong (`UP037`) — do not "fix" either.
+<!-- src: telegrind 35574a2 | 2026-09-12 -->
+
+**aiogram stops handler propagation on any non-`SkipHandler` return.** A handler
+that matches an update and then decides it does not want it must
+`raise SkipHandler`; returning `None` silently consumes the update and no later
+handler ever sees it. The symptom is a message that produces no row, no
+reaction and no reply at all.
+<!-- src: telegrind 35574a2 | 2026-09-12 -->
+
+**In SQLAlchemy 2 a bare read autobegins, so `session.begin()` is not
+re-entrant.** A read taken "outside a transaction" and then followed by
+`async with session.begin():` raises *A transaction is already begun on this
+Session*. It has bitten four separate sites. The suite cannot catch it: this
+repo's hand-written fake sessions yield from `begin()` unconditionally, so only
+reading the code or running against a real `Session` finds it.
+<!-- src: telegrind 35574a2 | 2026-09-12 -->
+
+**Bump `PROMPT_VERSION` only when the prompt changed meaning.** It is stamped on
+every extracted fact and is what a later re-extraction pass uses to find facts
+produced by an older prompt; a gratuitous bump invalidates the eval baseline and
+stamps mismatched versions on facts written during live testing.
+<!-- src: telegrind 35574a2 | 2026-09-12 -->
