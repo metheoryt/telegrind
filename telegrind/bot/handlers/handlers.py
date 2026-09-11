@@ -1,20 +1,18 @@
-"""Freeform ingestion.
+"""Ingestion. Store, mark, react — and say nothing.
 
-Registration order is match order: voice, then the slash catch-all, then
-the catch-all text handler. `edited_message` is a separate observer and
-does not compete with them.
+There is no echo. Writing a message produces no reply: the confirmation
+that the bot understood arrives when you ask, in the answer to /q. What
+the bot does say on ingest is one reaction, and that reaction is also the
+delete affordance — see handlers/reactions.py.
 
-Extraction and projection are gone with the workbook. What is left here
-is the invariant: every handler writes the message row to Postgres
-unconditionally. Task 5 of the Phase 1 plan replaces the replies with a
-reaction; until then the bot still says something.
+Registration order is match order: the slash catch-all first so a command
+is never recorded as a fact, then voice, then everything else.
 """
 
 import logging
-from collections.abc import Callable
 
-from aiogram import F, flags
-from aiogram.types import Message
+from aiogram import Bot, F
+from aiogram.types import Message, ReactionTypeEmoji
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from telegrind import store
@@ -23,61 +21,93 @@ from telegrind.models import Chat
 
 log = logging.getLogger(__name__)
 
-STORED_TEXT = "Сохранила."
-VOICE_PENDING_TEXT = (
-    "Голосовые пока не расшифровываю, но сообщение сохранила — разберу, когда научусь."
-)
-UNKNOWN_COMMAND_TEXT = "Не знаю такой команды. Сообщение сохранила."
+#: What the bot puts on every stored message. The bubble's presence is the
+#: receipt; its emoji names what tapping it does, because tapping it is the
+#: delete gesture. A broken heart warns without 👎's flavour of the bot
+#: disapproving of every line the user writes.
+RECEIPT_EMOJI = "💔"
 
-
-def is_marker(marker: str) -> Callable[[str | None], bool]:
-    """A filter predicate for a bare one-token reply like `-` or `??`.
-
-    `F.text` is None for a reply that carries no text — a reply to a photo,
-    a sticker, a voice note — and calling .strip() on it inside a filter
-    raises *during filter evaluation*, which aborts the whole update before
-    any handler runs. Guard the None here, not at the call site.
-    """
-    return lambda text: bool(text) and text.strip() == marker
-
-
-#: A slash-prefixed message that no Command filter claimed. Registered
-#: immediately before the catch-all so a mistyped /rebiuld is not extracted.
+#: A slash-prefixed message. Stored like everything else, never extracted:
+#: a batch pass must not coin a kind out of a command. It resolves to None
+#: rather than raising when there is no text, so a photo falls through.
 COMMAND_LIKE = F.text.startswith("/")
 
 
-@router.message(F.voice)
-@flags.chat_action(action="typing", initial_sleep=0.5)
-async def record_voice(message: Message, chat: Chat, session: AsyncSession) -> None:
-    """Log the voice note without transcribing it."""
+async def acknowledge(bot: Bot, chat_id: int, message_id: int) -> None:
+    """Place the receipt reaction. Never fatal.
+
+    The message row is committed before this runs, so a Telegram failure
+    here costs a visual cue and nothing else. Raising would lose the
+    update; the invariant is about the row, not the bubble.
+    """
+    try:
+        await bot.set_message_reaction(
+            chat_id=chat_id,
+            message_id=message_id,
+            reaction=[ReactionTypeEmoji(emoji=RECEIPT_EMOJI)],
+        )
+    except Exception:  # cosmetic, and the row is already safe
+        log.warning("could not set the receipt reaction on %s", message_id)
+
+
+async def _store(
+    message: Message,
+    chat: Chat,
+    session: AsyncSession,
+    bot: Bot,
+    *,
+    extractable: bool,
+) -> None:
     async with session.begin():
-        await store.upsert_message(session, chat, message)
-    await message.reply(VOICE_PENDING_TEXT)
+        await store.upsert_message(session, chat, message, extractable=extractable)
+    await acknowledge(bot, message.chat.id, message.message_id)
 
 
 @router.message(COMMAND_LIKE)
-async def unknown_command(message: Message, chat: Chat, session: AsyncSession) -> None:
-    """Store an unrecognised command instead of treating it as a fact.
-
-    Declining to *extract* something is never licence to drop it.
-    """
-    async with session.begin():
-        await store.upsert_message(session, chat, message)
-    await message.reply(UNKNOWN_COMMAND_TEXT)
-
-
-@router.message(F.text)
-@flags.chat_action(action="typing", initial_sleep=0.5)
-async def record_text(message: Message, chat: Chat, session: AsyncSession) -> None:
-    async with session.begin():
-        await store.upsert_message(session, chat, message)
-    await message.reply(STORED_TEXT)
-
-
-@router.edited_message(F.text)
-@flags.chat_action(action="typing", initial_sleep=0.5)
-async def record_edited(
-    edited_message: Message, chat: Chat, session: AsyncSession
+async def record_command(
+    message: Message, chat: Chat, session: AsyncSession, bot: Bot
 ) -> None:
-    async with session.begin():
-        await store.upsert_message(session, chat, edited_message)
+    """Store a command without extracting it.
+
+    /q is answered in Phase 2 and reaches this handler until then. Storing
+    it keeps the invariant; extractable=False keeps it out of the taxonomy.
+    """
+    await _store(message, chat, session, bot, extractable=False)
+
+
+@router.message(F.voice)
+async def record_voice(
+    message: Message, chat: Chat, session: AsyncSession, bot: Bot
+) -> None:
+    """Log the voice note without transcribing it.
+
+    There is no ASR. Logging it now means a later transcription pass can
+    reach back over everything recorded in the meantime.
+    """
+    await _store(message, chat, session, bot, extractable=True)
+
+
+@router.message()
+async def record_text(
+    message: Message, chat: Chat, session: AsyncSession, bot: Bot
+) -> None:
+    """Store anything else the user sent.
+
+    No filter, deliberately: a sticker, a photo or a document is a message
+    the user sent, so it is stored. `message_values` already handles a
+    caption and a missing text.
+    """
+    await _store(message, chat, session, bot, extractable=True)
+
+
+@router.edited_message()
+async def record_edited(
+    edited_message: Message, chat: Chat, session: AsyncSession, bot: Bot
+) -> None:
+    """An edit overwrites the text and clears the extraction state.
+
+    upsert_message does the clearing, so the next batch pass picks the
+    message up again. Nothing is re-extracted here: extraction happens
+    when you ask.
+    """
+    await _store(edited_message, chat, session, bot, extractable=True)
