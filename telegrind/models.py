@@ -29,6 +29,11 @@ class Chat(Model):
     id: Mapped[int] = mapped_column(primary_key=True)
     chat_id: Mapped[int] = mapped_column("chat_id", BigInteger)
     sheet_url: Mapped[str | None]
+    #: Hours east of UTC. A fixed offset, not a zone name: the bot serves one
+    #: person per chat and DST has never come up. Default is Almaty.
+    tz_offset: Mapped[int] = mapped_column(default=6, server_default="6")
+    #: ISO 4217, used when a message states an amount and no currency.
+    currency: Mapped[str] = mapped_column(default="KZT", server_default="KZT")
 
 
 class File(Model):

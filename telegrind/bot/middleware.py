@@ -6,6 +6,7 @@ from aiogram.types import Message, TelegramObject, Update
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from telegrind.config import ChatConfig
 from telegrind.models import Chat
 
 from .dispatcher import dp
@@ -45,6 +46,7 @@ async def populate_chat_data(
                 session.add(chat)
 
         data["chat"] = chat
+        data["config"] = ChatConfig.of(chat)
         data["session"] = session
 
         return await handler(event, data)
