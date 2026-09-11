@@ -5,6 +5,7 @@ from typing import Any
 
 from telegrind.bot.handlers import query as handler
 from telegrind.config import ChatConfig
+from telegrind.models import VERDICT_SYSTEM
 from telegrind.query import Answer, Row, Spec
 
 CFG = ChatConfig(tz_offset=6, currency="KZT")
@@ -197,13 +198,30 @@ def ask_message(message_id: int = 777) -> SimpleNamespace:
 async def test_ask_sends_the_answer_as_a_reply_to_the_question() -> None:
     """A follow-up only resolves because the answer goes out as a reply to
     the question that triggered it — this pins `reply_to=message.message_id`
-    against a regression that drops it or reverts to `bot.send_message`."""
+    against a regression that drops it or reverts to `bot.send_message`.
+
+    Sending correctly is not enough: a regression that bypasses
+    `outbound.say` for a direct `bot.send_message(..., reply_parameters=...)`
+    would still pass a send-only check, and would silently stop storing the
+    bot's own messages — the whole point of Task 2. So this also asserts
+    what actually reached the session, not just what reached the bot.
+    """
+    session = AskSession()
     bot = AskBot()
     message = ask_message()
 
-    await handler.ask(message, CHAT, CFG, AskSession(), bot)
+    await handler.ask(message, CHAT, CFG, session, bot)
 
     # The "разбираю N сообщений" notice and the answer both went out.
     assert len(bot.sent) == 2
     assert bot.sent[0].get("reply_parameters") is None
     assert bot.sent[1]["reply_parameters"].message_id == message.message_id
+
+    # Both went through outbound.say, not a bare bot.send_message: the
+    # question itself is stored first (verdict=question), then the two
+    # outbound sends land as system rows, extractable=False.
+    stored = [(r.text, r.verdict, r.extractable) for r in session.added]
+    assert stored[1:] == [
+        ("Разбираю 1 сообщений…", VERDICT_SYSTEM, False),
+        ("Спроси что-нибудь после /q.", VERDICT_SYSTEM, False),
+    ]
