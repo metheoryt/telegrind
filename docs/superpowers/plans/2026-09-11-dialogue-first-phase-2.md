@@ -2701,7 +2701,7 @@ the variable — do not leave it describing a feature that does not exist.
   to **DONE**, and say in **How it works** that asking is what triggers the
   parse.
 
-- [ ] **Step 6: Walk it end to end on the dev stack**
+- [x] **Step 6: Walk it end to end on the dev stack**
 
 ```bash
 docker compose up -d --build
@@ -2734,7 +2734,7 @@ from message m left join fact f on f.message_pk = m.id
 order by m.tg_date desc limit 40;
 ```
 
-- [ ] **Step 7: Stop the dev bot**
+- [x] **Step 7: Stop the dev bot**
 
 ```bash
 docker compose stop bot
@@ -2745,12 +2745,54 @@ polls the production `BOT_TOKEN`; it does not. Verified 2026-09-11 via `getMe`:
 homeserver, not on this box — the only telegrind containers here are the
 `telegrind-dev` ones. There is no two-poller collision to avoid.
 
-- [ ] **Step 8: Write the outcome into this plan and commit**
+- [x] **Step 8: Write the outcome into this plan and commit**
 
-Replace this step with what the walkthrough actually found — the bugs the unit
-tests could not catch are the reason the step exists. Phase 1's manual gate
-found two (an `edit_date` that is a Unix int, and a container database URL);
-assume this one finds some too.
+Walked 2026-09-11 on the dev stack, against `claude-haiku-4-5`, in the real
+chat with `@assinstantbot`. Ten messages in the starting tail, plus three
+written during the walk.
+
+**What held.** No reply on ingest, a 💔 on every message. One pass over ten
+messages in 8.5 seconds, three model calls, no `extract_error`. Marking the
+silent ones works: the second `/q` made only two calls and answered in 3
+seconds instead of 8, which is the tail being genuinely empty rather than
+re-read. A captionless photo stayed `extracted_at IS NULL` with
+`extract_error IS NULL` across two passes — stored and waiting, exactly as
+`_has_content()` intends. An edit advanced the receipt 💔 → ❤‍🔥 and
+re-extracted the message. Tombstone stamped 2 facts and the sum dropped by
+their total; **restore cleared both and the sum came back — the half Phase 1
+never verified.** `что я чувствовал в августе` cost one model call, logged
+`unknown aggregate 'unknown'`, and refused instead of inventing a number.
+
+**Bug 1 — a measurement lands in the catch-all.** `вес 82.5` extracted as
+`kind=facts`, `fields={"text": "вес 82.5"}`. The number is never lifted out,
+so `last`/`min`/`max` over weight cannot return anything: an entire aggregate
+family in `query.py` has no data to work on. The `-m llm` gate passes this row
+because `extraction.yaml` deliberately does not assert `kind` — the blindness
+named in the spec's *A/B against other models* entry is not hypothetical, it
+hid a live defect on the first real run.
+
+**Bug 2 — adjacent facts collapse onto the last message.** `хлеб 500` and
+`и молоко 300` produced both facts on the *second* message (`seq` 1 and 2);
+the first was marked extracted with zero facts. The prompt rule says a fact
+assembled from several messages belongs to the last of them, and the model
+applied it to two facts that were each complete on their own. Three
+consequences, all observed:
+
+- tapping 💔 on `хлеб 500` deletes nothing — its fact is not there;
+- tapping 💔 on `и молоко 300` silently removes the neighbour's fact too;
+- editing `хлеб 500` → `хлеб 700` runs `run_for` on that message alone, which
+  coins a fresh `хлеб 700` while `хлеб 500` still hangs off the neighbour.
+  The day's total went to **6556 instead of 6056** — the bread counted twice.
+  This is the one that makes it a correctness bug rather than an ergonomic
+  one.
+
+Neither is fixed here; both are Phase 2 follow-ups, and Bug 2 is the more
+urgent because it silently corrupts sums.
+
+**Harness note for the next walkthrough.** Driving the walk from inside the
+chat works well, but the operator's own replies are ordinary messages: they
+enter the tail, get parsed, and add `facts` rows. Harmless to sums (no
+amount), confusing to the «Разбираю N сообщений…» count.
 
 ```bash
 git add -A
