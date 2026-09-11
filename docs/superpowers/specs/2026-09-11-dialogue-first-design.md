@@ -224,10 +224,12 @@ user. Two replacements:
 - **Extraction failures are reported, not silent.** A message whose extraction
   errored keeps `extracted_at` null and records the reason in `extract_error`;
   `/q` reports «N сообщений не удалось разобрать» alongside the answer.
-- **Receipt is a reaction the bot places on the incoming message** — 👀, one
-  `setMessageReaction` per stored message. It says "received and kept", and it
-  is also the delete affordance: see below. One call does both jobs, and at
-  roughly one request per second per chat it costs nothing for a personal bot.
+- **Receipt is a reaction the bot places on the incoming message** — 💔, one
+  `setMessageReaction` per stored message. The bubble's presence is the receipt:
+  a message the bot has stored has one, a message it has not does not. Its
+  *emoji* names what tapping it does, because tapping it is the delete gesture —
+  see below. One call does both jobs, and at roughly one request per second per
+  chat it costs nothing for a personal bot.
 
 ## Edit and delete
 
@@ -251,18 +253,33 @@ cannot be narrowed, the accepted set is widened instead: whatever is nearest to
 hand works, and hunting for one specific emoji is never required.
 
 **The receipt reaction is the affordance.** Because the bot has already placed
-👀 on the message, the user taps that existing bubble — one tap, no picker —
-and that is the delete gesture. 👎 stays a documented convention, not a
-condition.
+💔 on the message, the user taps that existing bubble — one tap, no picker —
+and that is the delete gesture.
+
+💔 rather than 👎 or 👀. The bubble's job is to be the button, so it should
+say what tapping it does rather than what already happened: 💔 reads as
+destructive, which is the right warning on a one-tap action, without 👎's
+flavour of the bot disapproving of every line the user writes.
+
+**One bubble is the hard ceiling, so there is exactly one gesture.** A bot may
+set at most one reaction per message — `setMessageReaction` with two returns
+`REACTIONS_TOO_MANY`, and the schema says "as non-premium users, bots can set up
+to one reaction per message", which a bot cannot buy its way out of. A
+non-premium user likewise holds one reaction per message, so the user's reaction
+is a radio button and not a set of switches. A second meaning cannot get its own
+bubble; it would need the picker, which is the friction the affordance exists to
+remove. If a second action ever earns a gesture, it belongs on a button under a
+`/q` answer — not on a per-message bot message, which is the echo this design
+removed.
 
 Measured 2026-09-11 against the live bot, all four halves of this:
 
 - `message_reaction` arrives in a private chat with no administrator.
 - Removing a reaction arrives as its own update with an empty `new_reaction`.
 - A bot may react to the *user's* message; the bot's own reaction produces no
-  update, so there is no feedback loop.
+  update, so there is no feedback loop. 💔 is accepted.
 - Tapping a bubble the bot already placed produces a full update from the user
-  — and `old_reaction` came back empty even though the bot's 👀 was on the
+  — and `old_reaction` came back empty even though the bot's reaction was on the
   message. **The two reaction lists are per-user, not the message's total**, so
   the handler never has to work out whose reaction it is looking at.
 
@@ -392,6 +409,6 @@ in *Importing existing history*.
 3. Ingest: store unconditionally, mark `extractable`, no reply.
 4. Batch extraction over a window, with the observed taxonomy in the prompt.
 5. `/q`: extract the tail, then the query spec, SQL, prose answer.
-6. Reaction-driven delete: 👀 placed on ingest as the receipt, and a
-   `message_reaction` handler that tombstones and restores.
+6. Reaction-driven delete: 💔 placed on ingest as the receipt and the
+   affordance, and a `message_reaction` handler that tombstones and restores.
 7. History import.

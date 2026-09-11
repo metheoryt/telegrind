@@ -36,6 +36,10 @@ One bullet per fact, under a topical heading. No secrets.
   never appears in those lists, and it generates no update — so the bot can
   place a reaction as an affordance and the user taps that existing bubble to
   react with one tap. Measured 2026-09-11.
+- **One reaction per message, both sides.** A bot setting two gets
+  `REACTIONS_TOO_MANY`; the schema caps bots at one and a bot cannot be Premium.
+  A non-premium user also holds one at a time. So reactions are a radio button,
+  never a row of independent switches — do not re-propose multi-reaction UI.
 - **Message deletion cannot be observed at all.** The only deletion update is
   `deleted_business_messages`, and `getMe` reports `can_connect_to_business:
   false` for this bot. Dead twice over.
