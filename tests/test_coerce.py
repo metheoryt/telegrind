@@ -89,3 +89,23 @@ def test_late_at_night_today_is_the_chats_today_not_utcs() -> None:
     late = datetime(2026, 9, 9, 20, 0, tzinfo=UTC)  # 2026-09-10 02:00 +06:00
     assert to_instant("сегодня", CFG, late).date().day == 10
     assert to_instant("вчера", CFG, late).date().day == 9
+
+
+def test_a_day_with_a_time_of_day_still_resolves_to_that_day() -> None:
+    """«вчера вечером» is the single most common way he writes a date.
+
+    `dateparser.parse("вчера вечером")` returns None — not a wrong date,
+    no date at all — so the whole phrase fell back to the message's own
+    timestamp and «вчера» quietly became today. Measured 2026-09-11
+    against dateparser 1.2.
+    """
+    assert to_instant("вчера вечером", CFG, FALLBACK).date().day == 8
+    assert to_instant("вчера утром", CFG, FALLBACK).date().day == 8
+    assert to_instant("позавчера вечером", CFG, FALLBACK).date().day == 7
+    assert CFG.localized(to_instant("сегодня вечером", CFG, FALLBACK)).date().day == 9
+
+
+def test_stripping_the_time_of_day_never_invents_a_date() -> None:
+    """A phrase that names no day is still the message's own timestamp."""
+    assert to_instant("вечером", CFG, FALLBACK) == FALLBACK
+    assert to_instant("утром", CFG, FALLBACK) == FALLBACK

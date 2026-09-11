@@ -6,13 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Telegrind is an async Telegram bot that keeps a personal log. You write what
 happened in natural language; every message is stored verbatim in Postgres on
-arrival, and a later batch pass derives facts from it. The dialogue is the
-product — there is no spreadsheet. The bot uses aiogram, SQLAlchemy (asyncpg)
-and the Anthropic API.
+arrival, and a batch pass derives facts from it when you ask. The dialogue is
+the product — there is no spreadsheet. The bot uses aiogram, SQLAlchemy
+(asyncpg) and the Anthropic API.
 
 The design this is being built to is `docs/superpowers/specs/2026-09-11-dialogue-first-design.md`;
-Phase 1 (store, react, tombstone) is done, Phase 2 (batch extraction and `/q`)
-and Phase 3 (history import) are not.
+Phase 1 (store, react, tombstone) and Phase 2 (batch extraction and `/q`) are
+done, Phase 3 (history import) is not.
 
 ## Running the Project
 
@@ -85,8 +85,20 @@ Telegram message
   → handler (handlers/handlers.py)  # store.upsert_message, then one reaction
 ```
 
-There is no reply. The only outward signal on ingest is `setMessageReaction`
-with 💔, and tapping that same bubble is how the user deletes:
+Asking is the second trigger, and the only one that parses anything:
+
+```
+/q <question>
+  → handlers/query.py               # store the question, extractable=False
+  → extract.run                     # the whole unparsed tail, in one call
+  → answer.spec_for                 # question → a closed query spec
+  → query.run                       # the spec → SQL → numbers
+  → answer.render                   # numbers → one or two sentences
+```
+
+There is no reply on ingest. The only outward signal there is
+`setMessageReaction` with 💔, and tapping that same bubble is how the user
+deletes:
 
 ```
 Telegram message_reaction
@@ -117,7 +129,36 @@ subscribes the `message_reaction` update type.
 **`telegrind/store.py`** — the message and fact repository. `upsert_message`
 appends on first sight and overwrites on edit, clearing `extracted_at` so the
 next batch pass picks the message up again. A forwarded message is dated by its
-origin, not by the forward.
+origin, not by the forward. `unextracted_tail` and `context_before` are the
+window a pass reads; `replace_facts` diffs a message's facts by `seq`, so a
+re-extraction updates what changed and tombstones what disappeared.
+
+**`telegrind/taxonomy.py`** — the chat's own `kind`/field vocabulary, read
+back out of `fact`. There is no registry of permitted kinds; showing the
+extractor what already exists is the only thing standing between a free-form
+`kind` and a hundred synonyms for "expense".
+
+**`telegrind/extract.py`** — the batch pass. `build_prompt` states each
+message's local clock, who wrote it, and which message it replies to;
+`drafts_from` coerces what comes back, and anything it cannot place becomes a
+complaint rather than a silent drop. `run` does the tail, `run_for` does one
+edited message — through the same window builder, because a message
+re-extracted alone coins a different `kind` than it would in company.
+
+**`telegrind/query.py`** — a closed set of aggregates (`sum`, `count`, `avg`,
+`min`, `max`, `last`, `balance_by`) and the SQL for them. A question that does
+not fit is refused, never approximated. `jsonb_typeof(fields->'x') = 'number'`
+guards every cast, which is exact rather than heuristic precisely because
+`coerce.py` already made anything parseable a real JSON number.
+
+**`telegrind/answer.py`** — the two model calls that bracket the arithmetic:
+question → spec, then numbers → prose. Between them sits Postgres, and the
+model is never asked to add anything up.
+
+**`telegrind/bot/handlers/receipts.py`** — the receipt emoji, its cycle and
+`acknowledge`. Split out of `handlers.py` because it registers nothing:
+`query.py` needs it, and importing it from `handlers.py` would run that module
+— registering its slash catch-all — before `/q`'s own handler.
 
 **`telegrind/coerce.py`** — the write boundary for a fact field. A value that
 parses becomes a real JSON number, so `(fields->>'amount')::numeric` cannot
@@ -134,7 +175,10 @@ and `Fact`. A fact is service columns plus a JSONB `fields`: only `kind` and
 tombstone, and the uniqueness on `(message_pk, seq)` is a *partial* index so a
 tombstoned fact does not collide with the row that replaces it.
 
-**`telegrind/llm.py`** — Phase 1 makes no LLM call. What survives is the client,
-the model names, and `EXTRACTION_RULES`: accumulated judgement about real
-messages, which Phase 2 composes with the observed taxonomy.
+**`telegrind/llm.py`** — the client, the model names, the two call helpers
+(`use_tool` forces a tool call; `say` returns prose) and the prompts.
+`EXTRACTION_RULES` is accumulated judgement about real messages, composed into
+`EXTRACT_SYSTEM` with the observed taxonomy. `PROMPT_VERSION` is extraction's
+and is what `fact.prompt_version` records; the query and prose prompts persist
+nothing and are not versioned.
 

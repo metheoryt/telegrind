@@ -1,69 +1,61 @@
-# message -> the category it must land in, and optionally the date the
-# `Дата` field must resolve to (`date:`, ISO, in the chat's timezone).
+# message -> what the extractor must get right about it.
+#   sent:  the message's own tg_date (ISO, chat timezone). Required when
+#          `date:` is given — «вчера» means nothing without it.
+#   date:  the day `at` must resolve to.
+# `kind` is deliberately NOT asserted: the taxonomy is free-form now, and
+# the old `category:` labels named a registry that no longer exists. What
+# is still asserted is that the message yields a fact at all, that nothing
+# comes back unplaceable, and that a stated time resolves to the right day.
 # Run on demand: `uv run pytest -m llm`. Costs tokens; never in the default suite.
 - message: "4500 такси"
-  category: expense
 - message: "5.4 usd хостинг"
-  category: expense
 - message: "41 бат массаж вчера вечером"
-  category: expense
+  sent: "2026-09-09 21:40"
   date: "2026-09-08"
 - message: "потратил тысячу на продукты в понедельник"
-  category: expense
+  sent: "2026-09-09 21:40"
   date: "2026-09-07"
 - message: "займ Вася Пупкин 500"
-  category: loan
 - message: "Вася вернул мне 500"
-  category: loan
 - message: "дал брату 20000 до конца месяца"
-  category: loan
 - message: "вес 82.4"
-  category: telemetry
 - message: "давление 120 на 80"
-  category: telemetry
 - message: "пробежал 5 км за 27 минут"
-  category: telemetry
 - message: "хочу новый монитор"
-  category: wish
 - message: "хочу велосипед gravel тысяч за 400"
-  category: wish
 - message: "позвонил маме, всё хорошо"
-  category: facts
 - message: "начал читать Пелевина"
-  category: facts
 
-# Tense must beat the column's bias. `Дата` is a `date` column, so an ambiguous
+# Tense must beat the column's bias. `at` is a timestamp, so an ambiguous
 # reference leans past — but a message in the future tense means the future.
 # NOW is Wednesday 2026-09-09 21:40 +06:00, so "в пятницу" is 09-11, not 09-04.
 #
 # `в пятницу заплачу 5000 за интернет` used to be asserted here and is
-# deliberately not any more. It measures 10/10 `expense`@09-11 in isolation but
+# deliberately not any more. It measured 10/10 `expense`@09-11 in isolation but
 # failed two of two full eval runs, once on the category (`facts`) and once on
 # the date (today) — roughly 2 in 18 overall. Both answers are defensible, and
 # that is the point: a *committed future payment* has no settled home. As an
-# `expense` it inflates the current `sum_by_period` bucket until a rollup
-# filters `Дата <= today` (Phase 2); as a `facts` row it is inert but
-# unaggregated. Asserting either would make the eval flaky in exchange for
-# pretending the question is answered. Settle the rollup filter first.
+# expense it inflates the current period's bucket until a rollup filters
+# `at <= today`; as an inert row it is unaggregated. Asserting either would
+# make the eval flaky in exchange for pretending the question is answered.
 # An unrealized intention is a wish, not an expense — stable 3/3 on
-# 2026-09-09. Deliberate: an `expense` row dated in the future would be
-# counted by `sum_by_period` before the money moved. No date assertion —
-# `wish` has `Добавлено`, and 12 октября survives only in the text.
+# 2026-09-09. Deliberate: a spend dated in the future would be counted by a
+# period sum before the money moved. No date assertion — the 12 октября
+# survives only in the text.
 - message: "12 октября куплю подарок за 20000"
-  category: wish
 
 # A date the message mentions *about* the purchase is not the date of the
 # expense: the tickets were bought now, the flight is in October. Before the
 # rule that says so, both of these dated the expense to October and misfiled
-# it a month forward in `sum_by_period`. Measured 2026-09-09.
+# it a month forward. Measured 2026-09-09.
 - message: "купил билеты на самолёт на 15 октября за 50000"
-  category: expense
+  sent: "2026-09-09 21:40"
   date: "2026-09-09"
 - message: "билеты в Тбилиси 12.10 за 90000 тенге"
-  category: expense
+  sent: "2026-09-09 21:40"
   date: "2026-09-09"
 - message: "купил вчера билеты на концерт 3 ноября, 25000"
-  category: expense
+  sent: "2026-09-09 21:40"
   date: "2026-09-08"
 
 # A leading bare number is money spent, whatever follows it. Before the rule
@@ -77,21 +69,16 @@
 # The rule's hedge — "and no other category fits it" — is load-bearing. Two
 # stronger wordings ("begins with a bare number ... never `facts`", then the
 # same with an explicit leading-date carve-out) both dragged the future-tense
-# intentions below into `facts`: told a leading number must be an expense and
+# intentions above into `facts`: told a leading number must be an expense and
 # never `facts`, the model could not reconcile that with an intention being a
 # wish and escaped to `facts` anyway. Naming those cases in the rule made it
 # worse, not better. Do not tighten this wording without re-running the
-# `12 октября` and `в пятницу` cases below.
+# `12 октября` and `в пятницу` cases.
 - message: "444 куколд"
-  category: expense
 - message: "444"
-  category: expense
 - message: "444 абракадабра"
-  category: expense
 # The two exceptions the rule carves out, kept as regression guards: a
 # leading number that measures the user, and one that states a direction of
 # lending.
 - message: "82.4 вес"
-  category: telemetry
 - message: "20000 брату в долг"
-  category: loan

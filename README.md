@@ -6,10 +6,12 @@ bot keeps it and answers questions about it. The dialogue is the product.
 ## How it works
 
 Every message you send is stored, unchanged, the moment it arrives. Nothing is
-parsed on receipt — a later batch pass reads a window of messages at once, so
-the model sees each one in the company of its neighbours, and the categories it
-finds are the ones your own messages turned out to need rather than a list
-declared up front.
+parsed on receipt — asking is what triggers the parse. `/q сколько я потратил`
+first reads the whole unparsed tail in one pass, so the model sees each message
+in the company of its neighbours, and the categories it finds are the ones your
+own messages turned out to need rather than a list declared up front. Then the
+question itself becomes a database query: every number in an answer is counted
+by Postgres, never by the model.
 
 The bot does not echo. The one thing it says on ingest is a 💔 reaction, which
 is both the receipt that the message landed and the button that takes it back:
@@ -24,12 +26,12 @@ edit up.
   own clock rather than the moment of parsing
 - Every message stored unconditionally, with its extraction state on the row
 - 💔 as the receipt and the delete affordance, cycling on every edit
-- Edit a message and its facts are re-derived on the next pass
+- Batch extraction over a window, with the taxonomy observed from the chat
+- `/q` — questions answered from the fact table, with the arithmetic done in SQL
+- Edit a message and its facts are re-derived, in the company of its neighbours
 
 ## TODO
 
-- Batch extraction over a window, with the observed taxonomy
-- `/q` — questions answered from the fact table
 - Voice transcription
 - Importing the existing chat history
 - Kaspi PDF statement parsing

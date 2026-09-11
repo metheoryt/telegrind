@@ -11,6 +11,7 @@ Nothing written is ever lost. That includes a number the model could not
 pin down.
 """
 
+import re
 from datetime import datetime
 
 import dateparser
@@ -40,6 +41,37 @@ def to_json_value(raw: object) -> object:
         return raw
 
 
+#: Time-of-day words a relative day can carry. `dateparser` cannot combine
+#: the two in Russian — `parse("вчера вечером")` is None, not a wrong date
+#: but no date at all — so the phrase fell through to the message's own
+#: timestamp and «вчера» quietly became today. Stripping the qualifier and
+#: re-parsing keeps the day, which is the part a fact is filed under.
+#: Measured against dateparser 1.2 on 2026-09-11.
+_TIME_OF_DAY = re.compile(
+    r"\b(утром|утро|днём|днем|вечером|вечер|ночью|ночь|"
+    r"in the (morning|afternoon|evening)|at night)\b",
+    re.IGNORECASE,
+)
+
+
+def _parse(
+    text: str, cfg: ChatConfig, fallback: datetime, prefer_future: bool
+) -> datetime | None:
+    return dateparser.parse(
+        text,
+        languages=["ru", "en"],
+        settings={
+            "TIMEZONE": f"{cfg.tz_offset:+03d}00",
+            "RETURN_AS_TIMEZONE_AWARE": True,
+            "PREFER_DATES_FROM": "future" if prefer_future else "past",
+            # The base is the chat's own wall clock, not UTC's. At 02:00 in
+            # Almaty it is still yesterday in UTC, and a naive UTC base made
+            # «сегодня» resolve a day behind what the person writing it meant.
+            "RELATIVE_BASE": cfg.localized(fallback).replace(tzinfo=None),
+        },
+    )
+
+
 def to_instant(
     raw: object,
     cfg: ChatConfig,
@@ -65,20 +97,12 @@ def to_instant(
         try:
             parsed = datetime.fromisoformat(text)
         except ValueError:
-            parsed = dateparser.parse(
-                text,
-                languages=["ru", "en"],
-                settings={
-                    "TIMEZONE": f"{cfg.tz_offset:+03d}00",
-                    "RETURN_AS_TIMEZONE_AWARE": True,
-                    "PREFER_DATES_FROM": "future" if prefer_future else "past",
-                    # The base is the chat's own wall clock, not UTC's.
-                    # At 02:00 in Almaty it is still yesterday in UTC, and
-                    # a naive UTC base made «сегодня» resolve a day behind
-                    # what the person writing it meant.
-                    "RELATIVE_BASE": cfg.localized(fallback).replace(tzinfo=None),
-                },
-            )
+            parsed = _parse(text, cfg, fallback, prefer_future)
+            if parsed is None:
+                # «вчера вечером» parses as nothing at all; «вчера» does not.
+                shorter = _TIME_OF_DAY.sub("", text).strip()
+                if shorter and shorter != text:
+                    parsed = _parse(shorter, cfg, fallback, prefer_future)
 
     if parsed is None:
         parsed = fallback
