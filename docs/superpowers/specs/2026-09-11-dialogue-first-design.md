@@ -156,6 +156,59 @@ carried in as read-only context. Default: the whole unextracted tail up to 200
 messages per pass, plus the 10 messages before it. Context messages are shown to
 the model and are not re-extracted.
 
+### Each message carries its own clock
+
+**The reference time for a message is its `tg_date`, never the moment of
+extraction.** Deferred parsing breaks the assumption the old bot got for free:
+extraction ran on receipt, so «вчера» resolved against a clock that happened to
+be right. A batch pass can run a day later, and then «вчера», «в понедельник»,
+«через неделю» all resolve a day off. So the prompt states each message's own
+timestamp per message, and `to_instant` takes that same timestamp as its
+`RELATIVE_BASE` and as the fallback for `at`.
+
+`tg_date` is already the *origin* date for a forwarded message — a forward of
+last week's receipt is dated last week, not today. That was a special case in
+the old bot; here it is just the general rule applied to a message whose author
+time and arrival time differ visibly. Nothing about forwards needs its own
+clock rule.
+
+### Who wrote it is context, not a filter
+
+A forwarded message has an author who may not be the person talking to the bot,
+and the extractor is told which of three cases it is:
+
+- **the chat owner** — `forward_origin` is a user whose id is the chat's own.
+  Same authority as typing it.
+- **someone else** — another user, a group, or a channel. The text is a quote.
+  «Мама: верни 5000» is a debt with a different subject; a channel's product
+  post is a wish, not an expense.
+- **unknown** — `MessageOriginHiddenUser` carries only a display name, no id, so
+  "is this me?" has no answer. Every rule that branches on authorship needs this
+  third arm or it dies on a `None`.
+
+**No message is dropped for where it came from.** The tempting rule — «ничего не
+извлекаем из каналов» — breaks on the first real case: forwarding a product post
+from a channel *is* the natural way to record a wish. Authorship changes what a
+fact means, and meaning is the model's job.
+
+Nothing new is stored for any of this. `message.raw` is the full
+`model_dump(mode="json")` of the update, so `forward_origin` in all four of its
+variants is already there. No column, no migration.
+
+### A message with no text waits, it does not fail
+
+Forwards arrive as photos, documents, polls, locations — content the extractor
+cannot read. Such a message is stored like any other (`text = text or caption`,
+so a captioned photo is ordinary text), and is left with `extracted_at` null and
+`extract_error` null: **not yet parsed**, which is distinct from both *parsed,
+yielded nothing* and *failed*. It is not counted in the «не удалось разобрать»
+report. The batch pass does not send it to the model and does not mark it, so
+it never occupies the window budget either: the tail is counted over messages
+that have text.
+
+This is the storage thesis paying off. When there is something that can read a
+photo, those rows are still sitting there waiting to be read.
+
 **The prompt carries the observed taxonomy.** The registry is no longer
 declared, it is observed:
 
@@ -178,7 +231,9 @@ that is where it became complete, and `unique (message_pk, seq)` forces a single
 owner.
 
 **Marking.** Every message in the tail gets `extracted_at`, `extract_model` and
-`extract_prompt_version`, whether or not it produced facts.
+`extract_prompt_version`, whether or not it produced facts. The one exception is
+a message with no text at all — see above; it is never in the tail to begin
+with.
 
 **Re-extraction** of an already-extracted message (an edit) diffs against its
 existing facts: unchanged facts are left alone, changed ones updated, absent
