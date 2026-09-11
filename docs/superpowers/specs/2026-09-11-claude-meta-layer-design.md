@@ -60,9 +60,15 @@ replies through the Bot API. There is no call from the bot into Claude, no
 subprocess, no queue: the transport is the database that is already there.
 
 **Claude does not run inside the bot.** The bot runs on the Anthropic API key
-in a container; Claude runs as Claude Code on the subscription, outside it.
-The two never share credentials, and the API key never leaves the bot's
-runtime.
+in a container; Claude runs as Claude Code on the subscription, outside it but
+on the same machine. The two never share credentials, and the API key never
+leaves the bot's runtime.
+
+**Colocation is the design, not a deployment detail.** Claude sits on
+`latitude` beside the database it reads and the container it rebuilds. That
+one choice removes a published database port, a tailnet-bound tools service, a
+registry round trip and a ten-minute deploy — see *The data tools* and
+*Self-modification*.
 
 ## Routing
 
@@ -216,10 +222,11 @@ that duplicates a gesture is a second way for the two to disagree.
 
 ### Where it runs
 
-Prod postgres publishes no port; it is reachable only inside the compose
-network. A tools service inside that network, bound to the tailnet, is a
-narrower opening than publishing the database — it exposes the closed set of
-aggregates rather than arbitrary SQL.
+**Claude runs on `latitude`, beside the database and the container it
+manages.** That removes the network question entirely: the tools talk to
+postgres over the compose network, no port is published, no tunnel exists,
+and nothing binds to the tailnet. A plain library import is enough, the same
+as on dev — MCP is what colocation buys us out of, not what it requires.
 
 Dev is local and needs none of this: `localhost:5433` already works.
 
@@ -232,49 +239,77 @@ without a confirmation step. A gate can be added later if it turns out to be
 needed, and adding one is cheap; the point is not to build the ceremony before
 knowing whether it earns its keep.
 
-### Claude never edits the deployed clone
+### Claude never edits the live tree
 
-`vps/homeserver/telegrind/src/` is a gitignored checkout that the delivery
-path fast-forwards. An edit there is either overwritten or blocks the
-fast-forward. Claude works in a real checkout, commits, and pushes; delivery
-is a separate mechanism that only pulls.
+`vps/homeserver/telegrind/src/` is the deployed checkout, and `restart:
+unless-stopped` is on the prod bot. Mounting that tree into the container
+means the running code *is* the tree — so if it is also the tree being
+edited, a crash at the wrong moment reloads half-written code and the
+container crash-loops on it.
 
-### Delivery does not exist yet
+So there are two trees on latitude. Claude works and commits in its own
+checkout; the deployed tree is updated by one command (`git fetch` then
+`reset --hard`) immediately before the restart. **The restart is the only
+moment the running code changes**, which is what makes the change atomic
+enough to roll back.
 
-**A push to `main` deploys nothing today**, and has not since 2026-08-01. The
-poll-and-build engine was a PowerShell Scheduled Task written for a box that
-left the fleet; production was brought up by hand on `latitude` and nothing
-polls it. "Automatic" therefore means *build the delivery path first*, and
-only then leave it ungated.
+### Delivery is a local restart, and usually not even a rebuild
 
-The route to reuse is the one `embedthat` took on 2026-09-08: a `v*` tag
-triggers GitHub Actions, which publishes the image, and Tugtainer on latitude
-pulls the new digest within its check interval. Its workflow header argues our
-exact case — the conflict that once forbade a registry tag was the *local*
-build engine, which was PowerShell for a Windows box and never ran on latitude
-at all. The telegrind repo is public, so a published image leaks nothing that
-is not already public.
+**Mount the sources into the container.** The dev stack already does exactly
+this — `.:/app` plus an anonymous `/app/.venv` so the image's virtualenv is
+not shadowed by the host's — and prod differs only in not doing it. With the
+mount, the image stops being the artifact of a commit and becomes the
+environment: python plus the locked dependencies. The code is the mount.
 
-Two adjustments for this use:
+Then a deploy is `docker compose restart bot`, which is seconds. `entrypoint.sh`
+runs `alembic upgrade head` on every start, so a change that needs a migration
+needs nothing extra, and a failed migration is a startup failure the health
+check already catches.
 
-- **Claude tags.** A tag is a named, revertible release rather than a human
-  gate, and rollback is already built: re-dispatching the workflow on the
-  previous tag republishes it.
-- **Latency is minutes, not seconds.** A GitHub build plus a Tugtainer poll is
-  well over ten minutes end to end. Acceptable for a bot that changes rarely;
-  if it is not, the poll interval is a knob.
+**A rebuild is needed only when the environment changed** — `uv.lock`,
+`pyproject.toml` or the `Dockerfile`. Comparing those against the previous
+deploy is the whole test.
 
-**This reverses a standing rule.** `CLAUDE.md` says the prod image must never
-be tagged `metheoryt/telegrind-bot:*`, because a registry tag would let
-Tugtainer pull-update over a locally built container. Taking the registry
-route means the local build goes away and that rule goes with it. The two
-mechanisms must never both be live — that is the failure the rule was written
-against, and it does not stop being real.
+### Why not the registry path
+
+`embedthat` moved to a tag-triggered GitHub Actions build on 2026-09-08, and
+that was the obvious route to copy — until Claude moved onto the same box as
+the bot. Once it is there, the round trip through GitHub and Tugtainer buys
+nothing and costs the two things that matter here: over ten minutes of
+latency, and a rollback that has to go back out to the network to happen.
+
+What the registry route gives up in return is an immutable artifact per
+release. Rollback becomes a SHA rather than a digest, and a dependency
+rollback forces a rebuild instead of a pull. Both are accepted.
+
+**The standing ban on tagging `metheoryt/telegrind-bot:*` therefore stays.**
+It exists because a registry tag would let Tugtainer pull-update over a
+locally built container and silently undo a deploy; the local build is not
+going away, so neither is the hazard.
+
+Claude still pushes to GitHub — that is where the history and the review live —
+but the deploy does not wait on it, and a GitHub outage does not stop a
+rollback.
+
+### Tests run before the restart, not in CI
+
+There is no CI on this path, and there was none on the registry path either:
+`embedthat`'s workflow builds and publishes, it does not test. Running the
+suite locally before restarting is strictly more than either, and it is the
+natural place for it — the same process that is about to deploy is the one
+that can decline to.
 
 ### The health check is not a gate
 
-After a deploy, verify the bot came up. If it did not, roll back to the
-previous release automatically.
+Record the SHA before the restart. Restart. Watch for N seconds; if the bot
+did not come up, `reset --hard` back to the recorded SHA and restart again.
+The whole loop is local and takes seconds — no network, no registry, no
+GitHub.
+
+"Came up" needs a definition before this is built, and the container merely
+existing is not it: `restart: unless-stopped` means a crash-looping bot is
+also a running container. The signal is the process staying alive for the
+window without a restart, plus the log line that says polling started.
 
 Claude is modifying the bot that delivers Claude its own inbound messages. A
 broken deploy does not merely break the bot — it removes the only channel on
@@ -306,15 +341,16 @@ of answering into the void.
 
 ## Open questions
 
-- **Where the Claude runtime lives.** Recommended start: dev, on `g15`, where
-  Claude Code and the user's wrappers are already installed and logged in —
-  and where the `tg.py` + database-polling shape was already run by hand on
-  2026-09-11. Production needs Claude Code installed on latitude and an
-  interactive subscription login; that is a separate step and it is not first.
+- **Getting Claude Code onto latitude.** Node 20 is there; Claude Code is
+  not, and the subscription login is interactive and has to be done by hand
+  once. The user's wrappers arrive on their own — latitude carries the
+  `agents` role, so `bootstrap.sh` deploys the plugin and skills there.
+  Development still happens on `g15`, where everything is already installed
+  and where the `tg.py` + database-polling shape was run by hand on
+  2026-09-11.
 - **The TTL value.** No measurement exists. Pick something, watch it.
-- **Whether the tools are MCP or a local library.** MCP if Claude runs on a
-  different box from the database, which the prod placement implies; a plain
-  import is enough while both are on `g15`.
+- **What "the bot came up" means**, precisely enough to roll back on. See
+  *The health check is not a gate*.
 
 ## Build order
 
@@ -327,6 +363,7 @@ of answering into the void.
    with the liveness check.
 5. Sessions — the reply chain, the TTL cutoff.
 6. The data tools.
-7. Delivery: the tag-triggered registry path, plus the health check and
-   rollback. Only after this does self-modification mean anything.
+7. Delivery: mount the sources in prod, then the restart script — two
+   trees, tests, restart, health check, rollback. Only after this does
+   self-modification mean anything.
 8. Voice transcription on arrival.
