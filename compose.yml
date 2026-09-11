@@ -16,6 +16,10 @@ services:
     build: .
     env_file:
       - .env
+    environment:
+      # .env carries the HOST url (localhost:5433) so alembic and pytest work
+      # from a shell. Inside the container postgres is a service name.
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres/postgres
     volumes:
       - .:/app
       - /app/.venv

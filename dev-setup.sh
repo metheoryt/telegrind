@@ -16,16 +16,15 @@ else
 
 # --- infra: safe local defaults ---
 POSTGRES_PASSWORD=postgres
-DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres/postgres
-MARVIN_AGENT_MODEL=anthropic:claude-haiku-4-5
+# The host reaches postgres on localhost:5433; the bot container reaches it
+# by service name, which compose.yml sets for that service.
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5433/postgres
 
 # --- secrets: fill these in before `docker compose up` ---
 BOT_TOKEN=
 ANTHROPIC_API_KEY=
-GOOGLE_API_KEY=
-GOOGLE_SERVICE_ACCOUNT_FILE=
 EOF
-  echo "+ wrote .env (fill in BOT_TOKEN / ANTHROPIC_API_KEY / GOOGLE_* before starting)"
+  echo "+ wrote .env (fill in BOT_TOKEN / ANTHROPIC_API_KEY before starting)"
   created=1
 fi
 
