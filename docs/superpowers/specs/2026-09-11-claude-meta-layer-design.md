@@ -232,6 +232,36 @@ stops being instant and becomes roughly a second. Extraction stays deferred
 and windowed — this call classifies, it does not extract, and it reads one
 message rather than a window.
 
+### Where Claude attaches: a handler now, a middleware later
+
+At steps 1–4 Claude only ever receives what the bot already refused, so it
+attaches at the end of ingest: `route()` decides, and a hand-off is one call
+into the queue. Not making that call is what "Claude off" means — no handler
+edits, no flag threaded through the routing.
+
+An aiogram middleware instead of a handler is the wrong shape at this stage
+and the right one later, and the line between the two is what Claude is
+allowed to see.
+
+- **An inner middleware (`router.message.middleware`) buys nothing here.** It
+  wraps the handler, so it runs inside the session `populate_chat_data`
+  opened. To learn what the handler stored it has to read on that session, and
+  a bare read there autobegins — the next `session.begin()` then raises «a
+  transaction is already begun». That trap is documented at `query.py` and has
+  already been hit in an edit path and in the meta layer's own `speak`. The
+  handler seam keeps routing a plain function over a row, testable without
+  assembling an aiogram update.
+- **An outer middleware (`dp.update.outer_middleware`) is the seam for a
+  Claude that sees everything.** It runs before filters and before handler
+  resolution, on every update — including the reactions and commands the bot
+  answers itself — and it may decline to call the handler at all. That is the
+  mechanism a *preempting* meta layer needs, and it is worth its cost only
+  once Claude has something to say about an update the bot already handles.
+  That is steps 5–8, not step 4.
+
+Until then the rule is that Claude sees a message because routing handed it
+one, never because it was listening in.
+
 ## The bot stores its own messages
 
 Every message the bot or Claude sends is written to `message` with
