@@ -80,7 +80,19 @@ def row(verdict: str) -> LoggedMessage:
 
 
 def msg() -> SimpleNamespace:
-    return SimpleNamespace(message_id=10, text="…", chat=SimpleNamespace(id=7))
+    return SimpleNamespace(
+        message_id=10, text="…", caption=None, chat=SimpleNamespace(id=7)
+    )
+
+
+def captioned() -> SimpleNamespace:
+    """A photo of a receipt, asking about itself. `text` is None."""
+    return SimpleNamespace(
+        message_id=10,
+        text=None,
+        caption="сколько я потратил на это",
+        chat=SimpleNamespace(id=7),
+    )
 
 
 async def test_a_fact_gets_the_receipt_and_no_words(monkeypatch: Any) -> None:
@@ -118,6 +130,42 @@ async def test_a_question_is_answered_and_gets_no_receipt(monkeypatch: Any) -> N
     )
 
     assert rec.reactions == []
+    assert rec.said == [("12 400 ₸.", 10)]
+
+
+async def test_a_captioned_question_is_answered_from_the_caption(
+    monkeypatch: Any,
+) -> None:
+    """Classification and answering must read the same text.
+
+    `record` classifies on `text or caption`, so a photo captioned
+    «сколько я потратил на это» arrives here with verdict=question and
+    `text is None`. Reading only `.text` would hand `answer_for` an empty
+    string, which comes back as «Спроси что-нибудь после /q.» — in reply to
+    a message that contains no /q. The bot would be answering a question it
+    never read.
+    """
+    rec = Recorder()
+    monkeypatch.setattr(routing, "acknowledge", rec.acknowledge)
+    monkeypatch.setattr(routing, "say", rec.say)
+    asked: list[str] = []
+
+    async def answered(question: str, *args: Any, **kwargs: Any) -> str:
+        asked.append(question)
+        return "12 400 ₸."
+
+    monkeypatch.setattr(routing, "answer_for", answered)
+
+    await routing.route(
+        captioned(),
+        row(VERDICT_QUESTION),
+        Chat(id=1, chat_id=7),
+        CFG,
+        FakeSession(),
+        object(),
+    )
+
+    assert asked == ["сколько я потратил на это"]
     assert rec.said == [("12 400 ₸.", 10)]
 
 

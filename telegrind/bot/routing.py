@@ -69,7 +69,15 @@ async def route(
             await say(bot, session, chat, f"Разбираю {pending} сообщений…")
 
         async with session.begin():
-            text = await answer_for(question_of(message.text), chat, config, session)
+            # `text or caption`, the same expression the classifier read:
+            # a photo captioned «сколько я потратил на это» is classified
+            # from its caption and has no `.text`, so reading only `.text`
+            # here would answer an empty question — «Спроси что-нибудь
+            # после /q.» in reply to a message containing no /q. Whatever
+            # decides the verdict and whatever answers it must read the
+            # same words.
+            body = message.text or message.caption
+            text = await answer_for(question_of(body), chat, config, session)
         if text is not None:
             await say(bot, session, chat, text, reply_to=message.message_id)
             return
