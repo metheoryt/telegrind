@@ -339,6 +339,47 @@ of answering into the void.
 - **No vision, no inventory-by-photo.** Named in the dialogue-first spec's
   *Later, not now*, and staying there.
 
+## A second bot identity — later, and the seam to leave
+
+The meta layer could be its own Telegram bot rather than telegrind's own
+token: a group of {user, telegrind, claude}, with `@claude` as the address.
+Telegram now supports this — Bot API 9.0 added bot-to-bot messaging by
+username when both bots opt in, and 10.0 added seeing certain messages sent
+by other bots in groups, plus guest mode for replying in chats a bot has not
+joined. 9.0 is callable at the pinned aiogram 3.27 (Bot API 9.6); 10.0 needs
+the bump to 3.31.
+
+**None of it is needed here.** The two runtimes coordinate through a database
+on one machine, so there is nothing for them to say to each other over
+Telegram. Bot-to-bot solves a problem colocation already removed.
+
+What a split would cost is a move from a private chat to a group, and two
+specific things break on the way:
+
+- **Privacy mode.** A bot in a group receives only mentions, commands and
+  replies to itself unless privacy mode is turned off in BotFather.
+  "Write anything and it is recorded" does not survive with it on.
+- **`message_reaction` requires the bot to be an administrator in the chat.**
+  In a private chat the bot is privileged by construction, which is why the
+  receipt-and-delete gesture works today. In a group it stops arriving until
+  telegrind is made an admin, and the whole delete affordance rides on it.
+  (Related and already true: the update is not delivered for reactions set by
+  bots, so the bot never sees its own receipt.)
+
+And `@claude` is precisely the mode switch this design lists as a non-goal.
+It can live as an explicit override, the way `/q` does — but not as the way.
+
+**What is actually reusable is not the bot identity.** It is the runtime and
+the deploy loop: a Claude Code process colocated with an app, reading that
+app's database, replying through that app's token, and rebuilding that app on
+a restart-and-roll-back cycle. `embedthat` runs on the same `latitude`, so one
+Claude runtime there can serve both today, with per-app configuration — which
+database, which token, which chat.
+
+**The seam to leave open is one line: the token Claude sends through is
+configuration, not a constant.** Splitting later then means a different token
+and a group chat, and nothing in this design changes.
+
 ## Open questions
 
 - **Getting Claude Code onto latitude.** Node 20 is there; Claude Code is
