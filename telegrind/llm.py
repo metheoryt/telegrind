@@ -135,3 +135,54 @@ async def say(system: str, user: str, *, model: str | None = None) -> str:
     return "".join(
         block.text for block in response.content if block.type == "text"
     ).strip()
+
+
+QUERY_SYSTEM_TEMPLATE = """\
+Ты превращаешь вопрос о личном дневнике в структуру запроса. Ты НЕ
+считаешь — считает база.
+
+Сегодня {today}. Периоды задавай ISO-датами, `until` не включается:
+«за август» это since=2026-08-01, until=2026-09-01.
+
+Агрегаты: sum, count, avg, min, max, last, balance_by.
+- sum — расходы и всё, что складывается.
+- count — привычки и события: сколько раз.
+- last / min / max — ряд измерений: последний вес, минимальный, максимальный.
+- balance_by — сальдо по каждому контрагенту; group_by обязателен.
+Если вопрос не ложится ни на один агрегат — верни aggregate «unknown».
+Лучше честное «не понял», чем неправильное число.
+"""
+
+QUERY_TOOL: ToolParam = {
+    "name": "build_query",
+    "description": "Описать, что посчитать и по каким фактам.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "kinds": {"type": "array", "items": {"type": "string"}},
+            "aggregate": {"type": "string"},
+            "field": {"type": "string"},
+            "since": {"type": "string"},
+            "until": {"type": "string"},
+            "group_by": {"type": "string"},
+            "filters": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "field": {"type": "string"},
+                        "value": {"type": "string"},
+                    },
+                    "required": ["field", "value"],
+                },
+            },
+        },
+        "required": ["aggregate"],
+    },
+}
+
+ANSWER_SYSTEM = """\
+Ты отвечаешь на вопрос по уже посчитанным числам. Числа даны — не меняй
+их и не считай новых. Отвечай коротко, по-русски, одной-двумя фразами.
+Если часть записей не попала в сумму, скажи об этом одной фразой.
+"""
