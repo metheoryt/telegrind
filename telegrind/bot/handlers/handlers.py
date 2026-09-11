@@ -15,7 +15,7 @@ from aiogram import Bot, F
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from telegrind import store
+from telegrind import extract, store
 from telegrind.bot.handlers.receipts import (
     RECEIPT_CYCLE as RECEIPT_CYCLE,
 )
@@ -25,6 +25,7 @@ from telegrind.bot.handlers.receipts import (
     next_receipt,
 )
 from telegrind.bot.router import router
+from telegrind.config import ChatConfig
 from telegrind.models import Chat
 
 log = logging.getLogger(__name__)
@@ -93,12 +94,35 @@ async def record_text(
 
 @router.edited_message()
 async def record_edited(
-    edited_message: Message, chat: Chat, session: AsyncSession, bot: Bot
+    edited_message: Message,
+    chat: Chat,
+    session: AsyncSession,
+    config: ChatConfig,
+    bot: Bot,
 ) -> None:
-    """An edit overwrites the text and clears the extraction state.
+    """Overwrite the text, and re-extract if there was anything to redo.
 
-    upsert_message does the clearing, so the next batch pass picks the
-    message up again. Nothing is re-extracted here: extraction happens
-    when you ask.
+    The check has to happen *before* upsert_message, which clears
+    extracted_at by design: after it, «was this already parsed» has no
+    answer left.
     """
-    await _store(edited_message, chat, session, bot, extractable=True)
+    async with session.begin():
+        previous = await store.get_message(session, chat.id, edited_message.message_id)
+        was_extracted = previous is not None and previous.extracted_at is not None
+
+        # Derived, not hardcoded: this observer has no COMMAND_LIKE ahead of
+        # it, and upsert_message assigns the flag unconditionally — so `True`
+        # here would turn a stored /q back into extractor input the first
+        # time the user fixes a typo in their own question.
+        parses = not (edited_message.text or "").startswith("/")
+        row, created = await store.upsert_message(
+            session, chat, edited_message, extractable=parses
+        )
+        emoji = RECEIPT_EMOJI if created else next_receipt(row.receipt_emoji)
+        row.receipt_emoji = emoji
+
+        if was_extracted and parses:
+            report = await extract.run_for(session, chat, config, row)
+            log.info("re-extracted message %s: %s fact(s)", row.id, report.facts)
+
+    await acknowledge(bot, edited_message.chat.id, edited_message.message_id, emoji)

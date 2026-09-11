@@ -194,7 +194,36 @@ async def run(
     tail = await store.unextracted_tail(session, chat.id, limit=limit)
     if not tail:
         return Report(pending=0, extracted=0, facts=0, failed=0, complaints=0)
+    return await _pass(session, chat, cfg, tail, context_size=context_size, call=call)
 
+
+async def run_for(
+    session: AsyncSession,
+    chat: Chat,
+    cfg: ChatConfig,
+    row: LoggedMessage,
+    *,
+    context_size: int = 10,
+    call: Callable[..., Awaitable[dict]] = llm.use_tool,
+) -> Report:
+    """Re-extract one edited message, in the company of its neighbours.
+
+    The same window builder, a tail of one. Isolation is what makes a
+    re-extraction coin a synonym for a kind it already had.
+    """
+    return await _pass(session, chat, cfg, [row], context_size=context_size, call=call)
+
+
+async def _pass(
+    session: AsyncSession,
+    chat: Chat,
+    cfg: ChatConfig,
+    tail: list[LoggedMessage],
+    *,
+    context_size: int,
+    call: Callable[..., Awaitable[dict]],
+) -> Report:
+    """Everything `run` does once the tail has been chosen."""
     context = await store.context_before(session, chat.id, tail[0], limit=context_size)
     vocabulary = taxonomy.render(await taxonomy.observed(session, chat.id))
     prompt = build_prompt(tail, context, vocabulary, cfg, chat.chat_id)
