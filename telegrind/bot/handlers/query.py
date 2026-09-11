@@ -1,76 +1,24 @@
-"""/q — the only reason extraction ever has to have happened.
+"""/q — the override, kept because it costs nothing.
 
-Asking is the trigger. Deferred parsing and the dialogue product are one
-mechanism, not two features that coexist, so there is no second trigger
-here and no background flush.
+The classifier takes questions now, so asking no longer requires a command.
+/q stays because it is useful twice: when the user wants to be sure they are
+asking, and when the classifier got it wrong. It sets the verdict rather
+than bypassing it, which is why there is no second answering path here —
+see bot/answering.py for that half.
 """
-
-import logging
-from collections.abc import Awaitable, Callable
-from datetime import datetime
 
 from aiogram import Bot
 from aiogram.filters import Command
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from telegrind import answer as answers
-from telegrind import extract, query, store, taxonomy
-from telegrind.bot import outbound
+from telegrind import store
+from telegrind.bot.answering import REFUSAL, answer_for, question_of
 from telegrind.bot.handlers.receipts import RECEIPT_EMOJI, acknowledge
+from telegrind.bot.outbound import say
 from telegrind.bot.router import router
 from telegrind.config import ChatConfig
 from telegrind.models import VERDICT_QUESTION, Chat
-
-log = logging.getLogger(__name__)
-
-
-def question_of(text: str | None) -> str:
-    """Everything after /q, with an @mention suffix tolerated."""
-    if not text:
-        return ""
-    _, _, rest = text.partition(" ")
-    return rest.strip()
-
-
-async def _vocabulary(session: AsyncSession, chat_pk: int) -> str:
-    return taxonomy.render(await taxonomy.observed(session, chat_pk))
-
-
-async def answer_for(
-    question: str,
-    chat: Chat,
-    config: ChatConfig,
-    session: AsyncSession,
-    *,
-    passes: Callable[..., Awaitable[extract.Report]] = extract.run,
-    spec_for: Callable[..., Awaitable[query.Spec]] = answers.spec_for,
-    query_run: Callable[..., Awaitable[query.Answer]] = query.run,
-    render: Callable[..., Awaitable[str]] = answers.render,
-    vocabulary: Callable[..., Awaitable[str]] = _vocabulary,
-) -> str:
-    """The whole answer as one string. No Telegram in here, so it tests."""
-    if not question:
-        return "Спроси что-нибудь после /q."
-
-    report = await passes(session, chat, config)
-
-    words = await vocabulary(session, chat.id)
-    today = datetime.now(tz=config.tz).date()
-    try:
-        spec = await spec_for(question, words, config, today)
-    except query.Unanswerable as exc:
-        log.info("unanswerable question in chat %s: %s", chat.chat_id, exc)
-        return "Не понял вопрос, переформулируй."
-
-    result = await query_run(session, chat.id, spec)
-    text = await render(question, spec, result, config)
-
-    if report.failed:
-        text += f"\n\n({report.failed} сообщений не удалось разобрать.)"
-    if report.complaints:
-        text += f"\n({report.complaints} фактов не удалось привязать.)"
-    return text
 
 
 @router.message(Command("q"))
@@ -97,8 +45,8 @@ async def ask(
     async with session.begin():
         pending = len(await store.unextracted_tail(session, chat.id))
     if pending:
-        await outbound.say(bot, session, chat, f"Разбираю {pending} сообщений…")
+        await say(bot, session, chat, f"Разбираю {pending} сообщений…")
 
     async with session.begin():
         text = await answer_for(question_of(message.text), chat, config, session)
-    await outbound.say(bot, session, chat, text, reply_to=message.message_id)
+    await say(bot, session, chat, text or REFUSAL, reply_to=message.message_id)

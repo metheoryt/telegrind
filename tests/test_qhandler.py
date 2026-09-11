@@ -3,6 +3,8 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
+from telegrind import query
+from telegrind.bot.answering import EMPTY_QUESTION, REFUSAL, answer_for, question_of
 from telegrind.bot.handlers import query as handler
 from telegrind.config import ChatConfig
 from telegrind.models import VERDICT_SYSTEM
@@ -24,6 +26,10 @@ async def _unreachable(*args: object, **kwargs: object) -> object:
 
 async def _vocabulary(session: object, chat_pk: int) -> str:
     return "- expense (5): amount"
+
+
+async def _no_vocabulary(*args: object, **kwargs: object) -> str:
+    return ""
 
 
 async def _spec_for(question: str, words: str, cfg: ChatConfig, today: object) -> Spec:
@@ -101,7 +107,8 @@ async def test_a_pass_that_failed_is_reported_alongside_the_answer() -> None:
 
 
 async def test_a_question_the_spec_cannot_express_is_refused_honestly() -> None:
-    from telegrind.query import Unanswerable
+    """A refusal comes back as None, not as the refusal text: only the
+    caller — `ask`, or Task 5's routing — decides what a `None` becomes."""
 
     async def passes(session: object, chat: object, cfg: ChatConfig) -> SimpleNamespace:
         return report()
@@ -109,9 +116,9 @@ async def test_a_question_the_spec_cannot_express_is_refused_honestly() -> None:
     async def refuses(
         question: str, words: str, cfg: ChatConfig, today: object
     ) -> Spec:
-        raise Unanswerable("median")
+        raise query.Unanswerable("median")
 
-    text = await handler.answer_for(
+    result = await handler.answer_for(
         question="медиана",
         chat=CHAT,
         config=CFG,
@@ -123,7 +130,37 @@ async def test_a_question_the_spec_cannot_express_is_refused_honestly() -> None:
         vocabulary=_vocabulary,
     )
 
-    assert "переформулируй" in text
+    assert result is None
+
+
+async def test_an_unanswerable_question_returns_none_not_prose() -> None:
+    """The caller has to be able to hand it to Claude instead."""
+
+    async def refusing(*args: object, **kwargs: object) -> object:
+        raise query.Unanswerable("unknown aggregate ''")
+
+    async def no_pass(*args: object, **kwargs: object) -> object:
+        return SimpleNamespace(failed=0, complaints=0)
+
+    result = await answer_for(
+        "почему ты записал это расходом",
+        CHAT,
+        CFG,
+        object(),
+        passes=no_pass,
+        spec_for=refusing,
+        vocabulary=_no_vocabulary,
+    )
+    assert result is None
+
+
+def test_the_refusal_text_is_still_available_to_the_caller() -> None:
+    assert REFUSAL == "Не понял вопрос, переформулируй."
+
+
+def test_a_question_survives_the_move_without_its_command() -> None:
+    assert question_of("/q сколько я потратил") == "сколько я потратил"
+    assert question_of("сколько я потратил") == "сколько я потратил"
 
 
 class AskSession:
@@ -223,5 +260,5 @@ async def test_ask_sends_the_answer_as_a_reply_to_the_question() -> None:
     stored = [(r.text, r.verdict, r.extractable) for r in session.added]
     assert stored[1:] == [
         ("Разбираю 1 сообщений…", VERDICT_SYSTEM, False),
-        ("Спроси что-нибудь после /q.", VERDICT_SYSTEM, False),
+        (EMPTY_QUESTION, VERDICT_SYSTEM, False),
     ]
