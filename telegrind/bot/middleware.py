@@ -2,7 +2,12 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from aiogram.types import Message, TelegramObject, Update
+from aiogram.types import (
+    Message,
+    MessageReactionUpdated,
+    TelegramObject,
+    Update,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -26,23 +31,25 @@ async def populate_chat_data(
     """Resolve the chat row and hand the handler an open session.
 
     The signature is aiogram's own — `TelegramObject`, not `Update` — and
-    the narrowing happens here. Anything that is not a message update is
-    dropped: Task 6 of the Phase 1 plan widens this to let reactions
-    through, and until then a reaction never reaches a handler.
+    the narrowing happens here. A reaction has to be named explicitly:
+    this used to return None for everything that was not a Message, which
+    silently dropped every reaction update before any handler saw it.
     """
-    if not isinstance(event, Update) or not isinstance(event.event, Message):
+    if not isinstance(event, Update):
         return None
-    msg: Message = event.event
+    inner = event.event
+    if isinstance(inner, Message | MessageReactionUpdated):
+        chat_id = inner.chat.id
+    else:
+        return None
 
     async_session: async_sessionmaker[AsyncSession] = data["async_session"]
     async with async_session() as session:
         async with session.begin():
-            result = await session.execute(
-                select(Chat).where(Chat.chat_id == msg.chat.id)
-            )
+            result = await session.execute(select(Chat).where(Chat.chat_id == chat_id))
             chat: Chat | None = result.scalar_one_or_none()
             if not chat:
-                chat = Chat(chat_id=msg.chat.id)
+                chat = Chat(chat_id=chat_id)
                 session.add(chat)
 
         data["chat"] = chat
