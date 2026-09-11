@@ -237,10 +237,12 @@ today.
 `deleted_business_messages`, which requires a `business_connection_id`; for a
 plain bot a user deleting a message is invisible. This is settled, not open.
 
-So deletion is explicit. Preferred: **a reaction on the message** (👎) tombstones
-its facts, and removing the reaction restores them. This depends on the probe
-below; if `message_reaction` does not arrive in a private chat, the fallback is
-an explicit command in reply, not the current bare `-` marker.
+So deletion is explicit, and it is a **reaction on the message**: one designated
+emoji tombstones that message's facts, and removing it clears `deleted_at`.
+Measured 2026-09-11 against the live bot — `message_reaction` does arrive in a
+private chat with no administrator, and removal arrives as its own update with
+an empty `new_reaction`, so both halves of the gesture are observable. The bare
+`-` marker goes.
 
 ## Importing existing history
 
@@ -348,15 +350,15 @@ design — is answered by that same first commit.
 
 ## Probes
 
-**Does `message_reaction` reach a bot in a private chat?** The schema says "the
-bot must be an administrator in the chat and must explicitly specify
-`message_reaction` in the list of `allowed_updates`". A private chat has no
-administrator, so the condition is either vacuous or blocking, and the
-documentation does not settle which. Register a `message_reaction` handler (in
-aiogram, registering the handler *is* what subscribes the update type —
-`allowed_updates` is derived from the observers that have handlers), react to a
-message in the private chat, see whether an update arrives. Five minutes, and it
-decides the delete UX.
+**Does `message_reaction` reach a bot in a private chat? — RESOLVED, yes**
+(2026-09-11, measured against `@assinstantbot`). The schema's "the bot must be
+an administrator in the chat" is vacuous in a private chat: with
+`allowed_updates` including `message_reaction`, setting a reaction produced
+`old_reaction: [] → new_reaction: [🙏]` and removing it produced a separate
+update with `new_reaction: []`, `chat.type: private`, no admin rights anywhere.
+In aiogram, registering the handler *is* what subscribes the update type —
+`allowed_updates` is derived from the observers that have handlers, so the
+delete UX costs one handler and no configuration.
 
 **Do exported message ids match what the bot saw?** Covered by the overlap check
 in *Importing existing history*.
@@ -368,5 +370,6 @@ in *Importing existing history*.
 3. Ingest: store unconditionally, mark `extractable`, no reply.
 4. Batch extraction over a window, with the observed taxonomy in the prompt.
 5. `/q`: extract the tail, then the query spec, SQL, prose answer.
-6. Reaction probe, then the delete UX it selects.
+6. Reaction-driven delete: a `message_reaction` handler that tombstones and
+   restores.
 7. History import.
