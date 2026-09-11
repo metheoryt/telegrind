@@ -5,13 +5,16 @@ message row: a Telegram delete removes facts, never the log.
 """
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aiogram.types import Message
 from sqlalchemy import func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from telegrind.models import KIND_TEXT, KIND_VOICE, Chat, Fact, LoggedMessage
+
+if TYPE_CHECKING:  # `extract` imports `store`; the cycle stays a type concern.
+    from telegrind.extract import Draft
 
 
 def message_kind(msg: Message) -> str:
@@ -209,3 +212,77 @@ async def restore_facts(session: AsyncSession, message_pk: int) -> int:
     for row in rows:
         row.deleted_at = None
     return len(rows)
+
+
+def mark_extracted(
+    rows: list[LoggedMessage], *, model: str, prompt_version: str, at: datetime
+) -> None:
+    """A message the pass handled, whether or not it yielded a fact.
+
+    Marking the silent ones is the whole point of the column: without it
+    «привет» is indistinguishable from «not yet parsed» and every pass
+    re-feeds it forever.
+    """
+    for row in rows:
+        row.extracted_at = at
+        row.extract_model = model
+        row.extract_prompt_version = prompt_version
+        row.extract_error = None
+
+
+def mark_failed(rows: list[LoggedMessage], error: str) -> None:
+    """The pass could not read these. They stay pending and are retried.
+
+    Dropping the echo removed the only channel through which a failure
+    reached the user, so it has to be countable here instead.
+    """
+    for row in rows:
+        row.extract_error = error
+
+
+async def replace_facts(
+    session: AsyncSession,
+    chat_pk: int,
+    message_pk: int,
+    drafts: list[Draft],
+    *,
+    model: str,
+    prompt_version: str,
+    now: datetime,
+) -> int:
+    """Diff this message's facts against what the pass just derived.
+
+    Unchanged rows are left alone, changed ones updated in place, surplus
+    ones tombstoned. A tombstone is never lifted here — only the user's
+    reaction clears `deleted_at` — which is why inserting over a
+    tombstoned `(message_pk, seq)` has to work, and why the uniqueness on
+    it is a partial index.
+    """
+    live = {row.seq: row for row in await live_facts_for_message(session, message_pk)}
+
+    for draft in drafts:
+        row = live.pop(draft.seq, None)
+        if row is None:
+            session.add(
+                Fact(
+                    chat_pk=chat_pk,
+                    message_pk=message_pk,
+                    seq=draft.seq,
+                    kind=draft.kind,
+                    at=draft.at,
+                    fields=draft.fields,
+                    model=model,
+                    prompt_version=prompt_version,
+                )
+            )
+            continue
+        row.kind = draft.kind
+        row.at = draft.at
+        row.fields = draft.fields
+        row.model = model
+        row.prompt_version = prompt_version
+
+    for surplus in live.values():
+        surplus.deleted_at = now
+
+    return len(drafts)

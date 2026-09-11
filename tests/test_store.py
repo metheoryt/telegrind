@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from telegrind import store
+from telegrind.extract import Draft
 from telegrind.models import KIND_TEXT, KIND_VOICE, Fact, LoggedMessage
 from telegrind.store import (
     message_kind,
@@ -12,6 +13,7 @@ from telegrind.store import (
 
 TG_DATE = datetime(2026, 9, 9, 15, 40, tzinfo=UTC)
 LOCAL = datetime(2026, 9, 9, 21, 40, tzinfo=timezone(timedelta(hours=6)))
+AT = datetime(2026, 9, 11, 12, 0, tzinfo=UTC)
 
 
 def text_message(**overrides: object) -> SimpleNamespace:
@@ -127,12 +129,12 @@ class FakeSession:
         pass
 
 
-def fact(seq: int, deleted_at: datetime | None = None) -> Fact:
+def fact(seq: int, deleted_at: datetime | None = None, kind: str = "expense") -> Fact:
     return Fact(
         chat_pk=1,
         message_pk=7,
         seq=seq,
-        kind="expense",
+        kind=kind,
         at=TG_DATE,
         fields={"amount": 100},
         deleted_at=deleted_at,
@@ -210,3 +212,66 @@ async def test_context_before_comes_back_oldest_first() -> None:
     context = await store.context_before(session, chat_pk=1, pivot=logged(10), limit=10)
 
     assert [row.message_id for row in context] == [8, 9]
+
+
+async def test_replace_facts_updates_in_place_and_tombstones_the_surplus() -> None:
+    live = [fact(seq=1, kind="expense"), fact(seq=2, kind="expense")]
+    session = FakeSession(live)
+    row = logged(10)
+    drafts = [
+        Draft(message=row, seq=1, kind="expense", at=AT, fields={"amount": 500}),
+    ]
+
+    written = await store.replace_facts(
+        session,
+        chat_pk=1,
+        message_pk=10,
+        drafts=drafts,
+        model="m",
+        prompt_version="v",
+        now=AT,
+    )
+
+    assert written == 1
+    assert live[0].fields == {"amount": 500}
+    assert live[0].deleted_at is None
+    assert live[1].deleted_at == AT
+
+
+async def test_replace_facts_adds_a_row_for_a_new_seq() -> None:
+    session = FakeSession([])
+    row = logged(10)
+    drafts = [Draft(message=row, seq=1, kind="expense", at=AT, fields={})]
+
+    await store.replace_facts(
+        session,
+        chat_pk=1,
+        message_pk=10,
+        drafts=drafts,
+        model="m",
+        prompt_version="v",
+        now=AT,
+    )
+
+    assert len(session.added) == 1
+    assert session.added[0].kind == "expense"
+
+
+def test_mark_extracted_clears_a_previous_error() -> None:
+    row = logged(10)
+    row.extract_error = "boom"
+
+    store.mark_extracted([row], model="m", prompt_version="v", at=AT)
+
+    assert row.extracted_at == AT
+    assert row.extract_model == "m"
+    assert row.extract_error is None
+
+
+def test_mark_failed_leaves_the_message_pending() -> None:
+    row = logged(10)
+
+    store.mark_failed([row], "boom")
+
+    assert row.extracted_at is None
+    assert row.extract_error == "boom"

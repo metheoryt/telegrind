@@ -7,12 +7,16 @@ calls coin N synonyms for it.
 """
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from telegrind import llm, store, taxonomy
 from telegrind.coerce import to_instant, to_json_value
 from telegrind.config import ChatConfig
-from telegrind.models import LoggedMessage
+from telegrind.models import Chat, LoggedMessage
 
 log = logging.getLogger(__name__)
 
@@ -160,3 +164,74 @@ def drafts_from(
         )
 
     return drafts, complaints
+
+
+@dataclass(frozen=True, slots=True)
+class Report:
+    """What one pass did, in the shape /q reports it."""
+
+    pending: int
+    extracted: int
+    facts: int
+    failed: int
+    complaints: int
+
+
+async def run(
+    session: AsyncSession,
+    chat: Chat,
+    cfg: ChatConfig,
+    *,
+    limit: int = 200,
+    context_size: int = 10,
+    call: Callable[..., Awaitable[dict]] = llm.use_tool,
+) -> Report:
+    """One extraction pass over the unextracted tail.
+
+    The caller owns the transaction. Nothing here commits: /q wants the
+    facts and the marks to land together or not at all.
+    """
+    tail = await store.unextracted_tail(session, chat.id, limit=limit)
+    if not tail:
+        return Report(pending=0, extracted=0, facts=0, failed=0, complaints=0)
+
+    context = await store.context_before(session, chat.id, tail[0], limit=context_size)
+    vocabulary = taxonomy.render(await taxonomy.observed(session, chat.id))
+    prompt = build_prompt(tail, context, vocabulary, cfg, chat.chat_id)
+    model = llm.current_model()
+
+    try:
+        payload = await call(llm.EXTRACT_SYSTEM, prompt, llm.EXTRACT_TOOL, model=model)
+    except Exception as exc:
+        # Not marked: the tail stays pending and the next /q retries it.
+        store.mark_failed(tail, f"{type(exc).__name__}: {exc}")
+        log.warning("extraction pass failed for chat %s: %s", chat.chat_id, exc)
+        return Report(
+            pending=len(tail), extracted=0, facts=0, failed=len(tail), complaints=0
+        )
+
+    drafts, complaints = drafts_from(payload, tail, cfg)
+    for complaint in complaints:
+        log.warning("extraction complaint in chat %s: %s", chat.chat_id, complaint)
+
+    now = datetime.now(UTC)
+    written = 0
+    for row in tail:
+        written += await store.replace_facts(
+            session,
+            chat_pk=chat.id,
+            message_pk=row.id,
+            drafts=[d for d in drafts if d.message is row],
+            model=model,
+            prompt_version=llm.PROMPT_VERSION,
+            now=now,
+        )
+    store.mark_extracted(tail, model=model, prompt_version=llm.PROMPT_VERSION, at=now)
+
+    return Report(
+        pending=len(tail),
+        extracted=len(tail),
+        facts=written,
+        failed=0,
+        complaints=len(complaints),
+    )

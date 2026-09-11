@@ -1,7 +1,8 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from telegrind.config import ChatConfig
-from telegrind.extract import author_of, build_prompt, drafts_from
+from telegrind.extract import Report, author_of, build_prompt, drafts_from, run
 from telegrind.models import KIND_TEXT, LoggedMessage
 
 CFG = ChatConfig(tz_offset=6, currency="KZT")
@@ -215,3 +216,86 @@ def test_seq_restarts_within_each_message() -> None:
     drafts, _ = drafts_from(payload, tail, CFG)
 
     assert [d.seq for d in drafts] == [1, 2]
+
+
+class FakeWindowSession:
+    """Enough session for `run`: two selects, then adds."""
+
+    def __init__(self, tail: list, context: list, live_facts: list) -> None:
+        self.results = [tail, context, live_facts]
+        self.added: list[object] = []
+
+    async def execute(self, statement: object) -> SimpleNamespace:
+        rows = self.results.pop(0) if self.results else []
+        return SimpleNamespace(scalars=lambda: iter(rows), all=lambda: [])
+
+    def add(self, obj: object) -> None:
+        self.added.append(obj)
+
+    async def flush(self) -> None:
+        pass
+
+
+async def test_an_empty_tail_makes_no_call() -> None:
+    called = False
+
+    async def never(*args: object, **kwargs: object) -> dict:
+        nonlocal called
+        called = True
+        return {}
+
+    report = await run(
+        FakeWindowSession([], [], []),
+        chat=SimpleNamespace(id=1, chat_id=OWNER),
+        cfg=CFG,
+        call=never,
+    )
+
+    assert report == Report(pending=0, extracted=0, facts=0, failed=0, complaints=0)
+    assert not called
+
+
+async def test_a_successful_pass_marks_every_message_including_the_silent_ones() -> (
+    None
+):
+    tail = [logged(10, "4500 такси"), logged(11, "привет")]
+
+    async def call(
+        system: str, user: str, tool: dict, *, model: str | None = None
+    ) -> dict:
+        return {
+            "facts": [{"message": 1, "kind": "expense", "fields": {"amount": "4500"}}]
+        }
+
+    report = await run(
+        FakeWindowSession(tail, [], []),
+        chat=SimpleNamespace(id=1, chat_id=OWNER),
+        cfg=CFG,
+        call=call,
+    )
+
+    assert report.extracted == 2
+    assert report.facts == 1
+    assert all(row.extracted_at is not None for row in tail)
+    assert all(row.extract_error is None for row in tail)
+
+
+async def test_a_failed_call_leaves_the_tail_pending_and_countable() -> None:
+    tail = [logged(10, "4500 такси")]
+
+    async def boom(
+        system: str, user: str, tool: dict, *, model: str | None = None
+    ) -> dict:
+        raise RuntimeError("503")
+
+    report = await run(
+        FakeWindowSession(tail, [], []),
+        chat=SimpleNamespace(id=1, chat_id=OWNER),
+        cfg=CFG,
+        call=boom,
+    )
+
+    assert report.failed == 1
+    assert report.extracted == 0
+    assert tail[0].extracted_at is None
+    assert "503" in tail[0].extract_error

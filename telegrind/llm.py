@@ -7,12 +7,14 @@ is accumulated judgement about real messages rather than code.
 
 import logging
 import os
+from typing import Any
 
 from anthropic import AsyncAnthropic
+from anthropic.types import ToolParam
 
 log = logging.getLogger(__name__)
 
-PROMPT_VERSION = "2026-09-10.1"
+PROMPT_VERSION = "2026-09-11.1"
 
 DEFAULT_MODEL = "claude-haiku-4-5"
 MAX_TOKENS = 2048
@@ -51,3 +53,85 @@ def client() -> AsyncAnthropic:
 
 def current_model() -> str:
     return os.getenv("LLM_MODEL", DEFAULT_MODEL)
+
+
+class LLMError(RuntimeError):
+    """The model did not answer in the shape we asked for."""
+
+
+EXTRACT_SYSTEM = f"""\
+Ты извлекаешь факты из личного дневника в Telegram. Тебе дают окно
+сообщений подряд — читай их вместе, соседние сообщения часто продолжают
+друг друга.
+
+{EXTRACTION_RULES}
+- Поле `when` — это фраза о времени ровно так, как она написана в
+  сообщении («вчера вечером», «в понедельник», «15 октября»). Не считай
+  даты сам: у каждого сообщения свой час, и арифметику делает код.
+  Если сообщение не называет времени — пустая строка.
+- `message` — номер сообщения из блока «Сообщения для разбора».
+  Факт, собранный из нескольких сообщений, принадлежит ПОСЛЕДНЕМУ из них:
+  там он стал полным.
+- Из блока «Контекст» извлекать не надо. Он нужен только чтобы понять,
+  о чём речь.
+"""
+
+EXTRACT_TOOL: ToolParam = {
+    "name": "record_facts",
+    "description": "Записать факты, извлечённые из окна сообщений.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "facts": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "message": {"type": "integer"},
+                        "kind": {"type": "string"},
+                        "when": {"type": "string"},
+                        "fields": {"type": "object"},
+                    },
+                    "required": ["message", "kind", "fields"],
+                },
+            }
+        },
+        "required": ["facts"],
+    },
+}
+
+
+async def use_tool(
+    system: str, user: str, tool: ToolParam, *, model: str | None = None
+) -> dict[str, Any]:
+    """One forced tool call. Returns the tool input, already a dict.
+
+    Forced rather than suggested: the caller needs a structure, and an
+    unforced call is free to answer in prose, which is a parse error
+    dressed up as a success.
+    """
+    response = await client().messages.create(
+        model=model or current_model(),
+        max_tokens=MAX_TOKENS,
+        system=system,
+        messages=[{"role": "user", "content": user}],
+        tools=[tool],
+        tool_choice={"type": "tool", "name": tool["name"]},
+    )
+    for block in response.content:
+        if block.type == "tool_use":
+            return dict(block.input)
+    raise LLMError(f"{tool['name']} was not called")
+
+
+async def say(system: str, user: str, *, model: str | None = None) -> str:
+    """A plain prose answer."""
+    response = await client().messages.create(
+        model=model or current_model(),
+        max_tokens=MAX_TOKENS,
+        system=system,
+        messages=[{"role": "user", "content": user}],
+    )
+    return "".join(
+        block.text for block in response.content if block.type == "text"
+    ).strip()
