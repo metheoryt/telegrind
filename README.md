@@ -14,14 +14,16 @@ declared up front.
 The bot does not echo. The one thing it says on ingest is a 💔 reaction, which
 is both the receipt that the message landed and the button that takes it back:
 tap the bubble and the facts derived from that message are tombstoned, tap it
-again and they come back. The message itself is never deleted.
+again and they come back. The message itself is never deleted. Edit a message
+and the heart changes — 💔 → ❤‍🔥 → 💘 → 💔 — so you can see the bot picked the
+edit up.
 
 ## DONE
 
 - Semantic date parsing (вчера, 2 hours ago, …), resolved against the message's
   own clock rather than the moment of parsing
 - Every message stored unconditionally, with its extraction state on the row
-- 💔 as the receipt and the delete affordance
+- 💔 as the receipt and the delete affordance, cycling on every edit
 - Edit a message and its facts are re-derived on the next pass
 
 ## TODO

@@ -89,6 +89,11 @@ class LoggedMessage(Model):
     #: The last extraction failure. Without it, dropping the echo would
     #: make a failed extraction completely silent.
     extract_error: Mapped[str | None] = mapped_column(default=None)
+    #: The reaction the bot last placed on this message. There is no API
+    #: to read a message's reactions back, so the receipt has to remember
+    #: itself; an edit advances it, which is the only signal that the bot
+    #: noticed the edit at all.
+    receipt_emoji: Mapped[str | None] = mapped_column(default=None)
 
     @property
     def content(self) -> str:

@@ -104,8 +104,11 @@ type: `Message` and `MessageReactionUpdated` pass, everything else is dropped.
 **`telegrind/bot/handlers/handlers.py`** — ingestion. The slash catch-all first
 (stored with `extractable=False`, so a command never coins a category), then
 voice, then a filterless catch-all so a sticker or a photo is stored too.
-`acknowledge` places the 💔 and never raises: the row is already committed, so
-a Telegram failure costs a visual cue and nothing else.
+`acknowledge` places the receipt and never raises: the row is already
+committed, so a Telegram failure costs a visual cue and nothing else. An edit
+advances the receipt along `RECEIPT_CYCLE` (💔 → ❤‍🔥 → 💘), which is the only
+signal that the bot noticed the edit — every emoji in it stays a heart, because
+tapping any of them still deletes.
 
 **`telegrind/bot/handlers/reactions.py`** — *any* user reaction tombstones the
 message's facts; removing it restores them. Registering the observer is what
