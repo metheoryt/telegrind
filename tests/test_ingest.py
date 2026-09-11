@@ -12,7 +12,14 @@ from telegrind.bot.handlers.handlers import (
     next_receipt,
 )
 from telegrind.config import ChatConfig
-from telegrind.models import KIND_TEXT, Chat, LoggedMessage
+from telegrind.models import (
+    KIND_TEXT,
+    VERDICT_FACT,
+    VERDICT_QUESTION,
+    VERDICT_SYSTEM,
+    Chat,
+    LoggedMessage,
+)
 
 CFG = ChatConfig(tz_offset=6, currency="KZT")
 
@@ -103,6 +110,7 @@ class EditSession:
 
     def __init__(self, existing: LoggedMessage | None) -> None:
         self.existing = existing
+        self.added: list[LoggedMessage] = []
 
     def begin(self) -> Any:
         @contextlib.asynccontextmanager
@@ -116,13 +124,13 @@ class EditSession:
         return SimpleNamespace(scalar_one_or_none=lambda: row)
 
     def add(self, obj: object) -> None:
-        pass
+        self.added.append(obj)
 
     async def flush(self) -> None:
         pass
 
 
-def stored(*, extracted: bool) -> LoggedMessage:
+def stored(*, extracted: bool, verdict: str = VERDICT_FACT) -> LoggedMessage:
     return LoggedMessage(
         id=42,
         chat_pk=1,
@@ -133,6 +141,7 @@ def stored(*, extracted: bool) -> LoggedMessage:
         raw={},
         receipt_emoji=RECEIPT_EMOJI,
         extracted_at=datetime(2026, 9, 11, 4, tzinfo=UTC) if extracted else None,
+        verdict=verdict,
     )
 
 
@@ -223,3 +232,107 @@ async def test_editing_a_command_leaves_it_out_of_the_extractor(
 
     assert existing.extractable is False
     assert called == []
+
+
+class NewMessageSession:
+    """Enough session for record_command / record_voice / record_text: no
+    existing row, so upsert_message always inserts."""
+
+    def __init__(self) -> None:
+        self.added: list[LoggedMessage] = []
+
+    def begin(self) -> Any:
+        @contextlib.asynccontextmanager
+        async def ctx() -> Any:
+            yield
+
+        return ctx()
+
+    async def execute(self, statement: object) -> SimpleNamespace:
+        return SimpleNamespace(scalar_one_or_none=lambda: None)
+
+    def add(self, obj: object) -> None:
+        self.added.append(obj)
+
+    async def flush(self) -> None:
+        pass
+
+
+def command_message(text: str = "/start") -> SimpleNamespace:
+    return SimpleNamespace(
+        message_id=99,
+        date=datetime(2026, 9, 9, 15, 40, tzinfo=UTC),
+        edit_date=None,
+        text=text,
+        caption=None,
+        voice=None,
+        forward_origin=None,
+        chat=SimpleNamespace(id=3260987),
+        model_dump=lambda mode=None: {"message_id": 99},
+    )
+
+
+async def test_a_non_q_command_gets_the_system_verdict() -> None:
+    """COMMAND_LIKE is a text-prefix filter, not a registered-command one:
+    /start, /help and a typo all reach record_command live. Once the tail
+    reads verdict instead of extractable, leaving these on the default fact
+    verdict would put them right back in the extraction tail."""
+    session = NewMessageSession()
+
+    await handlers.record_command(
+        command_message("/start"), Chat(id=1, chat_id=7), session, FakeBot()
+    )
+
+    assert session.added[0].extractable is False
+    assert session.added[0].verdict == VERDICT_SYSTEM
+
+
+async def test_a_plain_message_still_gets_the_fact_verdict() -> None:
+    """_store's other two callers (voice, the catch-all) must keep writing
+    the fact default — only the command path changes."""
+    session = NewMessageSession()
+
+    await handlers.record_text(message(), Chat(id=1, chat_id=7), session, FakeBot())
+
+    assert session.added[0].extractable is True
+    assert session.added[0].verdict == VERDICT_FACT
+
+
+async def test_editing_a_q_row_does_not_flip_its_verdict(monkeypatch: Any) -> None:
+    """Editing a /q row still starts with '/', so `parses` is False here too
+    — but the verdict must stay VERDICT_QUESTION, not fall back to the
+    fact/system default that a re-derivation would produce."""
+
+    async def fake_run_for(*args: object, **kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(facts=0, failed=0)
+
+    monkeypatch.setattr(extract, "run_for", fake_run_for)
+
+    existing = stored(extracted=False, verdict=VERDICT_QUESTION)
+    existing.text = "/q сколкьо я потратил"
+    existing.extractable = False
+    edited = edit()
+    edited.text = "/q сколько я потратил"
+
+    await handlers.record_edited(
+        edited, Chat(id=1, chat_id=7), EditSession(existing), CFG, FakeBot()
+    )
+
+    assert existing.verdict == VERDICT_QUESTION
+
+
+async def test_editing_a_message_with_no_prior_row_keeps_the_fact_default(
+    monkeypatch: Any,
+) -> None:
+    """A row upsert_message has never seen before has no verdict to
+    preserve, so it keeps the ordinary first-sighting default."""
+
+    async def fake_run_for(*args: object, **kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(facts=0, failed=0)
+
+    monkeypatch.setattr(extract, "run_for", fake_run_for)
+
+    session = EditSession(None)
+    await handlers.record_edited(edit(), Chat(id=1, chat_id=7), session, CFG, FakeBot())
+
+    assert session.added[0].verdict == VERDICT_FACT

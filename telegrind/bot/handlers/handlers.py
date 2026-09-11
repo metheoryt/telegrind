@@ -26,7 +26,7 @@ from telegrind.bot.handlers.receipts import (
 )
 from telegrind.bot.router import router
 from telegrind.config import ChatConfig
-from telegrind.models import Chat
+from telegrind.models import VERDICT_FACT, VERDICT_SYSTEM, Chat
 
 log = logging.getLogger(__name__)
 
@@ -43,10 +43,11 @@ async def _store(
     bot: Bot,
     *,
     extractable: bool,
+    verdict: str,
 ) -> None:
     async with session.begin():
         row, created = await store.upsert_message(
-            session, chat, message, extractable=extractable
+            session, chat, message, extractable=extractable, verdict=verdict
         )
         # A first sighting gets the default; an edit gets the next one along,
         # and that change is the only thing telling the user the bot saw it.
@@ -62,9 +63,11 @@ async def record_command(
     """Store a command without extracting it.
 
     /q is answered in Phase 2 and reaches this handler until then. Storing
-    it keeps the invariant; extractable=False keeps it out of the taxonomy.
+    it keeps the invariant; extractable=False and verdict=VERDICT_SYSTEM keep
+    it out of the taxonomy — every slash command that reaches this handler
+    is one that is not /q, which claims its own messages first.
     """
-    await _store(message, chat, session, bot, extractable=False)
+    await _store(message, chat, session, bot, extractable=False, verdict=VERDICT_SYSTEM)
 
 
 @router.message(F.voice)
@@ -76,7 +79,7 @@ async def record_voice(
     There is no ASR. Logging it now means a later transcription pass can
     reach back over everything recorded in the meantime.
     """
-    await _store(message, chat, session, bot, extractable=True)
+    await _store(message, chat, session, bot, extractable=True, verdict=VERDICT_FACT)
 
 
 @router.message()
@@ -89,7 +92,7 @@ async def record_text(
     the user sent, so it is stored. `message_values` already handles a
     caption and a missing text.
     """
-    await _store(message, chat, session, bot, extractable=True)
+    await _store(message, chat, session, bot, extractable=True, verdict=VERDICT_FACT)
 
 
 @router.edited_message()
@@ -115,8 +118,14 @@ async def record_edited(
         # here would turn a stored /q back into extractor input the first
         # time the user fixes a typo in their own question.
         parses = not (edited_message.text or "").startswith("/")
+        # Preserved, not re-derived: reclassifying on edit is Task 6's job,
+        # not this one's. Deriving a verdict from the `/` prefix here would
+        # be wrong regardless — it would flip an edited /q row from
+        # VERDICT_QUESTION to VERDICT_FACT/SYSTEM. A row with no previous
+        # sighting keeps upsert_message's first-sighting default.
+        verdict = previous.verdict if previous is not None else VERDICT_FACT
         row, created = await store.upsert_message(
-            session, chat, edited_message, extractable=parses
+            session, chat, edited_message, extractable=parses, verdict=verdict
         )
         emoji = RECEIPT_EMOJI if created else next_receipt(row.receipt_emoji)
         row.receipt_emoji = emoji
