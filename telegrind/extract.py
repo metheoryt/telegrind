@@ -7,7 +7,10 @@ calls coin N synonyms for it.
 """
 
 import logging
+from dataclasses import dataclass
+from datetime import datetime
 
+from telegrind.coerce import to_instant, to_json_value
 from telegrind.config import ChatConfig
 from telegrind.models import LoggedMessage
 
@@ -105,3 +108,55 @@ def build_prompt(
         ),
     ]
     return "\n".join(blocks)
+
+
+@dataclass(frozen=True, slots=True)
+class Draft:
+    """One fact the model returned, coerced but not yet stored."""
+
+    message: LoggedMessage
+    seq: int
+    kind: str
+    at: datetime
+    fields: dict[str, object]
+
+
+def drafts_from(
+    payload: dict, tail: list[LoggedMessage], cfg: ChatConfig
+) -> tuple[list[Draft], list[str]]:
+    """Coerce the model's array. Returns (drafts, complaints).
+
+    A complaint is something that could not be placed. It is returned
+    rather than logged and forgotten, because a silently dropped fact is
+    invisible in testing and the user is never told.
+    """
+    drafts: list[Draft] = []
+    complaints: list[str] = []
+    seen: dict[int, int] = {}
+
+    for item in payload.get("facts") or []:
+        index = item.get("message")
+        if not isinstance(index, int) or not 1 <= index <= len(tail):
+            complaints.append(f"факт указывает на сообщение {index!r} вне окна")
+            continue
+
+        kind = str(item.get("kind") or "").strip()
+        if not kind:
+            complaints.append(f"факт без kind в сообщении {index}")
+            continue
+
+        row = tail[index - 1]
+        raw_fields = item.get("fields")
+        fields = {
+            str(key): to_json_value(value) for key, value in (raw_fields or {}).items()
+        }
+        # The model copies the phrase; the clock arithmetic is ours, against
+        # the message's own timestamp rather than the moment of the pass.
+        at = to_instant(item.get("when"), cfg, row.tg_date)
+
+        seen[index] = seen.get(index, 0) + 1
+        drafts.append(
+            Draft(message=row, seq=seen[index], kind=kind, at=at, fields=fields)
+        )
+
+    return drafts, complaints

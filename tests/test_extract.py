@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 from telegrind.config import ChatConfig
-from telegrind.extract import author_of, build_prompt
+from telegrind.extract import author_of, build_prompt, drafts_from
 from telegrind.models import KIND_TEXT, LoggedMessage
 
 CFG = ChatConfig(tz_offset=6, currency="KZT")
@@ -123,3 +123,95 @@ def test_the_prompt_numbers_the_tail_and_labels_the_context() -> None:
     assert "2026-09-11 09:00" in prompt
     assert "- expense (5): amount, comment" in prompt
     assert "KZT" in prompt
+
+
+def test_a_fact_is_attributed_to_the_message_it_names() -> None:
+    tail = [logged(10, "4500 такси"), logged(11, "и ещё 300 кофе")]
+    payload = {
+        "facts": [
+            {"message": 2, "kind": "expense", "when": "", "fields": {"amount": "300"}}
+        ]
+    }
+
+    drafts, complaints = drafts_from(payload, tail, CFG)
+
+    assert complaints == []
+    assert len(drafts) == 1
+    assert drafts[0].message is tail[1]
+    # A number that parses becomes a real JSON number, so `(fields->>…)` works.
+    assert drafts[0].fields == {"amount": 300}
+
+
+def test_an_unparseable_amount_survives_as_text() -> None:
+    tail = [logged(10, "около 500 на такси")]
+    payload = {
+        "facts": [
+            {
+                "message": 1,
+                "kind": "expense",
+                "when": "",
+                "fields": {"amount": "около 500"},
+            }
+        ]
+    }
+
+    drafts, _ = drafts_from(payload, tail, CFG)
+
+    assert drafts[0].fields == {"amount": "около 500"}
+
+
+def test_when_is_resolved_against_the_messages_own_clock() -> None:
+    # Sent 2026-09-11 09:00 Almaty. «вчера» is the 10th, not the day the
+    # batch pass happens to run.
+    tail = [logged(10, "41 бат массаж вчера")]
+    payload = {
+        "facts": [{"message": 1, "kind": "expense", "when": "вчера", "fields": {}}]
+    }
+
+    drafts, _ = drafts_from(payload, tail, CFG)
+
+    assert CFG.localized(drafts[0].at).date().isoformat() == "2026-09-10"
+
+
+def test_a_message_that_states_no_time_is_dated_by_the_message() -> None:
+    tail = [logged(10, "4500 такси")]
+    payload = {"facts": [{"message": 1, "kind": "expense", "fields": {}}]}
+
+    drafts, _ = drafts_from(payload, tail, CFG)
+
+    assert drafts[0].at == tail[0].tg_date
+
+
+def test_a_fact_pointing_outside_the_window_becomes_a_complaint() -> None:
+    tail = [logged(10, "4500 такси")]
+    payload = {"facts": [{"message": 7, "kind": "expense", "fields": {}}]}
+
+    drafts, complaints = drafts_from(payload, tail, CFG)
+
+    assert drafts == []
+    assert len(complaints) == 1
+    assert "7" in complaints[0]
+
+
+def test_a_fact_with_no_kind_becomes_a_complaint() -> None:
+    tail = [logged(10, "4500 такси")]
+    payload = {"facts": [{"message": 1, "kind": "", "fields": {}}]}
+
+    drafts, complaints = drafts_from(payload, tail, CFG)
+
+    assert drafts == []
+    assert complaints
+
+
+def test_seq_restarts_within_each_message() -> None:
+    tail = [logged(10, "хлеб 500 и молоко 300")]
+    payload = {
+        "facts": [
+            {"message": 1, "kind": "expense", "fields": {"comment": "хлеб"}},
+            {"message": 1, "kind": "expense", "fields": {"comment": "молоко"}},
+        ]
+    }
+
+    drafts, _ = drafts_from(payload, tail, CFG)
+
+    assert [d.seq for d in drafts] == [1, 2]

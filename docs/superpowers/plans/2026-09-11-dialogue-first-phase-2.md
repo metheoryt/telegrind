@@ -935,7 +935,7 @@ def drafts_from(
 - [ ] **Step 4: Run the tests**
 
 Run: `uv run pytest tests/test_extract.py -v`
-Expected: PASS, 13 tests
+Expected: PASS, 16 tests
 
 - [ ] **Step 5: Lint, type-check, commit**
 
