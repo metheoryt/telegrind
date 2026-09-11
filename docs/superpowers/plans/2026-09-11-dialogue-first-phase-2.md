@@ -17,7 +17,12 @@
   not silently dropped — it is recorded in `extract_error`.
 - **`extractable = false` for every slash command, `/q` included.** A question
   must never coin a `kind`, or the observed taxonomy the whole design rests on
-  poisons itself.
+  poisons itself. **This includes the edit path.** `COMMAND_LIKE` guards the
+  `message` observer only; `edited_message` has one filterless handler, and
+  `upsert_message` assigns the flag unconditionally — so a hardcoded `True`
+  there silently flips a stored `/q` back on. Editing a typo in a question is
+  the most ordinary action there is. Task 9 derives the flag from the edited
+  text instead.
 - **Registration order is match order, and `handlers/__init__.py` is where it
   is decided.** `handlers.py` ends in `COMMAND_LIKE`, which swallows every
   slash message, so `query.py` must be imported *before* it. This is the Phase 1
@@ -230,10 +235,16 @@ async def observed(session: AsyncSession, chat_pk: int) -> list[KindUsage]:
         fields[kind].append(name)
         counts[kind] = max(counts[kind], count)
 
-    return [
-        KindUsage(kind=kind, fields=tuple(sorted(fields[kind])), count=counts[kind])
-        for kind in order
-    ]
+    # Sorted here, not left to the ORDER BY: the grouping above walks the
+    # rows in arrival order, and a kind's own frequency only emerges once
+    # all of its fields have been seen.
+    return sorted(
+        (
+            KindUsage(kind=kind, fields=tuple(sorted(fields[kind])), count=counts[kind])
+            for kind in order
+        ),
+        key=lambda u: -u.count,
+    )
 
 
 def render(usages: list[KindUsage]) -> str:
@@ -1563,6 +1574,9 @@ async def run(session: AsyncSession, chat_pk: int, spec: Spec) -> Answer:
     for key, value in spec.filters:
         where.append(Fact.fields[key].as_string() == value)
 
+    if spec.aggregate == "last":
+        return await _last(session, where, spec)
+
     group = Fact.fields[spec.group_by].as_string() if spec.group_by else None
 
     if spec.aggregate == "count":
@@ -1579,7 +1593,6 @@ async def run(session: AsyncSession, chat_pk: int, spec: Spec) -> Answer:
             "avg": func.avg,
             "min": func.min,
             "max": func.max,
-            "last": func.max,
         }[spec.aggregate]
         columns = [
             aggregate(value).filter(numeric),
@@ -1588,9 +1601,6 @@ async def run(session: AsyncSession, chat_pk: int, spec: Spec) -> Answer:
                 func.jsonb_typeof(Fact.fields[spec.field]).is_distinct_from("number")
             ),
         ]
-
-    if spec.aggregate == "last":
-        return await _last(session, where, spec)
 
     # Both branches select four columns — group, value, n, skipped — so
     # the row unpacking below has one shape.
@@ -2110,7 +2120,7 @@ async def answer_for(
     report = await passes(session, chat, config)
 
     words = await vocabulary(session, chat.id)
-    today = config.localized(datetime.now(tz=config.tz)).date()
+    today = datetime.now(tz=config.tz).date()
     try:
         spec = await spec_for(question, words, config, today)
     except query.Unanswerable as exc:
@@ -2143,15 +2153,15 @@ async def ask(
         row.receipt_emoji = RECEIPT_EMOJI
     await acknowledge(bot, message.chat.id, message.message_id, RECEIPT_EMOJI)
 
+    # Said outside the transaction: the first /q after a quiet week pays
+    # for the week, and holding a write transaction open across two model
+    # calls to announce that is the wrong shape even at one user.
+    pending = len(await store.unextracted_tail(session, chat.id))
+    if pending:
+        await bot.send_message(message.chat.id, f"Разбираю {pending} сообщений…")
+
     async with session.begin():
-        pending = len(await store.unextracted_tail(session, chat.id))
-        if pending:
-            # The first /q after a quiet week pays for the week. Saying so
-            # is cheaper than a background flush and honest about the wait.
-            await bot.send_message(message.chat.id, f"Разбираю {pending} сообщений…")
-        text = await answer_for(
-            question_of(message.text), chat, config, session
-        )
+        text = await answer_for(question_of(message.text), chat, config, session)
     await bot.send_message(message.chat.id, text)
 ```
 
@@ -2225,6 +2235,9 @@ for one whose facts are now stale.
   batching exists to prevent.
 - **An edit of an *unextracted* message stays a plain overwrite.** No LLM call:
   there is nothing stale to fix, and the next `/q` will read it anyway.
+- **The flag is derived from the edited text, never hardcoded.** Deriving beats
+  carrying the previous value forward, because it also tracks a user editing a
+  command into prose or prose into a command.
 - The re-extraction shares `replace_facts`, so a fact that disappeared from the
   edited text is tombstoned and one that changed is updated in place.
 
@@ -2387,6 +2400,29 @@ async def test_an_edit_of_an_unextracted_message_makes_no_call(monkeypatch):
     )
 
     assert called == []
+
+
+async def test_editing_a_command_leaves_it_out_of_the_extractor(monkeypatch):
+    called: list[int] = []
+
+    async def fake_run_for(session, chat, cfg, row, **kwargs):
+        called.append(row.id)
+        return SimpleNamespace(facts=0, failed=0)
+
+    monkeypatch.setattr(extract, "run_for", fake_run_for)
+
+    existing = stored(extracted=False)
+    existing.text = "/q сколкьо я потратил"
+    existing.extractable = False
+    message = edit()
+    message.text = "/q сколько я потратил"
+
+    await handlers.record_edited(
+        message, Chat(id=1, chat_id=7), EditSession(existing), CFG, Recorder()
+    )
+
+    assert existing.extractable is False
+    assert called == []
 ```
 
 `monkeypatch.setattr(extract, "run_for", …)` patches the module attribute, so
@@ -2419,13 +2455,18 @@ async def record_edited(
         previous = await store.get_message(session, chat.id, edited_message.message_id)
         was_extracted = previous is not None and previous.extracted_at is not None
 
+        # Derived, not hardcoded: this observer has no COMMAND_LIKE ahead of
+        # it, and upsert_message assigns the flag unconditionally — so `True`
+        # here would turn a stored /q back into extractor input the first
+        # time the user fixes a typo in their own question.
+        parses = not (edited_message.text or "").startswith("/")
         row, created = await store.upsert_message(
-            session, chat, edited_message, extractable=True
+            session, chat, edited_message, extractable=parses
         )
         emoji = RECEIPT_EMOJI if created else next_receipt(row.receipt_emoji)
         row.receipt_emoji = emoji
 
-        if was_extracted:
+        if was_extracted and parses:
             report = await extract.run_for(session, chat, config, row)
             log.info("re-extracted message %s: %s fact(s)", row.id, report.facts)
 
