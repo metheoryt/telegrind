@@ -39,9 +39,14 @@ and never speaks except to answer a question about the data.
 **Claude** talks. It is Claude Code on the subscription, with the user's own
 skills and hooks, and it can change the mechanical bot.
 
-The user sees one dialogue. Which runtime answered is visible from the shape
-of the answer — a reaction is the bot, text is Claude — and never from a
-mode, a prefix or a command.
+The user sees one dialogue, and never a mode, a prefix or a command.
+
+Which runtime answered is not always distinguishable, and deliberately so:
+both send through the same token until the identities are split, and the bot
+does send text — an answer to a question is text. What is distinguishable is
+the *routing*, before any answer arrives: a 💔 means the message was taken as
+a fact, its absence means it was taken as something to reply to. That is the
+signal the user needs, because it is the one they can correct.
 
 ## Architecture
 
