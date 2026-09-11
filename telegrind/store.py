@@ -85,27 +85,8 @@ async def facts_for_message(session: AsyncSession, message_pk: int) -> list[Fact
     return list(result.scalars())
 
 
-async def facts_for_chat(
-    session: AsyncSession, chat_pk: int, worksheet: str | None = None
-) -> list[Fact]:
-    query = select(Fact).where(Fact.chat_pk == chat_pk)
-    if worksheet is not None:
-        query = query.where(Fact.worksheet == worksheet)
-    result = await session.execute(query.order_by(Fact.id))
-    return list(result.scalars())
-
-
-async def fact_keys_for_worksheet(
-    session: AsyncSession, chat_pk: int, worksheet: str
-) -> set[str]:
-    """Every sheet_key this chat's facts claim in one worksheet.
-
-    /rebuild compares this against the worksheet's real column A to find
-    rows it cannot account for.
-    """
+async def facts_for_chat(session: AsyncSession, chat_pk: int) -> list[Fact]:
     result = await session.execute(
-        select(Fact.sheet_key).where(
-            Fact.chat_pk == chat_pk, Fact.worksheet == worksheet
-        )
+        select(Fact).where(Fact.chat_pk == chat_pk).order_by(Fact.id)
     )
-    return set(result.scalars())
+    return list(result.scalars())

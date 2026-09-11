@@ -4,8 +4,10 @@ from sqlalchemy import (
     BigInteger,
     DateTime,
     ForeignKey,
+    Index,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncAttrs
@@ -13,9 +15,6 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 KIND_TEXT = "text"
 KIND_VOICE = "voice"
-
-ORIGIN_EXTRACTED = "extracted"
-ORIGIN_IMPORTED = "imported"
 
 
 class Model(AsyncAttrs, DeclarativeBase):
@@ -74,6 +73,22 @@ class LoggedMessage(Model):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    #: When the batch pass last extracted this message. Null means it has
+    #: not been extracted yet — which is NOT the same as "extracted and
+    #: yielded nothing", and that difference is why this column exists.
+    extracted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    extract_model: Mapped[str | None] = mapped_column(default=None)
+    extract_prompt_version: Mapped[str | None] = mapped_column(default=None)
+    #: False for /q, for commands, and for imported bot replies. Such a
+    #: message is stored like any other — nothing written is ever lost —
+    #: but it must never reach the extractor, or the batch pass coins a
+    #: kind out of a question and poisons the observed taxonomy.
+    extractable: Mapped[bool] = mapped_column(default=True, server_default="true")
+    #: The last extraction failure. Without it, dropping the echo would
+    #: make a failed extraction completely silent.
+    extract_error: Mapped[str | None] = mapped_column(default=None)
 
     @property
     def content(self) -> str:
@@ -82,37 +97,61 @@ class LoggedMessage(Model):
 
 
 class Fact(Model):
-    """A replaceable derivation of a LoggedMessage — or of an imported row.
+    """A replaceable derivation of a LoggedMessage.
 
-    Facts are chat-scoped through chat_pk rather than only through the
-    message, because an imported fact has no message: its source text was
-    never logged.
+    Service columns plus JSONB. Only `kind` and `at` are promoted out of
+    `fields`, because every query filters on both. The numeric shape is
+    deliberately not promoted: expenses are flows, measurements are levels,
+    habits have no number, assets have a balance. Promoting later is a
+    generated column, not a rewrite.
     """
 
     __tablename__ = "fact"
     __table_args__ = (
-        UniqueConstraint("message_pk", "seq", name="uq_fact_message_pk_seq"),
-        UniqueConstraint(
-            "chat_pk", "worksheet", "sheet_key", name="uq_fact_chat_pk_worksheet_key"
+        Index(
+            "uq_fact_message_pk_seq_live",
+            "message_pk",
+            "seq",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
         ),
+        Index(
+            "ix_fact_chat_kind_at_live",
+            "chat_pk",
+            "kind",
+            "at",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_fact_fields", "fields", postgresql_using="gin"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     chat_pk: Mapped[int] = mapped_column(ForeignKey("chat.id", ondelete="CASCADE"))
-    message_pk: Mapped[int | None] = mapped_column(
+    message_pk: Mapped[int] = mapped_column(
         ForeignKey("message.id", ondelete="CASCADE")
     )
     #: 1-based position within the message.
     seq: Mapped[int]
-    category: Mapped[str]
-    #: {header: coerced value} — exactly what projection writes.
+    #: Free-form, coined by the model and reused through the observed
+    #: taxonomy. There is no registry of permitted values.
+    kind: Mapped[str]
+    #: When the fact HAPPENED, which is not created_at. Falls back to the
+    #: message's tg_date when the text states no time of its own.
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    #: Everything else. Numbers in here are real JSON numbers — see
+    #: telegrind/coerce.py, which is the only place that writes them.
     fields: Mapped[dict] = mapped_column(JSONB)
-    origin: Mapped[str] = mapped_column(default=ORIGIN_EXTRACTED)
-    model: Mapped[str | None]
-    prompt_version: Mapped[str | None]
-    extracted_at: Mapped[datetime] = mapped_column(
+    model: Mapped[str | None] = mapped_column(default=None)
+    prompt_version: Mapped[str | None] = mapped_column(default=None)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
-    worksheet: Mapped[str]
-    #: What sits in column A: "<telegram message_id>_<seq>".
-    sheet_key: Mapped[str]
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    #: A tombstone, and not for undo. Facts are re-derivable, so a hard
+    #: delete is undone by the next re-extraction of the same message.
+    #: Only an explicit un-delete by the user clears this.
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
