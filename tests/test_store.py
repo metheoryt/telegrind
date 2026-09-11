@@ -1,7 +1,8 @@
 from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from telegrind.models import KIND_TEXT, KIND_VOICE, Fact
+from telegrind import store
+from telegrind.models import KIND_TEXT, KIND_VOICE, Fact, LoggedMessage
 from telegrind.store import (
     message_kind,
     message_values,
@@ -105,17 +106,25 @@ class FakeResult:
 
 
 class FakeSession:
-    """Enough of AsyncSession for the tombstone helpers.
+    """Enough of AsyncSession for the tombstone and window helpers.
 
-    They only ever select and mutate attributes — nothing here flushes."""
+    They only ever select and mutate attributes. `added` is here for
+    replace_facts, which is the one helper that inserts."""
 
-    def __init__(self, rows: list[Fact]) -> None:
+    def __init__(self, rows: list[object]) -> None:
         self.rows = rows
-        self.queries: list[object] = []
+        self.statements: list[object] = []
+        self.added: list[object] = []
 
-    async def execute(self, query: object) -> FakeResult:
-        self.queries.append(query)
+    async def execute(self, statement: object) -> FakeResult:
+        self.statements.append(statement)
         return FakeResult(self.rows)
+
+    def add(self, obj: object) -> None:
+        self.added.append(obj)
+
+    async def flush(self) -> None:
+        pass
 
 
 def fact(seq: int, deleted_at: datetime | None = None) -> Fact:
@@ -161,3 +170,43 @@ async def test_restore_clears_the_tombstone() -> None:
 def test_values_do_not_carry_extractability() -> None:
     """extractable is a handler decision, not something lifted off the message."""
     assert "extractable" not in message_values(text_message())
+
+
+def logged(
+    message_id: int, *, text: str | None = "x", extracted: bool = False
+) -> LoggedMessage:
+    """An unattached message row, enough for the window queries."""
+    return LoggedMessage(
+        id=message_id,
+        chat_pk=1,
+        message_id=message_id,
+        kind=KIND_TEXT,
+        text=text,
+        tg_date=datetime(2026, 9, 11, 12, message_id, tzinfo=UTC),
+        raw={},
+        extracted_at=datetime(2026, 9, 11, tzinfo=UTC) if extracted else None,
+    )
+
+
+async def test_unextracted_tail_asks_for_content_and_chat_order() -> None:
+    rows = [logged(1), logged(2)]
+    session = FakeSession(rows)
+
+    tail = await store.unextracted_tail(session, chat_pk=1, limit=200)
+
+    assert tail == rows
+    rendered = str(session.statements[-1])
+    assert "extracted_at IS NULL" in rendered
+    assert "extractable" in rendered
+    assert "trim" in rendered.lower()
+    assert "LIMIT" in rendered
+
+
+async def test_context_before_comes_back_oldest_first() -> None:
+    # The query walks backwards from the pivot, so the driver hands them
+    # back newest-first and the function has to flip them.
+    session = FakeSession([logged(9), logged(8)])
+
+    context = await store.context_before(session, chat_pk=1, pivot=logged(10), limit=10)
+
+    assert [row.message_id for row in context] == [8, 9]

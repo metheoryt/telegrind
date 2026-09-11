@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from aiogram.types import Message
-from sqlalchemy import select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from telegrind.models import KIND_TEXT, KIND_VOICE, Chat, Fact, LoggedMessage
@@ -100,6 +100,64 @@ async def upsert_message(
     session.add(row)
     await session.flush()
     return row, True
+
+
+def _has_content() -> Any:
+    """SQL for «this message has something the extractor can read».
+
+    A photo, a sticker or a location is stored like everything else and
+    simply waits: not yet parsed, which is neither «yielded nothing» nor
+    «failed». When something can read a photo, the rows are still here.
+    """
+    return func.coalesce(
+        func.nullif(func.trim(LoggedMessage.transcript), ""),
+        func.nullif(func.trim(LoggedMessage.text), ""),
+    ).is_not(None)
+
+
+async def unextracted_tail(
+    session: AsyncSession, chat_pk: int, *, limit: int = 200
+) -> list[LoggedMessage]:
+    """The messages a pass is responsible for, oldest first."""
+    result = await session.execute(
+        select(LoggedMessage)
+        .where(
+            LoggedMessage.chat_pk == chat_pk,
+            LoggedMessage.extractable.is_(True),
+            LoggedMessage.extracted_at.is_(None),
+            _has_content(),
+        )
+        .order_by(LoggedMessage.tg_date, LoggedMessage.message_id)
+        .limit(limit)
+    )
+    return list(result.scalars())
+
+
+async def context_before(
+    session: AsyncSession,
+    chat_pk: int,
+    pivot: LoggedMessage,
+    *,
+    limit: int = 10,
+) -> list[LoggedMessage]:
+    """Read-only neighbours shown to the model but never re-extracted.
+
+    Ordered by chat time, not by `id`: a forward is dated by its origin,
+    so the two genuinely differ. The comparison is a row comparison so
+    that two messages sharing a second still order deterministically.
+    """
+    result = await session.execute(
+        select(LoggedMessage)
+        .where(
+            LoggedMessage.chat_pk == chat_pk,
+            _has_content(),
+            tuple_(LoggedMessage.tg_date, LoggedMessage.message_id)
+            < (pivot.tg_date, pivot.message_id),
+        )
+        .order_by(LoggedMessage.tg_date.desc(), LoggedMessage.message_id.desc())
+        .limit(limit)
+    )
+    return list(reversed(list(result.scalars())))
 
 
 async def facts_for_message(session: AsyncSession, message_pk: int) -> list[Fact]:
