@@ -2739,8 +2739,11 @@ order by m.tg_date desc limit 40;
 ```bash
 docker compose stop bot
 ```
-It polls the **production** `BOT_TOKEN`. Leaving it up means two pollers on one
-token the moment `repos-deploy` brings the prod stack back.
+Housekeeping, not safety. An earlier draft of this step claimed the dev stack
+polls the production `BOT_TOKEN`; it does not. Verified 2026-09-11 via `getMe`:
+`.env` here is `@assinstantbot`, prod is `@telegrindbot`, and prod runs on the
+homeserver, not on this box — the only telegrind containers here are the
+`telegrind-dev` ones. There is no two-poller collision to avoid.
 
 - [ ] **Step 8: Write the outcome into this plan and commit**
 
