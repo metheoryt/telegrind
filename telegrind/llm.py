@@ -14,7 +14,7 @@ from anthropic.types import ToolParam
 
 log = logging.getLogger(__name__)
 
-PROMPT_VERSION = "2026-09-11.1"
+PROMPT_VERSION = "2026-09-11.2"
 
 DEFAULT_MODEL = "claude-haiku-4-5"
 MAX_TOKENS = 2048
@@ -36,6 +36,11 @@ EXTRACTION_RULES = """\
 - Loan amounts carry a sign convention: a loan given out is negative
   (-100), a repayment received is positive (+100). A bare amount with
   no direction stated means a loan given out, so -100.
+- Every quantity the message states becomes its own field, with the
+  number as a number: `вес 82.4` is a weight of 82.4, not the sentence
+  «вес 82.4» filed under `facts`. Name the field after what is being
+  measured. `facts` is the home of a message with nothing measurable
+  in it — a number never reaches it by being wrapped in prose.
 - Do not invent fields. Do not invent values. An unstated text field
   is an empty string.
 - Keep the user's own wording in text fields; do not translate it.
@@ -70,8 +75,11 @@ EXTRACT_SYSTEM = f"""\
   даты сам: у каждого сообщения свой час, и арифметику делает код.
   Если сообщение не называет времени — пустая строка.
 - `message` — номер сообщения из блока «Сообщения для разбора».
-  Факт, собранный из нескольких сообщений, принадлежит ПОСЛЕДНЕМУ из них:
-  там он стал полным.
+  Факт принадлежит тому сообщению, которое его называет. Соседей читай
+  вместе, чтобы понять смысл, но факт от этого никуда не переезжает:
+  два сообщения — два факта, каждый на своём номере. Свести их в один
+  можно, только если они связаны механически: это одно сообщение, либо
+  одно является ответом на другое.
 - Из блока «Контекст» извлекать не надо. Он нужен только чтобы понять,
   о чём речь.
 """

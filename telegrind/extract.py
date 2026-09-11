@@ -1,9 +1,11 @@
 """The batch pass: a window of messages in, facts out.
 
 Extraction is deferred so that the model sees a message in the company of
-its neighbours — `хлеб 500` / `и молоко 300` is one shopping trip, and
-one pass over the whole window converges on one `kind` where N separate
-calls coin N synonyms for it.
+its neighbours: `и молоко 300` is an expense only because `хлеб 500` came
+before it, and one pass over the whole window converges on one `kind`
+where N separate calls coin N synonyms for it. The window explains a
+message; it never moves the message's fact. Two neighbours state two
+facts unless they are mechanically joined — one message, or a reply.
 """
 
 import logging
@@ -104,9 +106,10 @@ def build_prompt(
         ]
     blocks += [
         "# Сообщения для разбора",
-        "Сообщение, помеченное «ответ на [X]», продолжает сообщение X: читай "
-        "их вместе. Если оба здесь и описывают одно и то же — заведи один "
-        "факт, а не два.",
+        "Сообщение, помеченное «ответ на [X]», продолжает сообщение X: "
+        "только такая пара может дать один общий факт. Соседство само по "
+        "себе связью не является — если сообщения идут подряд, но реплаем "
+        "не связаны, у каждого свой факт на своём номере.",
         "\n".join(
             _line(str(i), row, cfg, chat_id, markers) for i, row in enumerate(tail, 1)
         ),
