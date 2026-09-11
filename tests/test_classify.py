@@ -1,0 +1,62 @@
+from typing import Any
+
+from telegrind import classify
+from telegrind.models import (
+    VERDICT_FACT,
+    VERDICT_QUESTION,
+    VERDICT_SYSTEM,
+    VERDICT_TALK,
+)
+
+
+def answering(verdict: str) -> Any:
+    async def call(system: str, user: str, tool: dict, **kwargs: Any) -> dict:
+        return {"verdict": verdict}
+
+    return call
+
+
+def test_q_is_a_question_without_a_call() -> None:
+    assert classify.presumed("/q сколько я потратил") == VERDICT_QUESTION
+
+
+def test_any_other_command_is_system_without_a_call() -> None:
+    assert classify.presumed("/start") == VERDICT_SYSTEM
+
+
+def test_a_message_with_nothing_to_read_is_a_fact_without_a_call() -> None:
+    """A sticker or a photo. `_has_content()` keeps it out of the tail
+    anyway, so this is today's behaviour at no cost."""
+    assert classify.presumed(None) == VERDICT_FACT
+    assert classify.presumed("   ") == VERDICT_FACT
+
+
+def test_ordinary_text_needs_the_model() -> None:
+    assert classify.presumed("4500 такси") is None
+
+
+async def test_the_model_decides_ordinary_text() -> None:
+    assert await classify.verdict_for("почему это расход", call=answering("talk")) == (
+        VERDICT_TALK
+    )
+
+
+async def test_a_presumed_verdict_makes_no_call() -> None:
+    async def explode(*args: Any, **kwargs: Any) -> dict:
+        raise AssertionError("the classifier was called for a command")
+
+    assert await classify.verdict_for("/start", call=explode) == VERDICT_SYSTEM
+
+
+async def test_a_classifier_failure_defaults_to_fact() -> None:
+    """Storage is unconditional and must not come to depend on a model
+    call: a hiccup costs a routing decision, never a message."""
+
+    async def failing(*args: Any, **kwargs: Any) -> dict:
+        raise RuntimeError("overloaded_error")
+
+    assert await classify.verdict_for("4500 такси", call=failing) == VERDICT_FACT
+
+
+async def test_a_verdict_the_model_invented_defaults_to_fact() -> None:
+    assert await classify.verdict_for("x", call=answering("чепуха")) == VERDICT_FACT
