@@ -1659,14 +1659,14 @@ this repo and adding one is not this phase's job. The gate is a manual run.
 
 **Files:** none.
 
-- [ ] **Step 1: Bring the stack up**
+- [x] **Step 1: Bring the stack up**
 
 ```bash
 docker compose up -d --build
 docker compose logs -f bot
 ```
 
-- [ ] **Step 2: Walk the happy path in the chat with the bot**
+- [x] **Step 2: Walk the happy path in the chat with the bot**
 
 | Action | Expected |
 | --- | --- |
@@ -1677,7 +1677,7 @@ docker compose logs -f bot
 | Tap the 💔 | Nothing visible beyond your own reaction; the log says `tombstoned 0 fact(s)` — there are no facts yet in Phase 1. |
 | Tap it again to remove | The log says `restored 0 fact(s)`. |
 
-- [ ] **Step 3: Verify the rows landed**
+- [x] **Step 3: Verify the rows landed**
 
 ```bash
 docker compose exec postgres psql -U postgres -c \
@@ -1687,10 +1687,27 @@ docker compose exec postgres psql -U postgres -c \
 Expected: every message above is present. `/help` has `extractable = false`; the
 others `true`. `extracted_at` is null everywhere — nothing extracts in Phase 1.
 
-- [ ] **Step 4: Commit nothing, report**
+- [x] **Step 4: Commit nothing, report**
 
-There is nothing to commit. Report which rows appeared and whether the reaction
-round-trip logged both a tombstone and a restore.
+Walked on the dev stack, 2026-09-11. Messages 1073 (`4500 такси`), 1074
+(voice), 1075 (`/help`) and 1076 (edited three times) all landed, all with
+`extracted_at` null. `/help` is the only row with `extractable = false`, which
+is the one thing no unit test covers. Tapping the receipt on 1076 logged
+`tombstoned 0 fact(s)` — wired, with nothing yet to act on.
+
+Two bugs the walkthrough caught that the suite could not:
+
+- **`Message.edit_date` is a raw Unix int**, while `Message.date` is a
+  datetime. It went straight into a timestamptz and killed every edit. The
+  test fake passed a datetime there, which is precisely why the suite stayed
+  green while the bot did not.
+- **`.env` is the container's `env_file` and carried the host database URL**,
+  so the bot could not reach postgres from inside its own namespace.
+
+One feature was added after the plan was written: an edit advances the receipt
+along `RECEIPT_CYCLE` (💔 → ❤‍🔥 → 💘), because nothing otherwise told the user
+the bot had seen the edit. It needed `message.receipt_emoji` and a second
+migration.
 
 ---
 
