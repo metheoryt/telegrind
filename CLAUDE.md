@@ -43,25 +43,29 @@ uv run ty check
 
 ## Deployment
 
-Production runs on the homeserver (`g513ie`) through the **config-driven poll-and-build**
-pipeline owned by the `vps` repo — no registry, no CI publish. **Pushing to `main` is the
-deploy**; it lands within ~3 minutes plus build time.
+Production runs on **`latitude`** (Debian 13, tailnet `100.64.0.8`) as the docker
+compose project `telegrind`, brought up by hand on 2026-08-01.
 
-- The `repos-deploy` scheduled task runs `vps/homeserver/deploy-repos.ps1` every 3 minutes
-  over every entry in `vps/homeserver/repos.psd1`.
-- Per repo it fast-forwards a gitignored clone at `vps/homeserver/telegrind/src/` and, only
-  when the source SHA or the rendered compose config changed, archives the container logs,
-  rebuilds, and recreates the stack.
-- The prod compose lives in `vps` (`vps/homeserver/telegrind/compose.prod.yml`), not here —
-  this repo carries only the dev `compose.yml`. Prod secrets (`.env.prod`) live in
-  `vps/homeserver/telegrind/`, outside the `./src` build context.
-- The prod stack is project `telegrind` with the named volume `telegrind_pgdata`; the dev
-  stack is project `telegrind-dev`. Never `docker compose down -v` on prod — it orphans the
-  database volume.
+**Nothing auto-deploys. A push to `main` deploys nothing.** The poll-and-build
+pipeline described in the `vps` repo was a PowerShell Scheduled Task built for the
+old `server` box; that box left the fleet on 2026-08-01 and latitude has no `pwsh`
+and no port of the engine. Every deploy today is manual, on latitude:
+`git pull` in `homeserver/telegrind/src/`, then
+`docker compose -f homeserver/telegrind/compose.prod.yml up -d --build`.
 
-**Never tag an image `metheoryt/telegrind-bot:*`.** The prod image tag is local-only
-(`telegrind-bot:local`) on purpose: a registry tag would let Tugtainer pull-update the
-container out from under the local build and silently undo a deploy.
+- `g513ie` is the **hostname of this laptop** (fleet name `g15`), not the server.
+  An earlier revision of this file named it as the homeserver; that was wrong.
+- `homeserver/telegrind/src/` is a gitignored clone the pipeline fast-forwards when
+  it exists. Never edit it in place — commit in a real checkout and pull.
+- The prod compose lives in `vps` (`vps/homeserver/telegrind/compose.prod.yml`), not
+  here — this repo carries only the dev `compose.yml`. Prod secrets (`.env.prod`)
+  live in `vps/homeserver/telegrind/`, outside the `./src` build context.
+- Prod postgres publishes **no port**: it is reachable only from inside the compose
+  network, or through an SSH tunnel to latitude.
+- The prod stack is project `telegrind` with the named volume `telegrind_pgdata`; the
+  dev stack is project `telegrind-dev`. Never `docker compose down -v` on prod — it
+  orphans the database volume, and the bot crash-loops on a fresh `pgdata` because
+  alembic has no version seed.
 
 Full runbook: `vps/homeserver/DEPLOYING-A-REPO.md`.
 
