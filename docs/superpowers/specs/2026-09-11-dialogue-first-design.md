@@ -472,6 +472,18 @@ attach the fact to the root and editing a reply re-derives nothing; attach it
 to the last message and deleting the root orphans it. Choosing between those
 is a design pass.
 
+**A/B against other models and providers.** The call sites are already a
+seam — `llm.use_tool` and `llm.say`, both injected into every caller — so
+pointing extraction at a local or third-party model is a small change. Two
+things gate it. The taxonomy is the first: `taxonomy.observed()` feeds the
+chat's own `kind` vocabulary back into the next prompt, so a model that coins
+a synonym splits every future sum *and* poisons the prompt for every later
+pass, including the ones that go back to the good model. Any comparison
+therefore runs against a scratch chat, never the real one. The second is that
+`tests/fixtures/extraction.yaml` deliberately does not assert `kind`, so the
+quality gate passes a model whose vocabulary has drifted — measuring a
+challenger means teaching the gate to see drift first.
+
 ## Probes
 
 **Reaction mechanics — RESOLVED, see *Edit and delete*.** In summary, yes:
