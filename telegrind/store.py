@@ -11,7 +11,14 @@ from aiogram.types import Message
 from sqlalchemy import func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from telegrind.models import KIND_TEXT, KIND_VOICE, Chat, Fact, LoggedMessage
+from telegrind.models import (
+    KIND_TEXT,
+    KIND_VOICE,
+    VERDICT_FACT,
+    Chat,
+    Fact,
+    LoggedMessage,
+)
 
 if TYPE_CHECKING:  # `extract` imports `store`; the cycle stays a type concern.
     from telegrind.extract import Draft
@@ -72,12 +79,24 @@ async def get_message(
     return result.scalar_one_or_none()
 
 
+def reply_to(row: LoggedMessage) -> int | None:
+    """The Telegram message_id this row replies to, if any.
+
+    Read off `raw` rather than off a live aiogram object because Telegram
+    does not nest replies: `reply_to_message.reply_to_message` is always
+    None, so the second hop of a session lookup has to come from our own
+    stored copy of the parent.
+    """
+    return ((row.raw or {}).get("reply_to_message") or {}).get("message_id")
+
+
 async def upsert_message(
     session: AsyncSession,
     chat: Chat,
     msg: Message,
     *,
     extractable: bool = True,
+    verdict: str = VERDICT_FACT,
 ) -> tuple[LoggedMessage, bool]:
     """Append the message, or overwrite it if we have seen this id before.
 
@@ -95,11 +114,14 @@ async def upsert_message(
                 continue
             setattr(existing, key, value)
         existing.extractable = extractable
+        existing.verdict = verdict
         existing.extracted_at = None
         existing.extract_error = None
         return existing, False
 
-    row = LoggedMessage(chat_pk=chat.id, extractable=extractable, **values)
+    row = LoggedMessage(
+        chat_pk=chat.id, extractable=extractable, verdict=verdict, **values
+    )
     session.add(row)
     await session.flush()
     return row, True
@@ -126,7 +148,7 @@ async def unextracted_tail(
         select(LoggedMessage)
         .where(
             LoggedMessage.chat_pk == chat_pk,
-            LoggedMessage.extractable.is_(True),
+            LoggedMessage.verdict == VERDICT_FACT,
             LoggedMessage.extracted_at.is_(None),
             _has_content(),
         )

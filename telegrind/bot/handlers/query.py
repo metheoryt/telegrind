@@ -19,7 +19,7 @@ from telegrind import extract, query, store, taxonomy
 from telegrind.bot.handlers.receipts import RECEIPT_EMOJI, acknowledge
 from telegrind.bot.router import router
 from telegrind.config import ChatConfig
-from telegrind.models import Chat
+from telegrind.models import VERDICT_QUESTION, Chat
 
 log = logging.getLogger(__name__)
 
@@ -82,7 +82,9 @@ async def ask(
 ) -> None:
     """Store the question, catch the log up, then answer it."""
     async with session.begin():
-        row, _ = await store.upsert_message(session, chat, message, extractable=False)
+        row, _ = await store.upsert_message(
+            session, chat, message, extractable=False, verdict=VERDICT_QUESTION
+        )
         row.receipt_emoji = RECEIPT_EMOJI
     await acknowledge(bot, message.chat.id, message.message_id, RECEIPT_EMOJI)
 

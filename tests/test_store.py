@@ -3,7 +3,17 @@ from types import SimpleNamespace
 
 from telegrind import store
 from telegrind.extract import Draft
-from telegrind.models import KIND_TEXT, KIND_VOICE, Fact, LoggedMessage
+from telegrind.models import (
+    KIND_TEXT,
+    KIND_VOICE,
+    VERDICT_FACT,
+    VERDICT_QUESTION,
+    VERDICT_SYSTEM,
+    VERDICTS,
+    Chat,
+    Fact,
+    LoggedMessage,
+)
 from telegrind.store import (
     message_kind,
     message_values,
@@ -106,6 +116,9 @@ class FakeResult:
     def scalars(self) -> list[Fact]:
         return self._rows
 
+    def scalar_one_or_none(self) -> object | None:
+        return self._rows[0] if self._rows else None
+
 
 class FakeSession:
     """Enough of AsyncSession for the tombstone and window helpers.
@@ -199,7 +212,7 @@ async def test_unextracted_tail_asks_for_content_and_chat_order() -> None:
     assert tail == rows
     rendered = str(session.statements[-1])
     assert "extracted_at IS NULL" in rendered
-    assert "extractable" in rendered
+    assert "verdict" in rendered
     assert "trim" in rendered.lower()
     assert "LIMIT" in rendered
 
@@ -275,3 +288,85 @@ def test_mark_failed_leaves_the_message_pending() -> None:
 
     assert row.extracted_at is None
     assert row.extract_error == "boom"
+
+
+def test_the_four_verdicts_are_closed() -> None:
+    """Null would mean «not classified», «classifier failed» and «not a fact»
+    all at once, which is undebuggable exactly when it misroutes."""
+    assert VERDICTS == ("fact", "question", "talk", "system")
+
+
+def test_reply_to_reads_the_parent_id_off_the_row() -> None:
+    row = LoggedMessage(raw={"reply_to_message": {"message_id": 77}})
+    assert store.reply_to(row) == 77
+
+
+def test_reply_to_is_none_for_a_plain_message() -> None:
+    assert store.reply_to(LoggedMessage(raw={})) is None
+    assert store.reply_to(LoggedMessage(raw=None)) is None
+
+
+def _msg(message_id: int = 4821) -> SimpleNamespace:
+    return SimpleNamespace(
+        message_id=message_id,
+        date=TG_DATE,
+        edit_date=None,
+        text="4500 такси",
+        caption=None,
+        voice=None,
+        forward_origin=None,
+        chat=SimpleNamespace(id=3260987),
+        model_dump=lambda mode=None: {"message_id": message_id},
+    )
+
+
+async def test_the_tail_is_filtered_by_verdict_not_by_extractable() -> None:
+    """`extractable` is still written, but a second flag that can disagree
+    with the verdict is the bug the design forbids — so nothing reads it."""
+    session = FakeSession([])
+    await store.unextracted_tail(session, chat_pk=1)
+    rendered = str(session.statements[0].whereclause)
+    assert "message.verdict" in rendered
+    assert "message.extractable" not in rendered
+
+
+async def test_upsert_writes_the_verdict_on_a_new_row() -> None:
+    session = FakeSession([None])
+    row, created = await store.upsert_message(
+        session, Chat(id=1, chat_id=7), _msg(), verdict=VERDICT_QUESTION
+    )
+    assert created is True
+    assert row.verdict == VERDICT_QUESTION
+
+
+async def test_a_stored_q_is_not_a_fact() -> None:
+    """The tail is selected by verdict from this commit on, and a /q row has
+    content — so leaving it on the default verdict puts the user's own
+    question into the extractor and coins a kind out of it. That is the
+    taxonomy poisoning the whole design exists to prevent."""
+    session = FakeSession([None])
+    row, _ = await store.upsert_message(
+        session, Chat(id=1, chat_id=7), _msg(), verdict=VERDICT_QUESTION
+    )
+    assert row.verdict != VERDICT_FACT
+
+
+async def test_upsert_overwrites_the_verdict_on_an_edit() -> None:
+    """An edit can move a message from one verdict to another; a stale
+    verdict would route the corrected message the way the typo read."""
+    existing = LoggedMessage(
+        id=42,
+        chat_pk=1,
+        message_id=10,
+        kind=KIND_TEXT,
+        text="4500 такси",
+        tg_date=datetime(2026, 9, 11, 3, tzinfo=UTC),
+        raw={},
+        verdict=VERDICT_FACT,
+    )
+    session = FakeSession([existing])
+    row, created = await store.upsert_message(
+        session, Chat(id=1, chat_id=7), _msg(), verdict=VERDICT_SYSTEM
+    )
+    assert created is False
+    assert row.verdict == VERDICT_SYSTEM

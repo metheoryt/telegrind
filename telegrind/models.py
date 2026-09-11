@@ -16,6 +16,20 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 KIND_TEXT = "text"
 KIND_VOICE = "voice"
 
+#: What the classifier decided a message is, and therefore what happens to
+#: it. Never null: a null would mean «not classified yet», «the classifier
+#: failed» and «the classifier said it is not a fact» all at once, and the
+#: flag would be undebuggable exactly when it misroutes. A classifier
+#: failure writes VERDICT_FACT explicitly, which is the behaviour that
+#: shipped before the classifier existed.
+VERDICT_FACT = "fact"
+VERDICT_QUESTION = "question"
+VERDICT_TALK = "talk"
+#: Rows the classifier never sees: every message the bot or Claude sends,
+#: and every slash command that is not /q.
+VERDICT_SYSTEM = "system"
+VERDICTS = (VERDICT_FACT, VERDICT_QUESTION, VERDICT_TALK, VERDICT_SYSTEM)
+
 
 class Model(AsyncAttrs, DeclarativeBase):
     pass
@@ -86,6 +100,11 @@ class LoggedMessage(Model):
     #: but it must never reach the extractor, or the batch pass coins a
     #: kind out of a question and poisons the observed taxonomy.
     extractable: Mapped[bool] = mapped_column(default=True, server_default="true")
+    #: What routing decided this message is. Derived, like extracted_at,
+    #: and re-derived on an edit. It replaces `extractable` as the thing
+    #: the tail is selected by; `extractable` is still written in step
+    #: with it, and dropping that column is a later contract step.
+    verdict: Mapped[str] = mapped_column(default=VERDICT_FACT, server_default="fact")
     #: The last extraction failure. Without it, dropping the echo would
     #: make a failed extraction completely silent.
     extract_error: Mapped[str | None] = mapped_column(default=None)
