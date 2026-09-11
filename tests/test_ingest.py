@@ -17,6 +17,7 @@ from telegrind.models import (
     VERDICT_FACT,
     VERDICT_QUESTION,
     VERDICT_SYSTEM,
+    VERDICT_TALK,
     Chat,
     LoggedMessage,
 )
@@ -235,8 +236,8 @@ async def test_editing_a_command_leaves_it_out_of_the_extractor(
 
 
 class NewMessageSession:
-    """Enough session for record_command / record_voice / record_text: no
-    existing row, so upsert_message always inserts."""
+    """Enough session for `record`: no existing row, so upsert_message
+    always inserts."""
 
     def __init__(self) -> None:
         self.added: list[LoggedMessage] = []
@@ -273,29 +274,87 @@ def command_message(text: str = "/start") -> SimpleNamespace:
 
 
 async def test_a_non_q_command_gets_the_system_verdict() -> None:
-    """COMMAND_LIKE is a text-prefix filter, not a registered-command one:
-    /start, /help and a typo all reach record_command live. Once the tail
-    reads verdict instead of extractable, leaving these on the default fact
-    verdict would put them right back in the extraction tail."""
+    """/start, /help and a typo all reach the one catch-all now that the
+    COMMAND_LIKE filter is gone — `classify.presumed` is what keeps them
+    out of the tail, and it does it without spending a model call. Leaving
+    these on the fact verdict would put them right back in the tail."""
     session = NewMessageSession()
+    bot = FakeBot()
 
-    await handlers.record_command(
-        command_message("/start"), Chat(id=1, chat_id=7), session, FakeBot()
+    await handlers.record(
+        command_message("/start"), Chat(id=1, chat_id=7), CFG, session, bot
     )
 
     assert session.added[0].extractable is False
     assert session.added[0].verdict == VERDICT_SYSTEM
+    # No receipt: nothing was recorded as a fact, so there is nothing to
+    # promise a tap would delete.
+    assert session.added[0].receipt_emoji is None
+    assert bot.reactions == []
 
 
-async def test_a_plain_message_still_gets_the_fact_verdict() -> None:
-    """_store's other two callers (voice, the catch-all) must keep writing
-    the fact default — only the command path changes."""
+async def test_a_plain_message_still_gets_the_fact_verdict(monkeypatch: Any) -> None:
+    """The fact path is what shipped before the classifier existed, right
+    down to the 💔 that goes on as soon as the row is committed."""
+
+    async def a_fact(*args: Any, **kwargs: Any) -> str:
+        return VERDICT_FACT
+
+    monkeypatch.setattr(handlers.classify, "verdict_for", a_fact)
+
     session = NewMessageSession()
-
-    await handlers.record_text(message(), Chat(id=1, chat_id=7), session, FakeBot())
+    bot = FakeBot()
+    await handlers.record(message(), Chat(id=1, chat_id=7), CFG, session, bot)
 
     assert session.added[0].extractable is True
     assert session.added[0].verdict == VERDICT_FACT
+    assert session.added[0].receipt_emoji == RECEIPT_EMOJI
+    # Addressed by `chat.chat_id`, the row the middleware resolved from
+    # this very update — not by `message.chat.id`. They are the same number
+    # in production; the fixture keeps them apart so a swap is visible.
+    assert bot.reactions == [(7, 4821, [RECEIPT_EMOJI])]
+
+
+async def test_a_question_gets_no_receipt(monkeypatch: Any) -> None:
+    async def question(*args: Any, **kwargs: Any) -> str:
+        return VERDICT_QUESTION
+
+    monkeypatch.setattr(handlers.classify, "verdict_for", question)
+    routed: list[str] = []
+
+    async def fake_route(*args: Any, **kwargs: Any) -> None:
+        routed.append(args[1].verdict)
+
+    monkeypatch.setattr(handlers, "route", fake_route)
+
+    session = EditSession(None)
+    bot = FakeBot()
+    await handlers.record(message(), Chat(id=1, chat_id=7), CFG, session, bot)
+
+    assert routed == [VERDICT_QUESTION]
+    assert session.added[0].extractable is False
+    assert session.added[0].receipt_emoji is None
+    assert bot.reactions == []
+
+
+async def test_talk_is_stored_and_kept_out_of_the_extraction_tail(
+    monkeypatch: Any,
+) -> None:
+    """«Nothing yet» is the queue, visible: no receipt, no reply, and the
+    row is there for the meta layer to pick up."""
+
+    async def talk(*args: Any, **kwargs: Any) -> str:
+        return VERDICT_TALK
+
+    monkeypatch.setattr(handlers.classify, "verdict_for", talk)
+
+    session = NewMessageSession()
+    bot = FakeBot()
+    await handlers.record(message(), Chat(id=1, chat_id=7), CFG, session, bot)
+
+    assert session.added[0].verdict == VERDICT_TALK
+    assert session.added[0].extractable is False
+    assert bot.reactions == []
 
 
 async def test_editing_a_q_row_does_not_flip_its_verdict(monkeypatch: Any) -> None:

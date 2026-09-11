@@ -45,14 +45,14 @@ async def _render(question: str, spec: Spec, result: Answer, cfg: ChatConfig) ->
 
 
 def test_question_of_strips_the_command() -> None:
-    assert handler.question_of("/q сколько я потратил") == "сколько я потратил"
-    assert handler.question_of("/q@telegrind_bot сколько") == "сколько"
-    assert handler.question_of("/q") == ""
-    assert handler.question_of(None) == ""
+    assert question_of("/q сколько я потратил") == "сколько я потратил"
+    assert question_of("/q@telegrind_bot сколько") == "сколько"
+    assert question_of("/q") == ""
+    assert question_of(None) == ""
 
 
 async def test_an_empty_question_asks_for_one_and_runs_no_pass() -> None:
-    text = await handler.answer_for(
+    text = await answer_for(
         question="",
         chat=CHAT,
         config=CFG,
@@ -71,7 +71,7 @@ async def test_the_answer_is_the_rendered_prose() -> None:
     async def passes(session: object, chat: object, cfg: ChatConfig) -> SimpleNamespace:
         return report(pending=2, extracted=2, facts=2)
 
-    text = await handler.answer_for(
+    text = await answer_for(
         question="сколько",
         chat=CHAT,
         config=CFG,
@@ -90,7 +90,7 @@ async def test_a_pass_that_failed_is_reported_alongside_the_answer() -> None:
     async def passes(session: object, chat: object, cfg: ChatConfig) -> SimpleNamespace:
         return report(pending=3, failed=3)
 
-    text = await handler.answer_for(
+    text = await answer_for(
         question="сколько",
         chat=CHAT,
         config=CFG,
@@ -118,7 +118,7 @@ async def test_a_question_the_spec_cannot_express_is_refused_honestly() -> None:
     ) -> Spec:
         raise query.Unanswerable("median")
 
-    result = await handler.answer_for(
+    result = await answer_for(
         question="медиана",
         chat=CHAT,
         config=CFG,
@@ -251,6 +251,11 @@ async def test_ask_sends_the_answer_as_a_reply_to_the_question() -> None:
 
     # The "разбираю N сообщений" notice and the answer both went out.
     assert len(bot.sent) == 2
+    # And no receipt: /q is a question, and 💔 promises that tapping it
+    # deletes the facts on the message — a question has none. The override
+    # takes routing's path, so it cannot differ from a plain question.
+    assert bot.reactions == []
+    assert session.added[0].receipt_emoji is None
     assert bot.sent[0].get("reply_parameters") is None
     assert bot.sent[1]["reply_parameters"].message_id == message.message_id
 
