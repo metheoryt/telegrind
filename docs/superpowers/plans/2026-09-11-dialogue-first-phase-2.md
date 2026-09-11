@@ -454,6 +454,22 @@ Pure string assembly — no session, no model. What the extractor sees.
   natural way to record a wish.
 - **Context is labelled and numbered `C1…`,** so a fact can never be attributed
   to it: only `1…N` are valid targets.
+- **A reply names its parent by that parent's marker.** Telegram already
+  records the link in `raw["reply_to_message"]`, and it is a far stronger
+  signal than adjacency: a photo of a receipt and the price typed under it
+  are one purchase however many messages sit between them. Rendering it
+  costs one line and reaches the same `row.raw` that `author_of` already
+  reads. A parent that fell outside the window is stated as such rather
+  than omitted — the model should know it is missing something instead of
+  inventing it.
+- **A fact assembled from several messages still has exactly one owner** —
+  the last message of the group, per the spec's *Attribution*, because
+  `unique (message_pk, seq)` forces a single owner. The reply link changes
+  which messages the model reads together, not how a fact is stored. Its
+  reach is therefore the window: a reply to an older, already extracted
+  message produces a *second* fact on the reply rather than completing the
+  first one, because extraction state is per-message (`extracted_at`).
+  Fixing that is its own phase, not this task.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -528,6 +544,45 @@ def test_a_channel_forward_names_the_channel():
     assert author_of(row, OWNER) == "переслано из канала «Техника»"
 
 
+def test_a_reply_names_its_parent_by_marker():
+    prompt = build_prompt(
+        tail=[
+            logged(10, "макбук за 660000"),
+            logged(11, "чек", raw={"reply_to_message": {"message_id": 10}}),
+        ],
+        context=[],
+        taxonomy="",
+        cfg=CFG,
+        chat_id=OWNER,
+    )
+
+    assert "ответ на [1]" in prompt
+
+
+def test_a_reply_to_a_context_message_names_its_context_marker():
+    prompt = build_prompt(
+        tail=[logged(11, "чек", raw={"reply_to_message": {"message_id": 9}})],
+        context=[logged(9, "макбук за 660000")],
+        taxonomy="",
+        cfg=CFG,
+        chat_id=OWNER,
+    )
+
+    assert "ответ на [C1]" in prompt
+
+
+def test_a_reply_to_something_outside_the_window_says_so():
+    prompt = build_prompt(
+        tail=[logged(11, "чек", raw={"reply_to_message": {"message_id": 3}})],
+        context=[],
+        taxonomy="",
+        cfg=CFG,
+        chat_id=OWNER,
+    )
+
+    assert "вне окна" in prompt
+
+
 def test_the_prompt_numbers_the_tail_and_labels_the_context():
     prompt = build_prompt(
         tail=[logged(10, "4500 такси"), logged(11, "и ещё 300 кофе")],
@@ -599,9 +654,25 @@ def author_of(row: LoggedMessage, chat_id: int) -> str:
     return f"переслано из {where} «{title}»"
 
 
-def _line(marker: str, row: LoggedMessage, cfg: ChatConfig, chat_id: int) -> str:
+def _reply_to(row: LoggedMessage) -> int | None:
+    """The Telegram message_id this one replies to, if any."""
+    return ((row.raw or {}).get("reply_to_message") or {}).get("message_id")
+
+
+def _line(
+    marker: str,
+    row: LoggedMessage,
+    cfg: ChatConfig,
+    chat_id: int,
+    markers: dict[int, str],
+) -> str:
     stamp = cfg.localized(row.tg_date).strftime("%Y-%m-%d %H:%M")
-    return f"[{marker}] {stamp} ({author_of(row, chat_id)}): {row.content}"
+    head = f"[{marker}] {stamp} ({author_of(row, chat_id)})"
+    parent = _reply_to(row)
+    if parent is not None:
+        seen = markers.get(parent)
+        head += f" → ответ на [{seen}]" if seen else " → ответ на сообщение вне окна"
+    return f"{head}: {row.content}"
 
 
 def build_prompt(
@@ -612,6 +683,11 @@ def build_prompt(
     chat_id: int,
 ) -> str:
     """The user turn: the taxonomy, the read-only context, the tail."""
+    markers: dict[int, str] = {
+        row.message_id: f"C{i}" for i, row in enumerate(context, 1)
+    }
+    markers |= {row.message_id: str(i) for i, row in enumerate(tail, 1)}
+
     blocks = [
         "# Словарь этого чата",
         "Переиспользуй существующий kind и существующие имена полей, если "
@@ -625,15 +701,19 @@ def build_prompt(
         blocks += [
             "# Контекст (уже разобран, извлекать из него НЕ надо)",
             "\n".join(
-                _line(f"C{i}", row, cfg, chat_id)
+                _line(f"C{i}", row, cfg, chat_id, markers)
                 for i, row in enumerate(context, 1)
             ),
             "",
         ]
     blocks += [
         "# Сообщения для разбора",
+        "Сообщение, помеченное «ответ на [X]», продолжает сообщение X: читай "
+        "их вместе. Если оба здесь и описывают одно и то же — заведи один "
+        "факт, а не два.",
         "\n".join(
-            _line(str(i), row, cfg, chat_id) for i, row in enumerate(tail, 1)
+            _line(str(i), row, cfg, chat_id, markers)
+            for i, row in enumerate(tail, 1)
         ),
     ]
     return "\n".join(blocks)
@@ -642,14 +722,14 @@ def build_prompt(
 - [ ] **Step 4: Run the tests**
 
 Run: `uv run pytest tests/test_extract.py -v`
-Expected: PASS, 6 tests
+Expected: PASS, 9 tests
 
 - [ ] **Step 5: Lint, type-check, commit**
 
 ```bash
 uv run ruff check && uv run ruff format && uv run ty check && uv run pytest
 git add telegrind/extract.py tests/test_extract.py
-git commit -m "feat: the extraction prompt states each message's clock and author"
+git commit -m "feat: the extraction prompt states each message's clock, author and reply"
 ```
 
 ---

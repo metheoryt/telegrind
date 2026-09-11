@@ -442,6 +442,36 @@ design — is answered by that same first commit.
 - Text-to-SQL.
 - Promoting a numeric column out of JSONB.
 
+## Later, not now
+
+Named so they are not re-derived from scratch later. None of these is in
+Phase 1–3.
+
+**Photos as input.** Already provided for: a message with no text is stored
+and left unparsed rather than failed, so every receipt and order screenshot
+already sent is waiting to be read. Turning it on needs three things that do
+not exist — the photo's `file_id` on the row (only voice gets one today), a
+window that admits a message with no text, and an image block in the
+extraction call.
+
+**Inventory as events, not a table.** The existing inventory spreadsheet is
+an entity registry with a lifecycle (bought → listed → sold) and a *Комбо*
+column that groups several items into one sellable lot. Its market-price
+columns come from outside the chat and cannot be derived from what the user
+types, so the sheet is not replaced. What the chat can own is the write
+path: `купил X вчера за 500000` plus a canonical shop URL. **The URL is the
+item's identity** — a stable key that survives «макбук» / «мак» / «ноут»,
+which fuzzy name matching does not. Price tracking against that URL is a
+scraper and a separate job.
+
+**Replies as cross-window links.** Rendering `reply_to_message` in the prompt
+(Phase 2) only reaches inside one window. Letting a reply complete an
+already-extracted fact means facts stop being 1:1 with messages, and
+per-message extraction state (`extracted_at`, cleared on edit) stops working:
+attach the fact to the root and editing a reply re-derives nothing; attach it
+to the last message and deleting the root orphans it. Choosing between those
+is a design pass.
+
 ## Probes
 
 **Reaction mechanics — RESOLVED, see *Edit and delete*.** In summary, yes:
