@@ -4,6 +4,7 @@ The log is append-on-first-sight, overwrite-on-edit. Nothing here deletes a
 message row: a Telegram delete removes facts, never the log.
 """
 
+from datetime import datetime
 from typing import Any
 
 from aiogram.types import Message
@@ -55,12 +56,18 @@ async def get_message(
 
 
 async def upsert_message(
-    session: AsyncSession, chat: Chat, msg: Message
+    session: AsyncSession,
+    chat: Chat,
+    msg: Message,
+    *,
+    extractable: bool = True,
 ) -> tuple[LoggedMessage, bool]:
     """Append the message, or overwrite it if we have seen this id before.
 
-    Returns `(row, created)`. Message revision history is out of scope: an
-    edit overwrites the text and bumps edited_at.
+    Returns `(row, created)`. An edit overwrites the text, bumps edited_at,
+    and clears the extraction state: the text changed, so whatever was
+    extracted from it no longer describes the message, and clearing
+    extracted_at is what makes the next batch pass pick it up again.
     """
     values = message_values(msg)
     existing = await get_message(session, chat.id, msg.message_id)
@@ -70,9 +77,12 @@ async def upsert_message(
             if key in ("transcript", "transcript_model") and value is None:
                 continue
             setattr(existing, key, value)
+        existing.extractable = extractable
+        existing.extracted_at = None
+        existing.extract_error = None
         return existing, False
 
-    row = LoggedMessage(chat_pk=chat.id, **values)
+    row = LoggedMessage(chat_pk=chat.id, extractable=extractable, **values)
     session.add(row)
     await session.flush()
     return row, True
@@ -90,3 +100,40 @@ async def facts_for_chat(session: AsyncSession, chat_pk: int) -> list[Fact]:
         select(Fact).where(Fact.chat_pk == chat_pk).order_by(Fact.id)
     )
     return list(result.scalars())
+
+
+async def live_facts_for_message(session: AsyncSession, message_pk: int) -> list[Fact]:
+    """This message's facts that are not tombstoned."""
+    result = await session.execute(
+        select(Fact)
+        .where(Fact.message_pk == message_pk, Fact.deleted_at.is_(None))
+        .order_by(Fact.seq)
+    )
+    return list(result.scalars())
+
+
+async def tombstone_facts(session: AsyncSession, message_pk: int, at: datetime) -> int:
+    """Soft-delete this message's live facts. Returns how many were stamped.
+
+    A tombstone is never lifted by an extraction pass — only restore_facts
+    clears it — because facts are re-derivable and a hard delete would be
+    undone by the next re-extraction of the same message.
+    """
+    result = await session.execute(
+        select(Fact).where(Fact.message_pk == message_pk, Fact.deleted_at.is_(None))
+    )
+    rows = list(result.scalars())
+    for row in rows:
+        row.deleted_at = at
+    return len(rows)
+
+
+async def restore_facts(session: AsyncSession, message_pk: int) -> int:
+    """Clear the tombstone on this message's facts. Returns how many."""
+    result = await session.execute(
+        select(Fact).where(Fact.message_pk == message_pk, Fact.deleted_at.is_not(None))
+    )
+    rows = list(result.scalars())
+    for row in rows:
+        row.deleted_at = None
+    return len(rows)

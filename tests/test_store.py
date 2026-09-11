@@ -1,8 +1,13 @@
 from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from telegrind.models import KIND_TEXT, KIND_VOICE
-from telegrind.store import message_kind, message_values
+from telegrind.models import KIND_TEXT, KIND_VOICE, Fact
+from telegrind.store import (
+    message_kind,
+    message_values,
+    restore_facts,
+    tombstone_facts,
+)
 
 TG_DATE = datetime(2026, 9, 9, 15, 40, tzinfo=UTC)
 LOCAL = datetime(2026, 9, 9, 21, 40, tzinfo=timezone(timedelta(hours=6)))
@@ -78,3 +83,70 @@ def test_values_never_carry_a_transcript_for_text() -> None:
     values = message_values(text_message())
     assert values["transcript"] is None
     assert values["transcript_model"] is None
+
+
+class FakeResult:
+    def __init__(self, rows: list[Fact]) -> None:
+        self._rows = rows
+
+    def scalars(self) -> list[Fact]:
+        return self._rows
+
+
+class FakeSession:
+    """Enough of AsyncSession for the tombstone helpers.
+
+    They only ever select and mutate attributes — nothing here flushes."""
+
+    def __init__(self, rows: list[Fact]) -> None:
+        self.rows = rows
+        self.queries: list[object] = []
+
+    async def execute(self, query: object) -> FakeResult:
+        self.queries.append(query)
+        return FakeResult(self.rows)
+
+
+def fact(seq: int, deleted_at: datetime | None = None) -> Fact:
+    return Fact(
+        chat_pk=1,
+        message_pk=7,
+        seq=seq,
+        kind="expense",
+        at=TG_DATE,
+        fields={"amount": 100},
+        deleted_at=deleted_at,
+    )
+
+
+async def test_tombstone_stamps_every_live_fact() -> None:
+    rows = [fact(1), fact(2)]
+    session = FakeSession(rows)
+    when = datetime(2026, 9, 11, 12, 0, tzinfo=UTC)
+
+    count = await tombstone_facts(session, message_pk=7, at=when)
+
+    assert count == 2
+    assert [r.deleted_at for r in rows] == [when, when]
+
+
+async def test_tombstone_on_a_message_with_no_facts_reports_zero() -> None:
+    session = FakeSession([])
+    count = await tombstone_facts(
+        session, message_pk=7, at=datetime(2026, 9, 11, tzinfo=UTC)
+    )
+    assert count == 0
+
+
+async def test_restore_clears_the_tombstone() -> None:
+    when = datetime(2026, 9, 11, 12, 0, tzinfo=UTC)
+    rows = [fact(1, deleted_at=when)]
+    count = await restore_facts(FakeSession(rows), message_pk=7)
+
+    assert count == 1
+    assert rows[0].deleted_at is None
+
+
+def test_values_do_not_carry_extractability() -> None:
+    """extractable is a handler decision, not something lifted off the message."""
+    assert "extractable" not in message_values(text_message())
