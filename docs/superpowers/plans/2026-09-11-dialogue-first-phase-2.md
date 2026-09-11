@@ -82,6 +82,7 @@ There is no migration in this phase. Phase 1 already shaped both tables.
 | Create `telegrind/extract.py` | The batch pass: window → prompt → model → drafts → rows, and the marking rules. |
 | Create `telegrind/query.py` | The query spec, its validation, and the deterministic spec→SQL→rows builder. |
 | Create `telegrind/bot/handlers/query.py` | The `/q` handler: store, pass, spec, numbers, prose. |
+| Create `telegrind/bot/handlers/receipts.py` | The receipt emoji, the cycle and `acknowledge` — the half of `handlers.py` that registers nothing, so importing it cannot lose a registration race. |
 | Modify `telegrind/llm.py` | Two call helpers (`use_tool`, `say`), the extraction tool schema, the three prompts. |
 | Modify `telegrind/store.py` | `unextracted_tail`, `context_before`, `mark_extracted`, `mark_failed`, `replace_facts`. |
 | Modify `telegrind/bot/handlers/handlers.py` | `record_edited` re-extracts an already-extracted message. |
@@ -1997,10 +1998,16 @@ The trigger. Everything above becomes reachable here.
 
 **Settled here:**
 
-- **Import order is the whole risk.** `handlers.py` ends in `COMMAND_LIKE`,
-  which swallows every slash message, so `handlers/__init__.py` must import
-  `query` *first*. The plan for Phase 1 named the wrong file for exactly this
-  and it had to be fixed during execution — do not repeat it.
+- **Import order is the whole risk, and `__init__.py` alone does not fix it.**
+  `handlers.py` ends in `COMMAND_LIKE`, which swallows every slash message, so
+  `handlers/__init__.py` must import `query` *first*. But `query` needs
+  `RECEIPT_EMOJI` and `acknowledge`, and importing them **from `handlers.py`
+  runs that module to completion first** — registering `record_command` ahead
+  of `ask` and losing the race anyway. So the decorator-free half moves to
+  `telegrind/bot/handlers/receipts.py` (`RECEIPT_CYCLE`, `RECEIPT_EMOJI`,
+  `next_receipt`, `acknowledge`), re-exported from `handlers.py` so existing
+  imports keep working. That removes the hazard rather than one instance of
+  it. The Phase 1 plan named the wrong file for exactly this class of bug.
 - **`/q` is stored like any message,** with `extractable=False` and the usual
   receipt. Nothing written is ever lost, and a question must never coin a kind.
 - **The pre-reply is skipped on an empty tail.** «разбираю 0 сообщений…» is
@@ -2233,10 +2240,14 @@ async def ask(
         row.receipt_emoji = RECEIPT_EMOJI
     await acknowledge(bot, message.chat.id, message.message_id, RECEIPT_EMOJI)
 
-    # Said outside the transaction: the first /q after a quiet week pays
-    # for the week, and holding a write transaction open across two model
-    # calls to announce that is the wrong shape even at one user.
-    pending = len(await store.unextracted_tail(session, chat.id))
+    # Said in a transaction of its own, and outside the answering one: the
+    # first /q after a quiet week pays for the week, and holding a write
+    # transaction open across two model calls to announce that is the wrong
+    # shape even at one user. A bare read here would autobegin and make the
+    # `session.begin()` below raise «a transaction is already begun» —
+    # measured against SQLAlchemy 2 on 2026-09-11.
+    async with session.begin():
+        pending = len(await store.unextracted_tail(session, chat.id))
     if pending:
         await bot.send_message(message.chat.id, f"Разбираю {pending} сообщений…")
 
@@ -2277,12 +2288,16 @@ Expected: PASS
 uv run python -c "
 from telegrind.bot.setup import setup_dispatcher
 dp = setup_dispatcher()
-print([h.callback.__name__ for h in dp.message.handlers])
+for r in dp.sub_routers:
+    print([h.callback.__name__ for h in r.message.handlers])
 print(sorted(dp.resolve_used_update_types()))
 "
 ```
 Expected: `ask` appears **before** `record_command`, and the update types
-include `message`, `edited_message` and `message_reaction`.
+include `message`, `edited_message` and `message_reaction`. Read the handlers
+off the **sub-router**, not off `dp.message` — everything here is registered
+on `telegrind.bot.router.router`, so `dp.message.handlers` is empty and prints
+a reassuring `[]` that proves nothing.
 
 - [ ] **Step 7: Lint, type-check, commit**
 
