@@ -1,0 +1,332 @@
+# The Claude meta layer — design
+
+Status: approved in outline 2026-09-11, pending review of this document.
+Extends `2026-09-11-dialogue-first-design.md`, which stays the design of the
+mechanical bot. Nothing here changes what a fact is, how it is extracted or
+how it is queried.
+
+## Problem
+
+The dialogue-first design left one surface undesigned: what happens to a
+message that is not a fact.
+
+Today every message is treated the same — stored, given a 💔 receipt, and
+queued for extraction. That is wrong in three separate ways.
+
+**The receipt lies.** 💔 means "tapping this deletes the facts on it". A
+question has no facts, so the receipt promises a gesture that does nothing.
+Walking Phase 2 on 2026-09-11 produced exactly this: a message marked
+extracted with nothing on it, whose receipt deleted nothing.
+
+**Chatter poisons the taxonomy.** The extraction tail carries every message
+that is not a slash command. A question, a remark, a stray "ок" all reach
+the extractor, which is obliged to coin a `kind` for each. The observed
+taxonomy is what the next pass reads back, so one bad coinage is permanent
+until someone notices.
+
+**There is nobody to talk to.** The bot answers `/q` and is otherwise mute.
+Saying *why* a fact was filed the way it was, or changing the rule that filed
+it, has no channel at all. That is the half of the product the dialogue-first
+design named and did not build.
+
+## Goal
+
+One Telegram chat, two runtimes behind it.
+
+The **mechanical bot** records, reacts and counts. It is cheap, always on,
+and never speaks except to answer a question about the data.
+
+**Claude** talks. It is Claude Code on the subscription, with the user's own
+skills and hooks, and it can change the mechanical bot.
+
+The user sees one dialogue. Which runtime answered is visible from the shape
+of the answer — a reaction is the bot, text is Claude — and never from a
+mode, a prefix or a command.
+
+## Architecture
+
+```
+message arrives
+  → store verbatim, commit                 (unchanged, and unconditional)
+  → classify: fact | question | talk       (one cheap call, after the commit)
+      fact     → 💔, enters the extraction tail
+      question → answer.spec_for → SQL → text        (the bot)
+                 refused? → hand to Claude
+      talk     → no reaction at all                  (Claude)
+```
+
+**The bot does not know Claude exists.** Claude reads the `message` table and
+replies through the Bot API. There is no call from the bot into Claude, no
+subprocess, no queue: the transport is the database that is already there.
+
+**Claude does not run inside the bot.** The bot runs on the Anthropic API key
+in a container; Claude runs as Claude Code on the subscription, outside it.
+The two never share credentials, and the API key never leaves the bot's
+runtime.
+
+## Routing
+
+### The classifier is one call, after the commit
+
+The row is committed before anything else happens — the invariant from the
+dialogue-first design is that nothing written is ever lost, and it must not
+come to depend on a model call succeeding.
+
+A classifier failure therefore defaults to **fact**: 💔 goes on, the message
+enters the tail, and the behaviour is exactly what ships today. A hiccup
+costs a routing decision, never a message.
+
+### The verdict is a derived field, not a decision
+
+It is stored on the `message` row and it is re-derivable, the same way
+`extracted_at` is. Getting it wrong is recoverable in both directions:
+
+- a question misread as a fact is stored, extracted, and its facts are
+  tombstoned when someone notices;
+- a fact misread as a question is stored and simply unextracted, and flipping
+  the verdict puts it back in the tail.
+
+This is what makes automatic routing safe enough to have no confirmation step.
+Nothing is lost either way, because storage is unconditional and extraction is
+already re-runnable.
+
+### It replaces `extractable`, it does not join it
+
+`extractable` is set mechanically today ("starts with a slash"). It becomes
+derived from the verdict: only `fact` enters the tail. Two flags that can
+disagree is a bug found in production, not a design.
+
+### The receipt becomes the routing signal
+
+💔 now means "understood as a fact, will extract it". No reaction means
+"understood as a remark, replying in text". The user sees the routing
+decision immediately, in the surface that already exists, and a misroute is
+visible before the answer is.
+
+This shifts the receipt's meaning from *parsed* to *will parse*: the
+classifier can call something a fact that extraction later yields nothing
+for. That is accepted. The alternative — placing the receipt after
+extraction — would delay it by however long the user goes without asking a
+question, which is the entire point of deferring extraction.
+
+### `/q` survives as an override, not as the way
+
+The classifier takes questions, so asking no longer requires a command. `/q`
+stays because it costs nothing and is useful twice: when the user wants to be
+sure they are asking, and when the classifier got it wrong.
+
+### A refused question falls through to Claude
+
+`answer.spec_for` already refuses a question that does not fit the closed set
+of aggregates, rather than approximating it. Today that refusal is a dead end.
+It becomes a hand-off: the bot could not answer it, so Claude does.
+
+**This is what lets the classifier's boundary be soft.** «сколько потратил в
+сентябре» is data and «почему ты записал это расходом» is conversation, and
+the line between them is genuinely blurry. With the fall-through, a misroute
+costs a second of latency instead of an unanswered question.
+
+### Cost
+
+One model call per incoming message, before the reaction appears. The receipt
+stops being instant and becomes roughly a second. Extraction stays deferred
+and windowed — this call classifies, it does not extract, and it reads one
+message rather than a window.
+
+## The bot stores its own messages
+
+Every message the bot or Claude sends is written to `message` with
+`extractable=False`. `models.py` already anticipates this: the `extractable`
+docstring names "imported bot replies" as a case.
+
+It is load-bearing twice. A reply to something Claude said resolves to a
+`reply_to_message.message_id` with a row behind it, so `extract._line` stops
+emitting «ответ на сообщение вне окна». And Claude can see what it already
+said, which is the whole of "access to the previous dialogue".
+
+## Sessions
+
+### A session is a reply chain, not stored state
+
+Walk backwards from the incoming message through `raw.reply_to_message`. The
+chain is the session. A plain message has no parent, so it starts a new one —
+which falls out of the mechanism instead of needing a rule.
+
+Nothing is stored, nothing expires, no timer job exists, and the session
+cannot drift from what Telegram shows the user.
+
+### TTL is a cutoff applied while walking
+
+Stop walking when a hop is older than N minutes. A conversation resumed after
+a long gap starts fresh even along a reply, which matches the intent: the user
+is usually recording, not conversing, and a stale chain would carry irrelevant
+context into a one-line exchange.
+
+### Reply means two different things, and they separate mechanically
+
+- **Reply to one's own message** — fact chaining. Two messages become one fact
+  only when mechanically joined; this is that join, and it is the rule settled
+  on 2026-09-11 after adjacent facts collapsed onto the wrong message.
+- **Reply to a Claude message** — conversation. It continues the session.
+
+Because a pure record gets no text reply, there is nothing of Claude's to
+reply to on the recording path, and the two uses cannot collide.
+
+### The history is a query, not a context window
+
+"Access to the whole previous dialogue" is not a context-window problem.
+Claude has tools over the `message` table; it reads what it needs when it
+needs it. The session governs conversational continuity only.
+
+## Voice and photos
+
+**Voice is transcribed on arrival** and the transcript is treated exactly as
+text — the `transcript` and `transcript_model` columns already exist. A voice
+`/q` starts working as a side effect; it was unsupported for want of ASR, not
+as a policy.
+
+**Photos are stored, the caption is the content, and nothing looks at the
+image.** Vision on ingest is out of scope here.
+
+## The data tools
+
+### Why not raw SQL
+
+`query.py` carries guards that are easy to forget and invisible when
+forgotten: `deleted_at IS NULL` on every read, and
+`jsonb_typeof(fields->'x') = 'number'` before every cast. Claude writing SQL
+by hand will drift off them, and then Claude and `/q` report different numbers
+for the same question — silently, because both look right.
+
+So Claude reaches the data through **the same closed surface `/q` uses**. The
+tools are a second caller of `query.py`, not a second implementation.
+
+### The surface
+
+Read-only to begin with:
+
+- `messages` — a window, or a search, over the dialogue
+- `aggregate` — the closed set from `query.py` (`sum`, `count`, `avg`, `min`,
+  `max`, `last`, `balance_by`)
+- `taxonomy` — the kinds and field names this chat has actually coined
+
+Writes (`re-extract this message`, `tombstone this fact`) are deliberately a
+later step. Every one of them already has a user-facing gesture, and a tool
+that duplicates a gesture is a second way for the two to disagree.
+
+### Where it runs
+
+Prod postgres publishes no port; it is reachable only inside the compose
+network. A tools service inside that network, bound to the tailnet, is a
+narrower opening than publishing the database — it exposes the closed set of
+aggregates rather than arbitrary SQL.
+
+Dev is local and needs none of this: `localhost:5433` already works.
+
+## Self-modification
+
+### Automatic, with no per-change gate
+
+Decided 2026-09-11. Claude commits and pushes; the change reaches production
+without a confirmation step. A gate can be added later if it turns out to be
+needed, and adding one is cheap; the point is not to build the ceremony before
+knowing whether it earns its keep.
+
+### Claude never edits the deployed clone
+
+`vps/homeserver/telegrind/src/` is a gitignored checkout that the delivery
+path fast-forwards. An edit there is either overwritten or blocks the
+fast-forward. Claude works in a real checkout, commits, and pushes; delivery
+is a separate mechanism that only pulls.
+
+### Delivery does not exist yet
+
+**A push to `main` deploys nothing today**, and has not since 2026-08-01. The
+poll-and-build engine was a PowerShell Scheduled Task written for a box that
+left the fleet; production was brought up by hand on `latitude` and nothing
+polls it. "Automatic" therefore means *build the delivery path first*, and
+only then leave it ungated.
+
+The route to reuse is the one `embedthat` took on 2026-09-08: a `v*` tag
+triggers GitHub Actions, which publishes the image, and Tugtainer on latitude
+pulls the new digest within its check interval. Its workflow header argues our
+exact case — the conflict that once forbade a registry tag was the *local*
+build engine, which was PowerShell for a Windows box and never ran on latitude
+at all. The telegrind repo is public, so a published image leaks nothing that
+is not already public.
+
+Two adjustments for this use:
+
+- **Claude tags.** A tag is a named, revertible release rather than a human
+  gate, and rollback is already built: re-dispatching the workflow on the
+  previous tag republishes it.
+- **Latency is minutes, not seconds.** A GitHub build plus a Tugtainer poll is
+  well over ten minutes end to end. Acceptable for a bot that changes rarely;
+  if it is not, the poll interval is a knob.
+
+**This reverses a standing rule.** `CLAUDE.md` says the prod image must never
+be tagged `metheoryt/telegrind-bot:*`, because a registry tag would let
+Tugtainer pull-update over a locally built container. Taking the registry
+route means the local build goes away and that rule goes with it. The two
+mechanisms must never both be live — that is the failure the rule was written
+against, and it does not stop being real.
+
+### The health check is not a gate
+
+After a deploy, verify the bot came up. If it did not, roll back to the
+previous release automatically.
+
+Claude is modifying the bot that delivers Claude its own inbound messages. A
+broken deploy does not merely break the bot — it removes the only channel on
+which the user could say "roll it back". The check costs nothing, asks the
+user for nothing, and is the difference between a bad change and a dead
+system.
+
+## Liveness
+
+The Bot API accepts `sendMessage` whether or not the bot process is running,
+but Claude reads inbound from a table the bot process fills. A dead bot makes
+Claude deaf while leaving it able to talk — it looks alive and is not.
+
+Claude checks the age of the newest row before replying, and says so instead
+of answering into the void.
+
+## Non-goals
+
+- **No second Telegram consumer.** Long polling is exclusive; a second reader
+  of `getUpdates` would fight the bot for updates. The database is the
+  transport, and that is not a preference.
+- **No mode switch.** There is no command to talk to Claude and none to stop.
+  The classifier routes; the reaction shows what it decided.
+- **No echo.** A recorded fact still produces no text. "Записал" is the
+  register for when Claude does speak, not a per-message reply — 💔 already
+  says it, silently.
+- **No vision, no inventory-by-photo.** Named in the dialogue-first spec's
+  *Later, not now*, and staying there.
+
+## Open questions
+
+- **Where the Claude runtime lives.** Recommended start: dev, on `g15`, where
+  Claude Code and the user's wrappers are already installed and logged in —
+  and where the `tg.py` + database-polling shape was already run by hand on
+  2026-09-11. Production needs Claude Code installed on latitude and an
+  interactive subscription login; that is a separate step and it is not first.
+- **The TTL value.** No measurement exists. Pick something, watch it.
+- **Whether the tools are MCP or a local library.** MCP if Claude runs on a
+  different box from the database, which the prod placement implies; a plain
+  import is enough while both are on `g15`.
+
+## Build order
+
+1. The classifier, its verdict column, and `extractable` derived from it.
+   Receipt only on facts. Nothing else changes.
+2. The bot stores its own outbound messages.
+3. Natural-language questions route to `answer.spec_for`; a refusal becomes a
+   hand-off rather than a dead end.
+4. The Claude runtime on dev: reads the table, replies through the Bot API,
+   with the liveness check.
+5. Sessions — the reply chain, the TTL cutoff.
+6. The data tools.
+7. Delivery: the tag-triggered registry path, plus the health check and
+   rollback. Only after this does self-modification mean anything.
+8. Voice transcription on arrival.
