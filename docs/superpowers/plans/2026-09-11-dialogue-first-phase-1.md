@@ -103,7 +103,7 @@ of what was deliberately not carried forward.
   to gspread. `telegrind.llm.EXTRACTION_RULES: str` and
   `telegrind.llm.PROMPT_VERSION: str` survive for Phase 2.
 
-- [ ] **Step 1: Record what the deletion must preserve**
+- [x] **Step 1: Record what the deletion must preserve**
 
 Before deleting `llm.py`'s registry-shaped parts, copy the prose rules out. Open
 `telegrind/llm.py` and find `build_system_prompt`. The list of `Rules:` lines is
@@ -111,7 +111,7 @@ accumulated judgement about real messages — the loan sign convention, "a leadi
 amount is an expense, whatever follows it", date-of-fact versus mentioned-date.
 It must survive verbatim as a module constant.
 
-- [ ] **Step 2: Reduce `telegrind/llm.py`**
+- [x] **Step 2: Reduce `telegrind/llm.py`**
 
 Replace the whole file with the following. `build_schema`, `_branch`,
 `_property_schema`, `build_system_prompt`, `build_user_message` and `extract`
@@ -174,7 +174,7 @@ def current_model() -> str:
     return os.getenv("LLM_MODEL", DEFAULT_MODEL)
 ```
 
-- [ ] **Step 3: Delete the modules and their tests**
+- [x] **Step 3: Delete the modules and their tests**
 
 ```bash
 git rm telegrind/sheets.py telegrind/projection.py telegrind/registry.py \
@@ -187,7 +187,7 @@ git rm -f tests/test_start.py
 rm -rf telegrind/services
 ```
 
-- [ ] **Step 4: Cut the sheet plumbing out of `main.py`**
+- [x] **Step 4: Cut the sheet plumbing out of `main.py`**
 
 Replace `main.py` with:
 
@@ -224,7 +224,7 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-- [ ] **Step 5: Cut the sheet plumbing out of the middleware**
+- [x] **Step 5: Cut the sheet plumbing out of the middleware**
 
 Replace `telegrind/bot/middleware.py` with the version below. It no longer
 authorises Google, opens a workbook, or loads a registry. `ChatConfig` does not
@@ -277,7 +277,7 @@ async def populate_chat_data(
 Note the `isinstance(event.event, Message)` guard: Task 6 has to widen it, or
 the reaction handler never runs. Leave it for now.
 
-- [ ] **Step 6: Strip the handlers down to what still imports**
+- [x] **Step 6: Strip the handlers down to what still imports**
 
 In `telegrind/bot/handlers/handlers.py`, delete the imports of
 `gspread_asyncio`, `telegrind.projection`, `telegrind.registry` and
@@ -288,7 +288,7 @@ that the package imports. The file should reduce to `is_marker`, `COMMAND_LIKE`,
 the text constants, `record_voice`, `unknown_command`, and text/edited handlers
 that do nothing but `store.upsert_message`.
 
-- [ ] **Step 7: Drop the dependency**
+- [x] **Step 7: Drop the dependency**
 
 In `pyproject.toml`, remove the `"gspread-asyncio>=2.0.0",` line from
 `[project] dependencies`. Then:
@@ -297,7 +297,7 @@ In `pyproject.toml`, remove the `"gspread-asyncio>=2.0.0",` line from
 uv sync
 ```
 
-- [ ] **Step 8: Verify nothing references the deleted modules**
+- [x] **Step 8: Verify nothing references the deleted modules**
 
 ```bash
 grep -rn "gspread\|projection\|registry\|sheets\|AsyncioGspread\|service_account" \
@@ -307,7 +307,7 @@ grep -rn "gspread\|projection\|registry\|sheets\|AsyncioGspread\|service_account
 Expected: no hits. The word `registry` may still appear in a comment; a hit in
 an `import` line is a failure.
 
-- [ ] **Step 9: Run the suite**
+- [x] **Step 9: Run the suite**
 
 ```bash
 uv run pytest
@@ -319,7 +319,7 @@ Expected: PASS. The remaining modules are `test_harness.py`, `test_llm.py`,
 `build_schema`/`extract`; delete any test in them that names a removed symbol,
 and keep whatever only asserts on `PROMPT_VERSION` or the client.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add -A
@@ -356,7 +356,7 @@ value and every period query depends on. It becomes two columns on `chat`.
     `of(chat: Chat) -> ChatConfig`.
   - Handlers receive it as the keyword argument `config`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/test_config.py`:
 
@@ -390,7 +390,7 @@ def test_of_reads_what_the_row_carries() -> None:
     assert cfg.currency == "USD"
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 ```bash
 uv run pytest tests/test_config.py -v
@@ -398,7 +398,7 @@ uv run pytest tests/test_config.py -v
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'telegrind.config'`.
 
-- [ ] **Step 3: Add the columns**
+- [x] **Step 3: Add the columns**
 
 In `telegrind/models.py`, inside `class Chat`, after `sheet_url`:
 
@@ -410,7 +410,7 @@ In `telegrind/models.py`, inside `class Chat`, after `sheet_url`:
     currency: Mapped[str] = mapped_column(default="KZT", server_default="KZT")
 ```
 
-- [ ] **Step 4: Write the implementation**
+- [x] **Step 4: Write the implementation**
 
 Create `telegrind/config.py`:
 
@@ -455,7 +455,7 @@ and construct with `Chat(chat_id=1, tz_offset=6, currency="KZT")` in the test
 instead. Prefer changing the test: the production path always reads a row that
 has been through the database.
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [x] **Step 5: Run the test to verify it passes**
 
 ```bash
 uv run pytest tests/test_config.py -v
@@ -463,7 +463,7 @@ uv run pytest tests/test_config.py -v
 
 Expected: PASS.
 
-- [ ] **Step 6: Inject it from the middleware**
+- [x] **Step 6: Inject it from the middleware**
 
 In `telegrind/bot/middleware.py`, add the import and the injection:
 
@@ -477,7 +477,7 @@ and, next to `data["chat"] = chat`:
         data["config"] = ChatConfig.of(chat)
 ```
 
-- [ ] **Step 7: Run the whole suite**
+- [x] **Step 7: Run the whole suite**
 
 ```bash
 uv run pytest
@@ -485,7 +485,7 @@ uv run pytest
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add telegrind/config.py telegrind/models.py telegrind/bot/middleware.py tests/test_config.py
@@ -521,7 +521,7 @@ messages and are re-derivable; messages are not touched. Prod currently holds
 about two days of facts, and they come back on the first `/q` in Phase 2. Say so
 in the migration's docstring so nobody mistakes it for an accident.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Replace the `Fact`-related tests in `tests/test_models.py` and add the message
 ones. Keep `test_table_names` and `test_telegram_ids_are_bigints` as they are.
@@ -596,7 +596,7 @@ def test_a_fact_can_hold_a_real_json_number() -> None:
     assert isinstance(fact.fields["amount"], int)
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 ```bash
 uv run pytest tests/test_models.py -v
@@ -604,7 +604,7 @@ uv run pytest tests/test_models.py -v
 
 Expected: FAIL — `extracted_at` is not a column, and `worksheet` still is.
 
-- [ ] **Step 3: Rewrite the two models**
+- [x] **Step 3: Rewrite the two models**
 
 In `telegrind/models.py`, delete the `ORIGIN_EXTRACTED` / `ORIGIN_IMPORTED`
 constants. Add to `LoggedMessage`, after `created_at`:
@@ -710,7 +710,7 @@ The uniqueness is a partial unique *index*, not a `UniqueConstraint`: a
 tombstoned fact keeps its `(message_pk, seq)`, so a total constraint would make
 re-extracting an edited message collide with the row it replaces.
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 ```bash
 uv run pytest tests/test_models.py -v
@@ -718,7 +718,7 @@ uv run pytest tests/test_models.py -v
 
 Expected: PASS.
 
-- [ ] **Step 5: Generate the migration**
+- [x] **Step 5: Generate the migration**
 
 ```bash
 docker compose up -d postgres
@@ -726,7 +726,7 @@ uv run alembic upgrade head
 uv run alembic revision --autogenerate -m "dialogue first"
 ```
 
-- [ ] **Step 6: Fix the generated migration by hand**
+- [x] **Step 6: Fix the generated migration by hand**
 
 Autogenerate will emit `add_column`/`drop_column` for `fact`. Replace the `fact`
 part with a drop-and-recreate, and write the docstring that explains it. The
@@ -796,7 +796,7 @@ It cannot restore the dropped rows; say so in a comment rather than pretending.
 
 Add `from sqlalchemy.dialects import postgresql` to the migration's imports.
 
-- [ ] **Step 7: Verify the migration round-trips**
+- [x] **Step 7: Verify the migration round-trips**
 
 ```bash
 uv run alembic upgrade head
@@ -806,7 +806,7 @@ uv run alembic upgrade head
 
 Expected: all three succeed with no error.
 
-- [ ] **Step 8: Run the whole suite**
+- [x] **Step 8: Run the whole suite**
 
 ```bash
 uv run pytest && uv run ruff check && uv run ty check
@@ -815,7 +815,7 @@ uv run pytest && uv run ruff check && uv run ty check
 Expected: PASS. `alembic/versions` is excluded from `ty`; if ruff trips on the
 generated file, run `uv run ruff format alembic/versions/` first.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add telegrind/models.py tests/test_models.py alembic/versions/
@@ -854,7 +854,7 @@ untouched."
   - `facts_for_chat` loses its `worksheet` parameter;
     `fact_keys_for_worksheet` is deleted.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `tests/test_store.py`:
 
@@ -921,7 +921,7 @@ def test_values_do_not_carry_extractability() -> None:
     assert "extractable" not in message_values(text_message())
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 ```bash
 uv run pytest tests/test_store.py -v
@@ -929,7 +929,7 @@ uv run pytest tests/test_store.py -v
 
 Expected: FAIL with `ImportError: cannot import name 'tombstone_facts'`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 In `telegrind/store.py`, delete `fact_keys_for_worksheet`, drop the `worksheet`
 parameter from `facts_for_chat`, and add:
@@ -1017,7 +1017,7 @@ async def upsert_message(
 Clearing `extracted_at` on an edit is what makes the next batch pass pick the
 message up again. Task 5's edit handler relies on it.
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 ```bash
 uv run pytest tests/test_store.py -v
@@ -1025,7 +1025,7 @@ uv run pytest tests/test_store.py -v
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add telegrind/store.py tests/test_store.py
@@ -1064,7 +1064,7 @@ re-derivable from the spec. This task rewrites the module around it.
 The rest is written here rather than in Phase 2 because number coercion is the
 invariant the JSONB decision rests on, and Phase 2 should find it enforced.
 
-- [ ] **Step 1: Write the failing coercion test**
+- [x] **Step 1: Write the failing coercion test**
 
 Create `tests/test_coerce.py`:
 
@@ -1132,7 +1132,7 @@ The test module needs `from datetime import UTC, datetime`,
 `from telegrind.config import ChatConfig` and `to_instant` in the import
 from `telegrind.coerce`.
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 ```bash
 uv run pytest tests/test_coerce.py -v
@@ -1140,7 +1140,7 @@ uv run pytest tests/test_coerce.py -v
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'telegrind.coerce'`.
 
-- [ ] **Step 3: Write the coercion implementation**
+- [x] **Step 3: Write the coercion implementation**
 
 Replace `telegrind/coerce.py` with the following. `coerce_fields`,
 `coerce_number` and `coerce_currency` are registry-shaped and go; the dateparser
@@ -1235,7 +1235,7 @@ from telegrind.config import ChatConfig
 `bool` is checked before `int` because `isinstance(True, int)` is true in
 Python and a boolean must not be silently stored as `1`.
 
-- [ ] **Step 4: Run the coercion test to verify it passes**
+- [x] **Step 4: Run the coercion test to verify it passes**
 
 ```bash
 uv run pytest tests/test_coerce.py -v
@@ -1243,7 +1243,7 @@ uv run pytest tests/test_coerce.py -v
 
 Expected: PASS.
 
-- [ ] **Step 5: Write the failing ingest test**
+- [x] **Step 5: Write the failing ingest test**
 
 Create `tests/test_ingest.py`:
 
@@ -1298,7 +1298,7 @@ async def test_acknowledge_survives_a_telegram_failure() -> None:
     await acknowledge(Failing(), chat_id=1, message_id=2)
 ```
 
-- [ ] **Step 6: Run it to verify it fails**
+- [x] **Step 6: Run it to verify it fails**
 
 ```bash
 uv run pytest tests/test_ingest.py -v
@@ -1306,7 +1306,7 @@ uv run pytest tests/test_ingest.py -v
 
 Expected: FAIL with `ImportError: cannot import name 'RECEIPT_EMOJI'`.
 
-- [ ] **Step 7: Rewrite the handlers**
+- [x] **Step 7: Rewrite the handlers**
 
 Replace `telegrind/bot/handlers/handlers.py` with:
 
@@ -1423,7 +1423,7 @@ async def record_edited(
 document is a message the user sent, so it is stored. `message_values` already
 handles a caption and a missing text.
 
-- [ ] **Step 8: Run the ingest test to verify it passes**
+- [x] **Step 8: Run the ingest test to verify it passes**
 
 ```bash
 uv run pytest tests/test_ingest.py -v
@@ -1431,7 +1431,7 @@ uv run pytest tests/test_ingest.py -v
 
 Expected: PASS.
 
-- [ ] **Step 9: Run the whole suite**
+- [x] **Step 9: Run the whole suite**
 
 ```bash
 uv run pytest && uv run ruff check && uv run ty check
@@ -1439,7 +1439,7 @@ uv run pytest && uv run ruff check && uv run ty check
 
 Expected: PASS.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add -A
@@ -1467,7 +1467,7 @@ never aggregates, and the fact survives either way."
   the update type — aiogram derives `allowed_updates` from the observers that
   have handlers, so there is no configuration to add.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/test_reactions.py`:
 
@@ -1502,7 +1502,7 @@ def test_swapping_one_reaction_for_another_still_deletes() -> None:
     assert wants_delete(event(["💔"], ["👍"])) is True
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 ```bash
 uv run pytest tests/test_reactions.py -v
@@ -1510,7 +1510,7 @@ uv run pytest tests/test_reactions.py -v
 
 Expected: FAIL with `ModuleNotFoundError`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `telegrind/bot/handlers/reactions.py`:
 
@@ -1568,7 +1568,7 @@ async def toggle_delete(
 There is no reply and no counter-reaction: the bubble the user just tapped is
 already the visible state.
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 ```bash
 uv run pytest tests/test_reactions.py -v
@@ -1576,7 +1576,7 @@ uv run pytest tests/test_reactions.py -v
 
 Expected: PASS.
 
-- [ ] **Step 5: Widen the middleware so the update reaches the handler**
+- [x] **Step 5: Widen the middleware so the update reaches the handler**
 
 `populate_chat_data` returns `None` for anything that is not a `Message`, which
 silently drops every reaction update. In `telegrind/bot/middleware.py`, replace
@@ -1598,7 +1598,7 @@ from aiogram.types import Message, MessageReactionUpdated, Update
 
 and use `chat_id` in the `select(Chat).where(Chat.chat_id == chat_id)`.
 
-- [ ] **Step 6: Register the module**
+- [x] **Step 6: Register the module**
 
 In `telegrind/bot/setup.py`, import it alongside the others:
 
@@ -1615,7 +1615,7 @@ def setup_dispatcher() -> Dispatcher:
 
 `ChatActionMiddleware` goes with the echo — nothing types any more.
 
-- [ ] **Step 7: Verify the update type is subscribed**
+- [x] **Step 7: Verify the update type is subscribed**
 
 ```bash
 uv run python -c "
@@ -1628,7 +1628,7 @@ Expected: `['edited_message', 'message', 'message_reaction']`. If
 `message_reaction` is absent, the handler is not registered and the probe result
 does not save you — aiogram derives `allowed_updates` from the observers.
 
-- [ ] **Step 8: Run the whole suite**
+- [x] **Step 8: Run the whole suite**
 
 ```bash
 uv run pytest && uv run ruff check && uv run ty check
@@ -1636,7 +1636,7 @@ uv run pytest && uv run ruff check && uv run ty check
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add -A

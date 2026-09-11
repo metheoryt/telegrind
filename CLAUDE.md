@@ -4,7 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-Telegrind is an async Telegram bot that lets users track expenses, loans, and wishlists by sending natural-language messages. Records are written to a user-owned Google Sheets document. The bot uses aiogram, SQLAlchemy (asyncpg), and gspread-asyncio.
+Telegrind is an async Telegram bot that keeps a personal log. You write what
+happened in natural language; every message is stored verbatim in Postgres on
+arrival, and a later batch pass derives facts from it. The dialogue is the
+product — there is no spreadsheet. The bot uses aiogram, SQLAlchemy (asyncpg)
+and the Anthropic API.
+
+The design this is being built to is `docs/superpowers/specs/2026-09-11-dialogue-first-design.md`;
+Phase 1 (store, react, tombstone) is done, Phase 2 (batch extraction and `/q`)
+and Phase 3 (history import) are not.
 
 ## Running the Project
 
@@ -19,9 +27,19 @@ uv sync
 python main.py
 ```
 
-Copy `.env.dist` to `.env` and fill in `BOT_TOKEN`, `DATABASE_URL`, and `GOOGLE_SERVICE_ACCOUNT_FILE` before running.
+Copy `.env.dist` to `.env` and fill in `BOT_TOKEN`, `DATABASE_URL` and
+`ANTHROPIC_API_KEY` before running, or run `./dev-setup.sh` which writes both
+`.env` and a `compose.override.yml` for you.
 
-There are no tests or linting scripts configured.
+`.env` carries the **host** database URL (`localhost:5433`) so `alembic` and
+`pytest` work from a shell. `compose.yml` overrides it for the bot service,
+which reaches postgres by service name.
+
+```bash
+uv run pytest          # no live database, no network
+uv run ruff check      # and `ruff format`
+uv run ty check
+```
 
 ## Deployment
 
@@ -58,33 +76,62 @@ actually be called here.
 
 ## Architecture
 
-### Request Flow
+### Request flow
 
 ```
 Telegram message
   → Dispatcher (aiogram)
-  → populate_chat_data middleware   # injects: session, chat, agc
-  → handler (handlers.py)
-  → Sheet subclass (sheets.py)      # parse + write to Google Sheets
-  → reply to user
+  → populate_chat_data middleware   # injects: session, chat, config
+  → handler (handlers/handlers.py)  # store.upsert_message, then one reaction
 ```
 
-### Key Layers
+There is no reply. The only outward signal on ingest is `setMessageReaction`
+with 💔, and tapping that same bubble is how the user deletes:
 
-**`telegrind/bot/middleware.py`** — `populate_chat_data` runs before every handler. It looks up (or creates) the `Chat` DB record for the current chat, authorizes the Google Sheets client (`agc`), and injects both plus the SQLAlchemy session into handler kwargs.
+```
+Telegram message_reaction
+  → populate_chat_data middleware
+  → handlers/reactions.py           # tombstone the message's facts, or restore
+```
 
-**`telegrind/bot/handlers/handlers.py`** — Four main handlers dispatched by aiogram filters:
-- `record_outcome` — matches bare numbers/amounts (expenses)
-- `record_loan` — matches `займ`/`долг` keywords (loans)
-- `record_wish` — matches `хочу` keyword (wishlist)
-- `update_changed_message` / `delete_record` — edit/delete via message edit or `-` reply
+### Key layers
 
-**`telegrind/sheets.py`** — Core logic. `Sheet` is the base class; `Outcome`, `Loan`, and `Wish` subclass it. Each subclass implements `make_row()` to convert a parsed Telegram message into a spreadsheet row, plus `record()`, `search_row()`, `change_row()`, `delete_row()`. `ConfigSheet` reads per-user timezone and currency from a `_config` worksheet.
+**`telegrind/bot/middleware.py`** — `populate_chat_data` runs before every
+update. It resolves (or creates) the `Chat` row, and injects it, the SQLAlchemy
+session and a `ChatConfig` into the handler kwargs. It narrows on the update
+type: `Message` and `MessageReactionUpdated` pass, everything else is dropped.
 
-**`telegrind/models.py`** — Two SQLAlchemy models: `Chat` (chat_id + sheet_url) and `File` (caches Telegram file_ids so the intro video isn't re-uploaded).
+**`telegrind/bot/handlers/handlers.py`** — ingestion. The slash catch-all first
+(stored with `extractable=False`, so a command never coins a category), then
+voice, then a filterless catch-all so a sticker or a photo is stored too.
+`acknowledge` places the 💔 and never raises: the row is already committed, so
+a Telegram failure costs a visual cue and nothing else.
 
-**`main.py`** — Creates the SQLAlchemy async engine, loads Google service account credentials, and starts aiogram polling. `async_session` and `AsyncioGspreadClientManager` are passed down through the dispatcher's workflow data.
+**`telegrind/bot/handlers/reactions.py`** — *any* user reaction tombstones the
+message's facts; removing it restores them. Registering the observer is what
+subscribes the `message_reaction` update type.
 
-### Onboarding Flow
+**`telegrind/store.py`** — the message and fact repository. `upsert_message`
+appends on first sight and overwrites on edit, clearing `extracted_at` so the
+next batch pass picks the message up again. A forwarded message is dated by its
+origin, not by the forward.
 
-`/start` triggers an FSM in `handlers/start.py`: the bot sends an intro video, asks for a Google Sheets URL, validates access, and stores the URL in the `Chat` record.
+**`telegrind/coerce.py`** — the write boundary for a fact field. A value that
+parses becomes a real JSON number, so `(fields->>'amount')::numeric` cannot
+fail the whole query; one that does not stays text and simply never aggregates.
+`to_instant` resolves a date against the **message's own** timestamp, in the
+chat's timezone.
+
+**`telegrind/config.py`** — `ChatConfig`, the timezone offset and default
+currency, read off the `chat` row.
+
+**`telegrind/models.py`** — `Chat`, `File`, `LoggedMessage` (table `message`)
+and `Fact`. A fact is service columns plus a JSONB `fields`: only `kind` and
+`at` are promoted out, because every query filters on both. `deleted_at` is a
+tombstone, and the uniqueness on `(message_pk, seq)` is a *partial* index so a
+tombstoned fact does not collide with the row that replaces it.
+
+**`telegrind/llm.py`** — Phase 1 makes no LLM call. What survives is the client,
+the model names, and `EXTRACTION_RULES`: accumulated judgement about real
+messages, which Phase 2 composes with the observed taxonomy.
+
