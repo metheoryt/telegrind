@@ -255,6 +255,9 @@ async def test_a_message_already_in_flight_is_not_turned_twice() -> None:
 
     assert len(spy.calls) == 1  # one process, one session id
     assert spy.delivered == [("ok", 10)]
+    # One receipt call per end, not two: the dropped job was never in a
+    # batch, which is what tells «dropped» apart from «merged».
+    assert spy.marked == [(10, True)]
 
 
 async def test_a_signal_killed_process_is_not_retried_cold() -> None:
@@ -325,3 +328,4 @@ async def test_a_receipt_that_blows_up_on_the_way_in_does_not_lose_the_turn() ->
     await turns.submit(job(10, key=10))
     await turns.drain()
     assert spy.delivered == [("ok", 10)]
+    assert spy.marked == []  # both ends swallowed, and the turn still ran
