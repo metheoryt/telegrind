@@ -1,11 +1,12 @@
 """One turn at a time per session key, and everything else concurrent."""
 
 import asyncio
+import contextlib
 import uuid
 from typing import Any
 
 from telegrind.meta.config import MetaConfig
-from telegrind.meta.queue import Job, Turns
+from telegrind.meta.queue import Deliver, Job, Mark, Run, Turns
 from telegrind.meta.runtime import TurnResult
 
 CFG = MetaConfig(admin_chat_ids=frozenset({7}))
@@ -357,3 +358,114 @@ async def test_the_same_message_twice_in_one_batch_is_one_message() -> None:
     assert spy.prompts[0] == "потратил 3000 на такси"
     assert spy.marked.count((10, True)) == 1  # one message, one receipt
     assert spy.delivered == [("ok", 10)]
+
+
+async def _runs_when_handed_over_twice(
+    *,
+    run: Run | None = None,
+    deliver: Deliver | None = None,
+    mark: Mark | None = None,
+) -> int:
+    """Hand message 10 over, drain, hand the *same* message over again.
+
+    Returns how many turns actually ran. Two means the first turn's entry in
+    `_in_flight` was cleared when it ended; one means it was not, and
+    `submit` dropped the second hand-off as a duplicate of a turn that is
+    not running any more.
+    """
+    ran: list[str] = []
+
+    async def counted(
+        prompt: str, *, session_id: uuid.UUID, resume_from: uuid.UUID | None
+    ) -> TurnResult:
+        ran.append(prompt)
+        if run is None:
+            return TurnResult(text="ok", ok=True, exit_code=0)
+        return await run(prompt, session_id=session_id, resume_from=resume_from)
+
+    async def quiet_deliver(job: Job, text: str) -> None:
+        return None
+
+    async def quiet_mark(job: Job, started: bool) -> None:
+        return None
+
+    turns = Turns(
+        CFG,
+        run=counted,
+        deliver=deliver if deliver is not None else quiet_deliver,
+        mark=mark if mark is not None else quiet_mark,
+    )
+    await turns.submit(job(10, key=10))
+    await turns.drain()
+    await turns.submit(job(10, key=10))
+    await turns.drain()
+    return len(ran)
+
+
+async def test_a_message_comes_back_from_every_failure_inside_the_turn() -> None:
+    """`_in_flight` is «running right now», not «ever handed over», and the
+    difference between them is permanent.
+
+    A failed turn takes its own 👀 off, and `receipt_emoji = None` is exactly
+    what re-opens `record_edited`'s `handed_over` gate — so that message is
+    *meant* to come back. An entry left behind in `_in_flight` makes `submit`
+    drop it instead, silently and for the life of the process: no second
+    turn, no log line the user can see, and `hand_over` still returns True so
+    routing stays quiet. Every way a turn can end badly is checked, because
+    the set is cleared in one place and one omission is enough.
+
+    All four failures are swallowed *inside* `_turn` — `_mark_all` guards
+    each receipt, and the `_run` and `_deliver` calls are each wrapped — so
+    what these pin is that the clearing happens at all, not where it sits.
+    `test_a_cancelled_worker_does_not_strand_its_message` pins the `finally`.
+    """
+
+    async def failed(
+        prompt: str, *, session_id: uuid.UUID, resume_from: uuid.UUID | None
+    ) -> TurnResult:
+        return TurnResult(text="Упал.", ok=False, exit_code=1)
+
+    async def blew_up(
+        prompt: str, *, session_id: uuid.UUID, resume_from: uuid.UUID | None
+    ) -> TurnResult:
+        raise RuntimeError("there is no claude binary on this box")
+
+    async def boom_deliver(job: Job, text: str) -> None:
+        raise RuntimeError("Telegram is down")
+
+    async def boom_mark(job: Job, started: bool) -> None:
+        raise RuntimeError("Telegram is down")
+
+    assert await _runs_when_handed_over_twice(run=failed) == 2
+    assert await _runs_when_handed_over_twice(run=blew_up) == 2
+    assert await _runs_when_handed_over_twice(deliver=boom_deliver) == 2
+    assert await _runs_when_handed_over_twice(mark=boom_mark) == 2
+
+
+async def test_a_cancelled_worker_does_not_strand_its_message() -> None:
+    """The one failure that escapes `_turn`, and the reason for the `finally`.
+
+    `_turn` swallows every `Exception` it can meet, so a plain statement
+    after the call would clear `_in_flight` on all of those. Cancellation is
+    the exception that is not one: `CancelledError` is a `BaseException`, it
+    unwinds straight through `_turn`, and on shutdown or a cancelled worker
+    task it is the shape that actually happens. Without the `finally` the
+    message stays in the set with no worker left to take it out.
+    """
+    gate = asyncio.Event()
+    spy = Spy(gate=gate)
+    turns = Turns(CFG, run=spy.run, deliver=spy.deliver, mark=spy.mark)
+    await turns.submit(job(10, key=10))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert len(spy.prompts) == 1  # the worker really is inside the turn
+
+    worker = turns._workers[(7, 10)]
+    worker.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await worker
+
+    gate.set()
+    await turns.submit(job(10, key=10))
+    await turns.drain()
+    assert len(spy.prompts) == 2

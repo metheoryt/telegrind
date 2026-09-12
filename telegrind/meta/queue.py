@@ -103,7 +103,10 @@ def _deduped(batch: list[Job]) -> list[Job]:
     The *first* position is kept, so `batch[-1]` still names the newest
     distinct message — which is what chooses the session id and what the
     answer replies to, and neither should move because an older message in
-    the same batch was corrected.
+    the same batch was corrected. Those two are the whole of what `batch[-1]`
+    feeds: the `fresh` check in `_turn` reads a set comprehension over the
+    batch and does not care about order at all. Two readers in a row have
+    re-derived it as a third consumer, so it is written down as a negative.
     """
     at: dict[tuple[int, int], int] = {}
     out: list[Job] = []
@@ -197,6 +200,15 @@ class Turns:
             try:
                 await self._turn(slot, batch)
             finally:
+                # `finally`, and it has to stay one. An entry left in the
+                # set blocks that message from ever being handed over
+                # again for the life of the process — `submit` drops it,
+                # `hand_over` still returns True, and nothing is logged
+                # where the user can see it. `_turn` swallows every
+                # `Exception` it can meet, so a plain statement after the
+                # call would look right; cancellation is the shape that
+                # escapes it, and on shutdown that is the shape that
+                # happens.
                 self._in_flight -= in_flight
 
     async def _mark_all(self, batch: list[Job], started: bool) -> None:
