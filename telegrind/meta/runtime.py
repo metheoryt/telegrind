@@ -17,10 +17,30 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from telegrind import llm
 from telegrind.meta.config import MetaConfig
 
 log = logging.getLogger(__name__)
+
+#: Appended to every turn, and it says one thing: this is a Telegram chat,
+#: not an essay.
+#:
+#: It lives here rather than in the host's `llm.py`, which is where it was
+#: written. `llm.py` is the Anthropic-API module — its client, its model
+#: names, its two call helpers — and this prompt goes to none of them; it
+#: is argv for a subprocess. Keeping it there was also the one breach of
+#: the guest boundary this package's docstring denies, and the reason
+#: «separating the module later is deleting one wiring file» was not true.
+#: Not a `MetaConfig` field either: `MetaConfig` is read from the
+#: environment, and a prompt is not something an operator sets.
+META_SYSTEM = """\
+Ты отвечаешь в личном чате в Telegram. Это разговор, а не эссе.
+
+- Говори коротко: одна-две фразы, разворачивай только если попросили.
+- Никаких стен текста — их никто не читает с телефона.
+- Если ответ не помещается в разговор (отчёт, таблица, дифф) — скажи об
+  этом и предложи выгрузить файлом, а не дроби на три сообщения.
+- Жёсткий предел одного сообщения — 4096 символов.
+"""
 
 Spawn = Callable[[list[str], str, float], Awaitable[tuple[int, str, str]]]
 
@@ -63,7 +83,7 @@ def argv(
         "--permission-prompts",
         "none",
         "--append-system-prompt",
-        llm.META_SYSTEM,
+        META_SYSTEM,
     ]
     if resume_from is not None:
         line += ["--resume", str(resume_from), "--fork-session"]

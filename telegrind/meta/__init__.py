@@ -3,6 +3,13 @@
 It sees the update, it owns the conversation, it spawns `claude -p` and it
 sends the reply. It is a guest in whatever bot registers it — it takes a
 config object and callables, and reaches into none of the host's internals.
+
+That last clause is now checked rather than asserted:
+`tests/test_meta_layer.py` walks every module here with `ast` and fails on
+any import of `telegrind.<anything but meta>`. It was written because the
+claim was false — `runtime.py` imported the host's `llm` for `META_SYSTEM`,
+which now lives beside the argv that carries it — and prose cannot notice
+that.
 """
 
 import functools
@@ -36,8 +43,9 @@ class Conversation(Protocol):
 
 #: What the host has to supply. These four callables, plus the sessionmaker
 #: `MetaLayer` is built with, are the whole coupling: nothing in this package
-#: imports the host's store, query or taxonomy, so separating the module later
-#: is deleting one wiring file. `__init__` takes a sixth argument, the
+#: imports *anything* of the host's — not the three modules that used to be
+#: named here, and not `llm` either — so separating the module later is
+#: deleting one wiring file. `__init__` takes a sixth argument, the
 #: `MetaConfig`, and the host builds that too — it is left out of the count
 #: here because it is this package's own type and names nothing of the host's.
 ParentOf = Callable[[AsyncSession, int, int], Awaitable[int | None]]

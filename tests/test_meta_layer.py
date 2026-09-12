@@ -5,7 +5,9 @@ it is the only place a test has to look to know what the meta layer costs
 the bot.
 """
 
+import ast
 import contextlib
+import pathlib
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -335,3 +337,46 @@ async def test_a_worker_never_borrows_the_handler_session(
     )
     await layer.turns.drain()
     assert maker.opened == 2  # one for the receipt, one for the answer
+
+
+def test_the_meta_package_imports_nothing_of_the_hosts() -> None:
+    """The guest boundary, asserted rather than asserted *about*.
+
+    `telegrind/meta/__init__.py` says this package «reaches into none of
+    the host's internals» and that separating it later is deleting one
+    wiring file. Both were false while `runtime.py` did
+    `from telegrind import llm` for `META_SYSTEM` — and nothing could see
+    it, because the Global Constraint and CLAUDE.md both name the three
+    modules that happened to be checked (`store`, `query`, `taxonomy`) and
+    a prose claim does not run.
+
+    So read the source. Walking the package's own files with `ast` reaches
+    no database, no network and no subprocess, and it is the only check
+    that goes on being true when someone adds a fifth module.
+    """
+    package = pathlib.Path(meta.__file__).parent
+    offenders: dict[str, set[str]] = {}
+    for path in sorted(package.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        touched: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                touched.add(node.module)
+                # `from telegrind import llm` names the package, not the
+                # module, so the imported names matter as much as the
+                # module path.
+                if node.module == "telegrind":
+                    touched |= {f"telegrind.{alias.name}" for alias in node.names}
+            elif isinstance(node, ast.Import):
+                touched |= {alias.name for alias in node.names}
+        strangers = {
+            name
+            for name in touched
+            if name == "telegrind" or name.startswith("telegrind.")
+        } - {"telegrind.meta"}
+        strangers = {
+            name for name in strangers if not name.startswith("telegrind.meta.")
+        }
+        if strangers:
+            offenders[path.name] = strangers
+    assert offenders == {}

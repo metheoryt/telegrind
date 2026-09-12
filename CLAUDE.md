@@ -302,10 +302,14 @@ message», and a handed-over message has none.
 
 **`telegrind/meta/`** — the Claude half: a handler, not a second process. It
 sees the update, owns the conversation, spawns `claude -p` and sends the reply.
-It is a **guest** — nothing under it imports `telegrind.store`,
-`telegrind.query` or `telegrind.taxonomy`; it takes a `MetaConfig`, a
-sessionmaker and four callables, and `bot/meta_wiring.py` is the only file
-where the two halves touch. `sessions.py` derives a session id from the
+It is a **guest** — nothing under it imports anything of the host's at all;
+it takes a `MetaConfig`, a sessionmaker and four callables, and
+`bot/meta_wiring.py` is the only file where the two halves touch. That is
+asserted by `tests/test_meta_layer.py`, which walks the package with `ast`,
+and not by naming three modules in prose: the boundary was breached by a
+fourth — `runtime.py` importing the host's `llm` for `META_SYSTEM`, which
+now lives in `runtime.py` itself — and every prose statement of the rule,
+here and in the plan's Global Constraints, was narrowly true while it was. `sessions.py` derives a session id from the
 message a turn answers
 (`uuid5` over `chat_id:message_id`) and resolves which turn a reply continues
 in at most two hops, so the session graph cannot drift from what Telegram shows
@@ -384,8 +388,9 @@ four, because `system` is `presumed`'s to decide and never the model's — and
 both of its tie-breaks lean the same way: towards `fact` when unsure of the
 kind, towards `question` when unsure between asking and talking, because a
 question the database cannot answer falls through to Claude anyway.
-`META_SYSTEM` is appended to every `claude -p` turn and says one thing: this is
-a Telegram chat, not an essay. `PROMPT_VERSION` is extraction's
+`META_SYSTEM` is **not** here — it is argv for a subprocess, not an
+Anthropic-API call, and it lives in `telegrind/meta/runtime.py` beside the
+command line that carries it. `PROMPT_VERSION` is extraction's
 and is what `fact.prompt_version` records; the query and prose prompts persist
 nothing and are not versioned.
 
