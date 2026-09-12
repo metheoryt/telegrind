@@ -12,8 +12,12 @@ is not the consolation prize, because by then the answer to the first
 message exists and the follow-up is answered in light of it.
 
 A third case, and it is not a follow-up: the *same* message handed over
-twice while its turn is in flight. `submit` drops it. The hand-off still
-succeeds — the message is being handled, just not twice.
+twice. Whether that becomes two turns or one prompt saying everything
+twice depends only on where the worker had got to, so it is closed at both
+ends — `submit` drops a message whose turn is already in flight, and the
+batch builder collapses a message that arrives twice before the batch
+closes. The hand-off still succeeds either way: the message is being
+handled, just not twice.
 """
 
 import asyncio
@@ -72,6 +76,38 @@ def _refused_before_the_turn(result: TurnResult) -> bool:
     `runtime.run_turn` says in the comment where it is produced.
     """
     return not result.ok and result.exit_code is not None and result.exit_code > 0
+
+
+def _deduped(batch: list[Job]) -> list[Job]:
+    """One entry per message, keeping its place and its newest text.
+
+    A message can reach the queue twice before the batch closes: `record`
+    commits a bare receipt, `route`'s question arm spends two model calls
+    before `claim`, and an edit landing in there passes `record_edited`'s
+    `handed_over` gate because nothing has been claimed yet. Joined
+    verbatim, the prompt then says the same thing twice in a row with
+    nothing marking it as one message — and in a chat a repetition means
+    something, so the model has to guess what.
+
+    The *last* text wins. The only way one message_id arrives twice is
+    `record` and then `record_edited` on that same row, so the second text
+    is an edit: the user saying what they meant. The first is the typo.
+
+    The *first* position is kept, so `batch[-1]` still names the newest
+    distinct message — which is what chooses the session id and what the
+    answer replies to, and neither should move because an older message in
+    the same batch was corrected.
+    """
+    at: dict[tuple[int, int], int] = {}
+    out: list[Job] = []
+    for job in batch:
+        seen = at.get((job.chat_id, job.message_id))
+        if seen is None:
+            at[(job.chat_id, job.message_id)] = len(out)
+            out.append(job)
+        else:
+            out[seen] = job
+    return out
 
 
 class Turns:
@@ -147,6 +183,7 @@ class Turns:
                 except asyncio.QueueEmpty:
                     break
 
+            batch = _deduped(batch)
             in_flight = {(job.chat_id, job.message_id) for job in batch}
             self._in_flight |= in_flight
             try:

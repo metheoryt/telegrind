@@ -329,3 +329,31 @@ async def test_a_receipt_that_blows_up_on_the_way_in_does_not_lose_the_turn() ->
     await turns.drain()
     assert spy.delivered == [("ok", 10)]
     assert spy.marked == []  # both ends swallowed, and the turn still ran
+
+
+async def test_the_same_message_twice_in_one_batch_is_one_message() -> None:
+    """The other half of the window, and the half the in-flight set leaves open.
+
+    When both hand-offs land *before* the worker closes the batch there is
+    only ever one turn, so this is not F1's двойной ответ. It is worse in a
+    quieter way: the batch builder joins the texts, and the model is handed
+    the same message twice in a row with nothing saying they are the same
+    message. It has to guess — a repetition is meaningful in a chat.
+
+    The second arrival wins, because the only way one message_id arrives
+    twice is `record` and then `record_edited` on the same row, and an edit
+    is the user saying what they meant. Keeping the first text would hand
+    Claude the typo and throw away the correction.
+    """
+    gate = asyncio.Event()
+    spy = Spy(gate=gate)
+    turns = Turns(CFG, run=spy.run, deliver=spy.deliver, mark=spy.mark)
+    await turns.submit(job(10, key=10, text="взял 3000"))
+    await turns.submit(job(10, key=10, text="потратил 3000 на такси"))
+    gate.set()
+    await turns.drain()
+
+    assert len(spy.prompts) == 1
+    assert spy.prompts[0] == "потратил 3000 на такси"
+    assert spy.marked.count((10, True)) == 1  # one message, one receipt
+    assert spy.delivered == [("ok", 10)]
