@@ -168,6 +168,23 @@ async def record_edited(
             emoji = next_receipt(row.receipt_emoji) if was_fact else RECEIPT_EMOJI
         else:
             emoji = None
+        # This write can clobber a 👀 that `claim` put there microseconds
+        # ago, and nothing prevents it. `record` and `record_edited` run
+        # fire-and-forget on separate sessions, and both go quiet across a
+        # classifier call: an edit arriving while `record` awaits
+        # `classify` reads a row that is not yet handed over — so the gate
+        # above lets it through — and then lands here *after* `route` has
+        # reached `hand_over`. The row ends up with 💔 and
+        # `extractable=True` while Claude is answering the same message:
+        # in the extraction tail, wearing a heart, and being talked about.
+        #
+        # Same class as the provisional-fact window the ledger accepted at
+        # Task 5, and the same harm ceiling — spurious facts on a live row,
+        # removable by any reaction, never lost data. It needs a human edit
+        # inside one model call in a single-user bot. Written down because
+        # the marker-clobber half was recorded nowhere: closing it means
+        # one row lock across two handlers, which is a bigger change than
+        # the race is worth.
         row.receipt_emoji = emoji
 
         if was_extracted and verdict == VERDICT_FACT:

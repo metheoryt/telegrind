@@ -106,6 +106,13 @@ async def speak(
     is the wrong trade.
     """
     # In its own transaction: a bare get autobegins, and `say` opens one.
+    #
+    # And the Chat read here is handed to `say`, which reads `chat.chat_id`
+    # after this transaction has committed and before its own opens — so
+    # this is the second consumer of `main.py`'s `expire_on_commit=False`,
+    # on a path no fake session can reach. It works because `_mark` and
+    # `_deliver` draw from that sessionmaker. `main.py` says so too; if one
+    # of the two moves, move both.
     async with session.begin():
         chat = await session.get(Chat, chat_pk)
     if chat is None:  # the row is created by the middleware before any turn

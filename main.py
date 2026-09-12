@@ -12,12 +12,18 @@ from telegrind.bot.setup import setup_dispatcher
 
 async def main() -> None:
     engine = create_async_engine(os.environ["DATABASE_URL"], echo=False)
-    # expire_on_commit=False is load-bearing, not tidiness. `record` commits
-    # the message row and then hands it to `bot/routing.py`, which reads
-    # `row.verdict` — and `chat.id` off a Chat the middleware committed
-    # earlier. Under the default True, commit expires those attributes and
-    # the next read has to refresh them, which is IO on an object nobody is
-    # in a transaction for. The likeliest traceback is
+    # expire_on_commit=False is load-bearing, not tidiness. It has three
+    # consumers, and an invariant documented by an incomplete list is one
+    # that rots. `record` commits the message row and then hands it to
+    # `bot/routing.py`, which reads `row.verdict` — and `chat.id` off a Chat
+    # the middleware committed earlier. And `meta_wiring.speak` reads a Chat
+    # inside `session.begin()`, then hands it to `outbound.say`, which reads
+    # `chat.chat_id` *after* that transaction committed and before its own
+    # opens — on a session this sessionmaker built, because `_mark` and
+    # `_deliver` open their own rather than borrowing the handler's. No fake
+    # can reach that path at all. Under the default True, commit expires
+    # those attributes and the next read has to refresh them, which is IO on
+    # an object nobody is in a transaction for. The likeliest traceback is
     # `sqlalchemy.exc.MissingGreenlet` at the attribute access — implicit IO
     # with no greenlet on the stack — rather than anything mentioning
     # transactions; if it does get its SELECT away it autobegins one nothing

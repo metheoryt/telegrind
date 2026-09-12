@@ -250,6 +250,17 @@ class Turns:
                 # a crash string loses the answer. The session chain is
                 # self-consistent by design and not unconditionally, so
                 # this escape hatch is load-bearing, not belt-and-braces.
+                #
+                # A fourth case, and it is the one that will actually
+                # happen: **a reply to a `/q` answer.** `sessions.turn_key`
+                # hops through any `is_bot` parent, and the bot's own
+                # answers are stored exactly the way Claude's are — so the
+                # key resolves to the original question's message_id, and
+                # `uuid5` of that names a session nothing ever wrote,
+                # because the *bot* answered that question, not Claude.
+                # The other three are accidents of a long-running chat;
+                # this one is a common gesture, and it lands here every
+                # single time.
                 log.info("could not resume %s, starting fresh", resume_from)
                 result = await self._run(
                     prompt, session_id=session_id, resume_from=None
