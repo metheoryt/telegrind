@@ -406,3 +406,118 @@ async def test_the_answer_goes_out_unparsed_and_the_bots_own_words_do_not(
     assert rec.modes[-1] is None
     # The notice ahead of it is the bot's own sentence and is unaffected.
     assert rec.modes[0] is BOT_DEFAULT
+
+
+async def test_a_blown_up_answer_is_said_out_loud_rather_than_swallowed(
+    monkeypatch: Any,
+) -> None:
+    """A 429 or a 529 from Anthropic is the commonest failure this bot has.
+
+    Uncaught, it leaves the update dead — aiogram advanced the polling
+    offset as it dispatched, so nothing is ever redelivered — and the
+    message sits there with a *bare* bubble, which the receipt vocabulary
+    reads as «nothing yet, queued». That is the one thing a receipt may
+    never do: claim something that did not happen.
+    """
+    rec = Recorder()
+    monkeypatch.setattr(routing, "acknowledge", rec.acknowledge)
+    monkeypatch.setattr(routing, "say", rec.say)
+
+    async def overloaded(*args: Any, **kwargs: Any) -> str:
+        raise RuntimeError("anthropic 529 overloaded")
+
+    monkeypatch.setattr(routing, "answer_for", overloaded)
+
+    await routing.route(
+        msg(),
+        row(VERDICT_QUESTION),
+        Chat(id=1, chat_id=7),
+        CFG,
+        FakeSession(),
+        object(),
+    )
+
+    assert rec.said == [(routing.BROKEN, 10)]
+    # No receipt invented for the failure: nothing in the vocabulary means
+    # «this went wrong», and a bare row is what lets an edit re-route it.
+    assert rec.reactions == []
+
+
+async def test_a_blown_up_hand_over_is_said_out_loud_too(monkeypatch: Any) -> None:
+    """The talk arm has no `acknowledge` in front of it, so a failure in
+    `hand_over` — its own read, or `claim`'s write — is the same silence."""
+    rec = Recorder()
+    monkeypatch.setattr(routing, "acknowledge", rec.acknowledge)
+    monkeypatch.setattr(routing, "say", rec.say)
+
+    async def blows_up(*args: Any, **kwargs: Any) -> bool:
+        raise RuntimeError("the database went away")
+
+    await routing.route(
+        msg(),
+        row(VERDICT_TALK),
+        Chat(id=1, chat_id=7),
+        CFG,
+        FakeSession(),
+        object(),
+        hand_over=blows_up,
+    )
+
+    assert rec.said == [(routing.BROKEN, 10)]
+
+
+async def test_the_guard_survives_its_own_say_failing(monkeypatch: Any) -> None:
+    """Telegram is down, or the database is — the same outage that broke
+    the arm can break the apology. A guard that raises is no guard."""
+    rec = Recorder()
+    monkeypatch.setattr(routing, "acknowledge", rec.acknowledge)
+
+    async def unsendable(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("telegram is down")
+
+    monkeypatch.setattr(routing, "say", unsendable)
+
+    async def blows_up(*args: Any, **kwargs: Any) -> bool:
+        raise RuntimeError("the database went away")
+
+    await routing.route(
+        msg(),
+        row(VERDICT_TALK),
+        Chat(id=1, chat_id=7),
+        CFG,
+        FakeSession(),
+        object(),
+        hand_over=blows_up,
+    )
+
+    assert rec.said == []
+
+
+async def test_an_overlong_answer_is_truncated_to_what_telegram_takes(
+    monkeypatch: Any,
+) -> None:
+    """4096 is a hard Bot API limit, and over it the send is a 400 that the
+    guard above would then turn into «что-то сломалось» — losing an answer
+    that had already been paid for twice over. `meta_wiring.speak` caps its
+    side for the same reason; this is the other site that sends text no
+    human wrote.
+    """
+    rec = Recorder()
+    monkeypatch.setattr(routing, "acknowledge", rec.acknowledge)
+    monkeypatch.setattr(routing, "say", rec.say)
+
+    async def verbose(*args: Any, **kwargs: Any) -> str:
+        return "я" * 5000
+
+    monkeypatch.setattr(routing, "answer_for", verbose)
+
+    await routing.route(
+        msg(),
+        row(VERDICT_QUESTION),
+        Chat(id=1, chat_id=7),
+        CFG,
+        FakeSession(),
+        object(),
+    )
+
+    assert len(rec.said[-1][0]) == 4096

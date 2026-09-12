@@ -34,6 +34,20 @@ log = logging.getLogger(__name__)
 
 HandOver = Callable[[Message, LoggedMessage, Chat, AsyncSession, Bot], Awaitable[bool]]
 
+#: What the user is told when an arm blew up. Fixed, markup-free and ours,
+#: so it goes out with the bot-wide HTML default like every other sentence
+#: the bot wrote itself — an exception string interpolated in here would
+#: carry a `<` sooner or later and lose the apology to «can't parse
+#: entities», which is the failure this notice exists to report. The detail
+#: goes to the log, where it can be read.
+BROKEN = "Что-то сломалось, попробуй ещё раз."
+
+#: A hard Bot API limit on one message. Over it `send_message` is a 400,
+#: which the guard below would turn into BROKEN — losing an answer already
+#: paid for with two model calls. `meta_wiring.speak` caps its side for the
+#: same reason and says more about why splitting is not the answer.
+TELEGRAM_LIMIT = 4096
+
 
 async def route(
     message: Message,
@@ -46,7 +60,67 @@ async def route(
     hand_over: HandOver | None = None,
     receipt: str = RECEIPT_EMOJI,
 ) -> None:
-    """Act on a verdict. The row is already committed before this runs."""
+    """Act on a verdict, and never let a failure be silent.
+
+    The row is already committed before this runs, so nothing written is at
+    risk here — but *everything else* is. aiogram advances the polling
+    offset as it dispatches, so an exception escaping this function is an
+    update that is never redelivered: no answer, no reaction, no second
+    chance. `acknowledge` swallows, so the fact arm cannot go quiet; every
+    other step can. `store.unextracted_tail`, both model calls inside
+    `answer_for`, every `say`, and `hand_over`'s own read and write are all
+    one 429 away from it, and a 429 or a 529 from Anthropic is the
+    commonest failure this bot will ever see.
+
+    So the arms are guarded, and the failure is said out loud. What the row
+    looks like afterwards is deliberate: **nothing is written here**. The
+    receipt stays as `record` left it — bare for a question or for talk —
+    because no emoji in the vocabulary means «this went wrong», and a bare
+    `receipt_emoji` is exactly what keeps the message recoverable:
+    `record_edited`'s point-of-no-return gate reads `== HANDED_OVER`, so an
+    edit re-classifies and re-routes it, and re-asking always works. The
+    bare bubble on its own would claim «queued» about something that is
+    not; the sentence in the chat is what corrects that claim.
+    """
+    try:
+        await _act(
+            message,
+            row,
+            chat,
+            config,
+            session,
+            bot,
+            hand_over=hand_over,
+            receipt=receipt,
+        )
+    except Exception:
+        # Not BaseException: CancelledError is the shutdown path, and a
+        # message apologising for being shut down is noise. The reason is
+        # a plain comment because a BLE001 suppression is itself an error
+        # here — BLE is not an enabled rule set, so RUF100 calls it unused.
+        log.exception("routing message %s blew up", message.message_id)
+        try:
+            await say(bot, session, chat, BROKEN, reply_to=message.message_id)
+        except Exception:
+            # The outage that broke the arm can break the apology, and a
+            # guard that raises is not a guard.
+            log.exception("could not even say so about %s", message.message_id)
+
+
+async def _act(
+    message: Message,
+    row: LoggedMessage,
+    chat: Chat,
+    config: ChatConfig,
+    session: AsyncSession,
+    bot: Bot,
+    *,
+    hand_over: HandOver | None,
+    receipt: str,
+) -> None:
+    """The four arms. Split out only so `route` can be one `try`: a guard
+    per arm would be three copies that drift, and a fifth arm added later
+    would arrive unguarded."""
     if row.verdict == VERDICT_FACT:
         await acknowledge(bot, chat.chat_id, message.message_id, receipt)
         return
@@ -90,7 +164,12 @@ async def route(
             # site which *can* carry model-authored text overrides, the
             # same rule `meta_wiring.speak` states for Claude's side.
             await say(
-                bot, session, chat, text, reply_to=message.message_id, parse_mode=None
+                bot,
+                session,
+                chat,
+                text[:TELEGRAM_LIMIT],
+                reply_to=message.message_id,
+                parse_mode=None,
             )
             return
         # The bot could not express it, so Claude does. A misroute across

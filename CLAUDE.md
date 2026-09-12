@@ -235,7 +235,15 @@ the meta layer plugs into. `hand_over` is a parameter, so nothing here imports
 the call site. The question arm reads `message.text or message.caption` — the
 same expression the classifier read, because whatever decides a verdict and
 whatever answers it must read the same words — and sends the backlog notice in
-a transaction of its own, outside the answering one.
+a transaction of its own, outside the answering one. **All four arms run
+inside one `try`**, and a failure says `BROKEN` in the chat: aiogram advances
+the polling offset as it dispatches, so an exception escaping `route` is an
+update that is never redelivered — and the message would be left wearing a
+*bare* bubble, which the receipt vocabulary reads as «nothing yet, queued».
+The guard writes nothing to the row on purpose: `receipt_emoji` stays `None`,
+which is what keeps `record_edited`'s point-of-no-return gate open, so an edit
+re-classifies and re-routes the message. The guard's own `say` is guarded too —
+the outage that broke the arm can break the apology.
 
 **`telegrind/bot/answering.py`** — question → numbers → prose, with no Telegram
 in it, so it tests. Split out of `handlers/query.py` because it registers
