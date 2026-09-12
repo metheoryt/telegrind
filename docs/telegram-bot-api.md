@@ -173,11 +173,14 @@ ingestion rewritten the next day. `format_records`, `delete_record`, `_ingest`,
 `TIP_TEXT`, the `sendVideo` intro and the `ChatActionMiddleware` are all gone,
 `/q` is the only registered command, and there is no Sheets projection to be
 "the only way to see a fact". What telegrind actually calls now is
-`setMessageReaction` (💔 / ❤‍🔥 / 💘 as the receipt cycle), `sendMessage` for
-`/q` answers, and long polling over `message` + `edited_message` +
-`message_reaction`. The rest of this file — version state, update types, the
-available-now survey, the bump list, the ruled-out list and the hard limits —
-was checked against the installed aiogram tree and still stands.
+`setMessageReaction` (💔 / ❤‍🔥 / 💘 as the receipt cycle, 👀 for a message
+handed to Claude, and an empty reaction list to clear one), `sendMessage` for
+every answer — a question needs no `/q` since the classifier landed, and
+Claude's replies go out the same way — and long polling over `message` +
+`edited_message` + `message_reaction`. The rest of this file — version state,
+update types, the available-now survey, the bump list, the ruled-out list and
+the hard limits — was checked against the installed aiogram tree and still
+stands.
 <!-- src: telegrind 35574a2 | 2026-09-12 -->
 
 ### aiogram types and filters
@@ -203,6 +206,17 @@ was checked against the installed aiogram tree and still stands.
 - **`reply_to_message_id` is deprecated as of aiogram 3.27** — the installed
   `aiogram/methods/send_message.py` carries `json_schema_extra={"deprecated":
   True}` on the field. Use `ReplyParameters(message_id=...)` on every reply.
+- **`parse_mode=None` really does override the bot-wide default, and it is the
+  only way to send text no human wrote.** `DefaultBotProperties(parse_mode=
+  "HTML")` is global, so an answer carrying a bare `<` — a comparison, a
+  currency rendering, a line of code — comes back as «can't parse entities» and
+  the whole message is lost rather than sent plain. Explicit `None` is not the
+  same as the default: verified against the installed 3.27 tree on 2026-09-12,
+  `BaseSession.prepare_value` returns `None` before it ever reaches the
+  `Default` branch and `build_form_data` drops falsy values, so the field is
+  simply absent from the request. Passing `Default("parse_mode")` is what asks
+  for the bot's own default — and writing that call in an argument default is a
+  `B008` error here, so it goes in a module constant.
 - **`dp.message.handlers` is EMPTY when handlers register on a sub-router** the
   dispatcher includes; it lists only handlers bound directly to the dispatcher.
   A verification command that prints it returns a reassuring `[]` that proves

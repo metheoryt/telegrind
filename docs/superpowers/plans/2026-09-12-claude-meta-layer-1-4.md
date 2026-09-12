@@ -811,16 +811,28 @@ async def verdict_for(
 
     try:
         payload = await call(llm.CLASSIFY_SYSTEM, text or "", llm.CLASSIFY_TOOL)
+        verdict = str(payload.get("verdict") or "")
     except Exception as exc:
         log.warning("classifier failed, defaulting to a fact: %s", exc)
         return VERDICT_FACT
 
-    verdict = str(payload.get("verdict") or "")
     if verdict not in _ASKED:
         log.warning("classifier returned %r, defaulting to a fact", verdict)
         return VERDICT_FACT
     return verdict
 ```
+
+> **Correction (2026-09-12, made while implementing Task 10).** The block above
+> originally read the payload *outside* the `try` — `verdict = str(payload.get(
+> "verdict") or "")` sat after the `except`. A response that is valid but not a
+> dict then raises `AttributeError` straight out of `verdict_for`, which
+> contradicts both its own docstring («Never raises») and the Global Constraint
+> that every failed or unparseable model call writes `fact` explicitly rather
+> than letting an exception escape to the handler. The Task 3 implementer
+> shipped the snippet verbatim, the reviewer found the hole, and it was fixed in
+> `telegrind/classify.py` at commit `68d0581`; the plan was not corrected at the
+> time. It is corrected here so a future re-run does not reproduce it. The
+> shipped code is the authority — read `classify.py`, not this block.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 

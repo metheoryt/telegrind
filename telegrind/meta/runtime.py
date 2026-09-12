@@ -67,6 +67,11 @@ def argv(
     ]
     if resume_from is not None:
         line += ["--resume", str(resume_from), "--fork-session"]
+    # `--` is not decoration. The prompt is whatever the user typed, and
+    # without the separator the CLI parses a message beginning with a dash
+    # as its own flags: measured 2026-09-12 against claude 2.1.269, a
+    # prompt of `--version` printed the version and never reached the
+    # model. That is argv injection into a bypassPermissions subprocess.
     line += ["--session-id", str(session_id), "--", prompt]
     return line
 

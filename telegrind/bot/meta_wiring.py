@@ -1,7 +1,8 @@
 """Everything the meta layer needs from telegrind, and nothing more.
 
-The module takes a config object and five callables; this file is those
-callables. It exists so that separating the conversation half out later is
+`MetaLayer` takes five things from the host: a sessionmaker, because a worker
+outlives the update that queued it, and four callables — which are this file,
+all of it. It exists so that separating the conversation half out later is
 deleting one file rather than unpicking a merge — which is the whole reason
 Claude is a handler and not a poller.
 

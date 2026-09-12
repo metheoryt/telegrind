@@ -46,14 +46,6 @@ One bullet per fact, under a topical heading. No secrets.
 - Pinned aiogram 3.27.0 = Bot API 9.6 (verified 2026-09-10). Bot API 10.x
   features (Rich Messages, ephemeral, guest mode) need a bump to 3.31.
 
-## Known drift
-
-- The `## Architecture` section of the root `CLAUDE.md` is stale as of
-  2026-09-10: it still describes the `Outcome`/`Loan`/`Wish` `Sheet`
-  subclasses and the `/start` onboarding FSM that `ef80f31` removed. The
-  current shape is `llm.extract` → `projection.apply_changes` over
-  `store`-owned `Message`/`Fact` rows.
-
 ## The workbook layer is gone (2026-09-11)
 
 - **There is no Sheets projection any more.** `248fe9d` deleted the workbook
@@ -76,11 +68,14 @@ One bullet per fact, under a topical heading. No secrets.
   before that history is imported.
   <!-- src: telegrind 35574a2 | 2026-09-12 -->
 - **The root `CLAUDE.md` Architecture section describes the code that exists.**
-  It walks `middleware` → `handlers` → `store` → `taxonomy` → `extract` →
-  `query` → `answer` → `receipts` → `coerce` → `config` → `models` → `llm`.
-  There is no `llm.extract` and no `projection.apply_changes` anywhere in the
-  tree.
-  <!-- conflicts-with: "The `## Architecture` section of the root `CLAUDE.md` is stale as of 2026-09-10: it still describes the `Outcome`/`Loan`/`Wish` `Sheet` subclasses and the `/start` onboarding FSM that `ef80f31` removed. The current shape is `llm.extract` → `projection.apply_changes` over `store`-owned `Message`/`Fact` rows." -->
+  It walks the recording half (`middleware` → `handlers` → `store` →
+  `taxonomy` → `extract` → `query` → `answer` → `receipts` → `coerce` →
+  `config` → `models` → `llm`) and, since the meta layer landed, the
+  classifying and conversing half too (`classify` → `bot/routing` →
+  `bot/answering` → `bot/outbound` → `meta/` → `bot/meta_wiring` →
+  `bot/setup`). There is no `llm.extract` and no `projection.apply_changes`
+  anywhere in the tree. The stale-since-2026-09-10 note this replaces has been
+  retired rather than corrected a third time.
   <!-- src: telegrind 35574a2 | 2026-09-12 -->
 
 ## Deployment and the two bots
@@ -170,5 +165,49 @@ One bullet per fact, under a topical heading. No secrets.
   messages: they enter the extraction tail, get parsed and add rows. Harmless to
   sums when they carry no number, confusing to an announced backlog count.
   <!-- src: telegrind 35574a2 | 2026-09-12 -->
+
+## The Claude meta layer (2026-09-12)
+
+- **`--fork-session` is load-bearing at build-order step 4, not step 5.** The
+  spec puts forking in step 5 with the warm base; a derived session id without
+  it does not survive three turns. Claude answers `M1` in `uuid5(M1)` and
+  replies pointing at `M1`; the user replies to that with `F1`, the two-hop
+  rule resolves to `M1`, and a resume-in-place run answers from `uuid5(M1)`
+  again; the user replies to *that* with `F2`, the rule resolves to `F1` — and
+  `uuid5(F1)` was never written, because resume-in-place never created it.
+  Forking makes the derived id self-consistent and costs one flag. The warm
+  base is genuinely step 5's, and this plan pays a cold session per
+  conversation.
+- **A cold turn cost $0.21 against ~20k cache-creation tokens**, measured on
+  `g15` 2026-09-12 with claude 2.1.269. That is the number the warm base exists
+  to remove, and it is also why a failed turn is retried cold only when the
+  failure could actually be a dead `--resume` — see `meta/queue.py`.
+- **The spec's *Liveness* section is deliberately not implemented.** It was
+  written for a draft in which Claude polled the `message` table from outside
+  the bot. "Claude is a handler, not a second process" was decided 2026-09-12
+  and postdates it: inbound and outbound are one process now, so a dead bot
+  means no turn is ever spawned rather than a turn answering into the void.
+  Stated so it can be overruled in one line, not re-derived.
+- **`extractable` is vestigial on purpose, and removing it is a contract step.**
+  The verdict drives the extraction tail; `extractable` is still *written* in
+  step with it and read by nothing. This was the expand half of an
+  expand-contract migration, taken deliberately per the spec's
+  migration-reversibility rule. Dropping the column is a later hand-taken step,
+  not a tidy-up for whoever notices it is dead.
+- **There is a bounded window in which chatter can coin facts, and it was
+  chosen.** `record` commits the row as a `fact`, classifies, then writes the
+  real verdict in a second transaction — so for one model call's width the row
+  sits in the extraction tail, and a `/q` landing in that second can extract
+  facts from it which the second transaction does not tombstone. The
+  alternative was classifying before the commit, which loses the message
+  outright when anything dies mid-handler, because aiogram advances the polling
+  offset as it dispatches. Spurious removable facts beat lost messages. If it
+  ever bites, the tombstone goes in the re-classification path.
+- **The meta layer has never been walked on the dev bot.** As of 2026-09-12 the
+  whole of it — hand-off, 👀, a real `claude -p`, the reply — has only ever run
+  against fakes: the plan's live-walk steps were not executed, and the suite
+  structurally cannot reach a subprocess. Three review rounds in that plan each
+  found something the suite could not see, and a green 164-test run once sat on
+  a module that could not be imported cold. Do the walk before trusting it.
 
 <!-- KB refreshed against 35574a2 on 2026-09-12 -->
