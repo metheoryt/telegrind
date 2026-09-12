@@ -7,7 +7,7 @@ from aiogram.client.default import DefaultBotProperties
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from telegrind.bot.setup import setup_dispatcher
+from telegrind.bot.setup import release_stranded_turns, setup_dispatcher
 
 
 async def main() -> None:
@@ -37,6 +37,12 @@ async def main() -> None:
     # answers long after the update that queued it, so its worker opens a
     # session of its own rather than borrowing the handler's.
     dp = setup_dispatcher(async_session)
+
+    # Before polling, and it has to stay before it. A worker is a bare
+    # `create_task` in this process, so a row still marked handed-over at
+    # this point was marked by a process that is gone — which is the whole
+    # licence the sweep runs on. It never raises: see `release_stranded_turns`.
+    await release_stranded_turns(async_session)
 
     token = os.environ["BOT_TOKEN"]
     bot = Bot(token, default=DefaultBotProperties(parse_mode="HTML"))

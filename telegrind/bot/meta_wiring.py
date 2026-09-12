@@ -18,12 +18,13 @@ the one the fake sessions in the suite structurally cannot reproduce.
 """
 
 from aiogram import Bot
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from telegrind import store
 from telegrind.bot import outbound
 from telegrind.bot.handlers.receipts import HANDED_OVER, acknowledge, clear_receipt
-from telegrind.models import Chat
+from telegrind.models import VERDICT_SYSTEM, Chat, LoggedMessage
 
 
 async def parent_of(session: AsyncSession, chat_pk: int, message_id: int) -> int | None:
@@ -123,3 +124,119 @@ async def speak(
     await outbound.say(
         bot, session, chat, text[:4096], reply_to=reply_to, parse_mode=None
     )
+
+
+async def release_hand_overs(
+    session: AsyncSession, admin_chat_ids: frozenset[int]
+) -> list[int]:
+    """Take the marker off rows no live worker can possibly own.
+
+    `claim` writes the point of no return before `submit`, deliberately —
+    and nothing but `set_receipt(started=False)`, inside a **live** worker,
+    ever takes it off. A Ctrl-C, an OOM kill or a deploy restart therefore
+    leaves the marker on a turn that will never answer: aiogram advanced
+    the polling offset as it dispatched, so the update is not redelivered,
+    and `record_edited`'s gate then refuses to re-classify or re-route that
+    message for the life of the *database*, not of the process. The only
+    recovery was «send a new message», and nothing on screen said so. This
+    runs once at boot, before polling, which is the one moment at which
+    «no worker can own this» is knowable: the process that could have is
+    gone.
+
+    **The predicate.** A row is released when it still carries the marker
+    and **no message the bot itself stored sits later in the same chat**.
+    Three choices in that sentence, each load-bearing:
+
+    *Later by `id`*, the serial primary key, because that is the only
+    monotonic ordering here. `tg_date` is not — a forward is dated by its
+    origin — and `message_id` is Telegram's, on a message we may never have
+    stored. `outbound.say` stores the answer after the message it answers,
+    so a larger `id` on a bot row is proof that a turn ran to the end.
+
+    *«A message the bot stored»* rather than «the reply to this message».
+    The reply linkage would be exact, and it is read out of
+    `raw['reply_to_message']` — a field of a Telegram *response* object
+    that no test has ever seen (the dev walk's item 1 is what retires it).
+    Any bot row is strictly more protective: a reply to M is itself stored
+    after M, so «nothing after it» implies «no reply to it», and the
+    conservative half is the half that must not be wrong.
+
+    *Two clauses for «the bot's own»*, joined by OR for the same reason.
+    `raw['from_user']['is_bot']` is what `extract.author_of` reads — the
+    key is `from_user`, not the Bot API's `from`, because `upsert_message`
+    dumps with `model_dump(mode="json")` and no `by_alias=True` — and
+    `verdict == VERDICT_SYSTEM` is what `outbound.say` writes on every one
+    of those rows. Either alone would do; together, a row missing the JSON
+    key still shields. `system` also covers the user's own non-`/q`
+    commands, which only ever over-protects.
+
+    So it errs towards leaving a stranded message stranded — today's
+    behaviour — and away from releasing one that was answered, which would
+    let the next edit hand the same message over a second time.
+
+    Scoped to the allowlist, because the layer cleans up after itself and
+    after nothing else. The narrowing is SQL; the decision is Python, and
+    it re-states the marker test rather than trusting the WHERE clause —
+    a fake session cannot evaluate SQL, so a decision left in the query
+    would be a decision no test can see. The price of keeping the predicate
+    in one place is that the candidate read is every message ever handed to
+    Claude in those chats: a successful turn keeps 👀 for good, so the set
+    only grows. It is one read, once, at boot, on a single-user bot. If it
+    ever stops being cheap, narrow it with `load_only` — do not move the
+    decision into the query.
+
+    One way it can still be wrong in the dangerous direction, and it takes
+    two failures in one outage: `outbound.say` sends before it stores, so
+    an answer that reached Telegram and then lost its row leaves no bot row
+    to shield the message — and if the same outage also defeats the
+    worker's `_mark_all(batch, False)`, the marker survives with nothing
+    after it. The sweep then releases a message that *was* answered, and an
+    edit can produce a second turn. One duplicate answer is the whole harm.
+    """
+    if not admin_chat_ids:
+        return []
+
+    released: list[int] = []
+    # One transaction for both reads and the writes. A bare read autobegins
+    # one that never closes, and this session comes from the sessionmaker
+    # the whole bot draws from.
+    async with session.begin():
+        result = await session.execute(
+            select(LoggedMessage)
+            .join(Chat, Chat.id == LoggedMessage.chat_pk)
+            .where(
+                LoggedMessage.receipt_emoji == HANDED_OVER,
+                Chat.chat_id.in_(admin_chat_ids),
+            )
+        )
+        candidates = list(result.scalars())
+        if not candidates:
+            return []
+
+        spoken = await session.execute(
+            select(LoggedMessage.chat_pk, func.max(LoggedMessage.id))
+            .where(
+                LoggedMessage.chat_pk.in_({row.chat_pk for row in candidates}),
+                or_(
+                    LoggedMessage.raw["from_user"]["is_bot"].astext == "true",
+                    LoggedMessage.verdict == VERDICT_SYSTEM,
+                ),
+            )
+            .group_by(LoggedMessage.chat_pk)
+        )
+        # `.tuples()` is a typing narrowing and nothing else — the same
+        # two-column rows, typed as the tuples they are, because `dict()`
+        # over a bare `Row` is a `ty` error and the comprehension that
+        # avoids it is a ruff one (C416). The two gates disagree; this
+        # satisfies both.
+        last_spoken: dict[int, int] = dict(spoken.tuples().all())
+
+        for row in candidates:
+            if row.receipt_emoji != HANDED_OVER:
+                continue
+            if last_spoken.get(row.chat_pk, 0) > row.id:
+                continue
+            row.receipt_emoji = None
+            released.append(row.message_id)
+
+    return released

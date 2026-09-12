@@ -14,10 +14,10 @@ from typing import Any
 
 from telegrind import meta
 from telegrind.bot import meta_wiring
-from telegrind.bot.handlers.receipts import HANDED_OVER
+from telegrind.bot.handlers.receipts import HANDED_OVER, RECEIPT_EMOJI
 from telegrind.meta.config import MetaConfig
 from telegrind.meta.runtime import TurnResult
-from telegrind.models import VERDICT_SYSTEM, Chat, LoggedMessage
+from telegrind.models import VERDICT_SYSTEM, VERDICT_TALK, Chat, LoggedMessage
 
 CFG = MetaConfig(admin_chat_ids=frozenset({7}))
 
@@ -384,3 +384,147 @@ def test_the_meta_package_imports_nothing_of_the_hosts() -> None:
         if strangers:
             offenders[str(path.relative_to(package))] = strangers
     assert offenders == {}
+
+
+# --- the startup sweep ------------------------------------------------------
+
+
+class FakeResult:
+    """One `session.execute` answer: either rows or scalars, never both."""
+
+    def __init__(
+        self,
+        scalars: list[Any] | None = None,
+        rows: list[tuple[int, int]] | None = None,
+    ) -> None:
+        self._scalars = scalars or []
+        self._rows = rows or []
+
+    def scalars(self) -> Any:
+        return iter(self._scalars)
+
+    def tuples(self) -> FakeResult:
+        """`Result.tuples()` narrows the typing and returns the same rows."""
+        return self
+
+    def all(self) -> list[tuple[int, int]]:
+        return list(self._rows)
+
+
+class SweepSession:
+    """Answers the sweep's two reads in order, and records their depth.
+
+    `release_hand_overs` asks SQL two narrow questions — which rows still
+    carry the marker, and how far each chat's own outbound messages reach —
+    and then decides in Python. So this fake does not pretend to filter: it
+    hands back what each query would have found, which is what makes the
+    decision, rather than the WHERE clause, the thing these tests can see.
+    """
+
+    def __init__(
+        self,
+        candidates: list[LoggedMessage],
+        protective: list[tuple[int, int]] | None = None,
+    ) -> None:
+        self.answers = [
+            FakeResult(scalars=candidates),
+            FakeResult(rows=protective or []),
+        ]
+        self.depth = 0
+        self.read_depths: list[int] = []
+
+    def begin(self) -> Any:
+        @contextlib.asynccontextmanager
+        async def ctx() -> Any:
+            self.depth += 1
+            try:
+                yield
+            finally:
+                self.depth -= 1
+
+        return ctx()
+
+    async def execute(self, statement: object) -> FakeResult:
+        self.read_depths.append(self.depth)
+        return self.answers.pop(0)
+
+
+def handed_over_row(*, id: int, chat_pk: int, message_id: int) -> LoggedMessage:
+    return LoggedMessage(
+        id=id,
+        chat_pk=chat_pk,
+        message_id=message_id,
+        raw={},
+        verdict=VERDICT_TALK,
+        receipt_emoji=HANDED_OVER,
+    )
+
+
+async def test_a_turn_the_restart_killed_is_released() -> None:
+    """The marker outlives the process that owned it, and nothing else ever
+    clears it: `set_receipt(started=False)` runs inside a live worker, and a
+    worker killed mid-turn never reaches it. So the row stays handed over,
+    `record_edited`'s gate goes on refusing to re-route it for the life of
+    the database, and the only recovery is a new message."""
+    row = handed_over_row(id=5, chat_pk=1, message_id=10)
+    session = SweepSession([row])
+
+    assert await meta_wiring.release_hand_overs(session, frozenset({7})) == [10]
+    assert row.receipt_emoji is None
+
+
+async def test_a_message_claude_already_answered_keeps_its_marker() -> None:
+    """The failure direction that matters. `outbound.say` stores the answer
+    *after* the message it answers, so a bot row further along the same
+    chat's `id` is proof that the turn finished. Clearing the marker there
+    would let the next edit hand the same message over a second time —
+    exactly the double hand-over `claim` exists to prevent."""
+    row = handed_over_row(id=5, chat_pk=1, message_id=10)
+    session = SweepSession([row], protective=[(1, 6)])
+
+    assert await meta_wiring.release_hand_overs(session, frozenset({7})) == []
+    assert row.receipt_emoji == HANDED_OVER
+
+
+async def test_an_answer_in_another_chat_shields_nothing() -> None:
+    """«After» is per chat. One `id` sequence serves every chat, so a busy
+    chat would otherwise shield a stranded row in a quiet one — and the
+    whole sweep would do nothing for the only user who has two chats."""
+    stranded = handed_over_row(id=5, chat_pk=1, message_id=10)
+    answered = handed_over_row(id=8, chat_pk=2, message_id=20)
+    session = SweepSession([stranded, answered], protective=[(2, 9)])
+
+    assert await meta_wiring.release_hand_overs(session, frozenset({7, 8})) == [10]
+    assert stranded.receipt_emoji is None
+    assert answered.receipt_emoji == HANDED_OVER
+
+
+async def test_a_row_that_does_not_carry_the_marker_is_never_touched() -> None:
+    """The marker test is re-stated in Python rather than left to the
+    narrowing WHERE clause. A fake session cannot evaluate SQL, so a sweep
+    that cleared every row it was handed would pass every other test here;
+    this is the one that says the decision itself reads the column."""
+    row = LoggedMessage(
+        id=5, chat_pk=1, message_id=10, raw={}, receipt_emoji=RECEIPT_EMOJI
+    )
+    session = SweepSession([row])
+
+    assert await meta_wiring.release_hand_overs(session, frozenset({7})) == []
+    assert row.receipt_emoji == RECEIPT_EMOJI
+
+
+async def test_the_sweep_reads_inside_a_transaction() -> None:
+    """A bare read autobegins one that never closes, and this session goes
+    on to be used by the bot — `main.py` hands the sweep a session from the
+    same sessionmaker every worker draws from."""
+    session = SweepSession([handed_over_row(id=5, chat_pk=1, message_id=10)])
+    await meta_wiring.release_hand_overs(session, frozenset({7}))
+    assert session.read_depths == [1, 1]
+
+
+async def test_an_empty_allowlist_asks_the_database_nothing() -> None:
+    """`IN ()` is not a query worth sending, and an empty allowlist is what
+    `MetaConfig.from_env` reports as «off» anyway."""
+    session = SweepSession([handed_over_row(id=5, chat_pk=1, message_id=10)])
+    assert await meta_wiring.release_hand_overs(session, frozenset()) == []
+    assert session.read_depths == []

@@ -56,6 +56,49 @@ def attach_meta(
     return layer
 
 
+async def release_stranded_turns(
+    async_session: async_sessionmaker[AsyncSession] | None,
+) -> int:
+    """Clear the hand-over markers no live worker can own any more.
+
+    Called from `main.py` between `setup_dispatcher` and `start_polling`,
+    and that is the only moment the question has an answer: a worker is a
+    bare `asyncio.create_task` in this process, so anything still marked
+    before the first update is dispatched was marked by a process that no
+    longer exists. Doing it here rather than on shutdown is deliberate —
+    the user chose the sweep over a drain, because a drain covers a clean
+    stop and this covers Ctrl-C, a `docker compose restart`, the OOM killer
+    and a deploy.
+
+    Off is the same two-armed state `attach_meta` reports, deliberately
+    re-derived rather than threaded through: nothing here needs the
+    `MetaLayer`, `setup_dispatcher`'s signature is pinned by a test that can
+    only run once per process, and `MetaConfig.from_env` reads the same
+    environment a few lines later in the same boot. Neither arm is logged
+    again for that reason — `attach_meta` has already said which one it is.
+
+    It never raises. A bot that will not boot because a cleanup query
+    failed is worse than the bug the cleanup exists to fix: recording
+    messages is the invariant, and everything here is recovery.
+    """
+    cfg = MetaConfig.from_env()
+    if cfg is None or async_session is None:
+        return 0
+
+    try:
+        async with async_session() as session:
+            released = await meta_wiring.release_hand_overs(session, cfg.admin_chat_ids)
+    except Exception:  # recovery, and the bot boots without it
+        log.exception("could not release stranded hand-overs")
+        return 0
+
+    if released:
+        # The message ids, not just the count: the next question is always
+        # «which ones», and a restart is exactly when the log is read.
+        log.info("released %s stranded hand-over(s): %s", len(released), released)
+    return len(released)
+
+
 def setup_dispatcher(
     async_session: async_sessionmaker[AsyncSession] | None = None,
 ) -> Dispatcher:

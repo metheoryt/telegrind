@@ -132,9 +132,30 @@ the angle brackets. `FAKE_MODE=long` → arrives truncated at 4096, not dropped.
 a plain question. Expect a sentence in the chat saying it failed — silence with
 a bare bubble means the reply path still swallows the update.
 
-**13. Ctrl-C mid-turn, deliberately.** `FAKE_MODE=slow`, send a `talk` message,
-kill the bot mid-turn. `SELECT receipt_emoji FROM message WHERE message_id =
-<it>;` → `👀`. Restart, and edit that message. Watch what happens.
+**13. Ctrl-C mid-turn, deliberately — and the startup sweep that recovers it.**
+`FAKE_MODE=slow`, send a `talk` message, kill the bot mid-turn. `SELECT
+receipt_emoji FROM message WHERE message_id = <it>;` → `👀`: the marker outlives
+the process, and nothing in a dead worker will ever take it off.
+
+Restart. Before polling starts the log must say `released 1 stranded
+hand-over(s): [<it>]`, and the same `SELECT` must now read NULL. **The bubble
+still shows 👀 — that is expected**, the sweep touches the row only. Now edit
+that message: it must be re-classified and handed over again, a new turn must
+answer it, and 👀 must be re-placed by the new turn.
+*Failure:* the edit is ignored and the log says `edit after hand-over`. *Means:*
+either the sweep did not run (it is called from `main.py`, and it swallows every
+exception — check the log for `could not release stranded hand-overs`), or a
+protective row shielded the message: any row the bot itself stored later in that
+chat, including a `/q` answer or a `Разбираю N сообщений…` notice sent after it.
+The second is the predicate erring on its safe side, not a bug — but confirm
+which one it was before touching anything.
+
+Then the other direction, which is the one that must not be wrong. Let a `talk`
+message be answered normally, restart, and check that message's
+`receipt_emoji` is **still 👀** and that editing it changes nothing on screen.
+*Failure:* a second answer to a message Claude already answered. *Means:* the
+sweep released an answered row and re-opened the double hand-over `claim`
+exists to prevent.
 
 ---
 

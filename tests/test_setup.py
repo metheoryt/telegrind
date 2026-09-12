@@ -130,3 +130,103 @@ def test_a_missing_sessionmaker_is_not_blamed_on_the_allowlist(
     assert "sessionmaker" in caplog.text
     assert "CLAUDE_ADMIN_CHAT_IDS" not in caplog.text
     assert handlers.HAND_OVER is None
+
+
+# --- the startup sweep ------------------------------------------------------
+
+
+class Sessions:
+    """Stands in for `async_sessionmaker`: called, then used as an async CM.
+
+    `release_stranded_turns` opens its own session — it runs before
+    polling, so there is no handler session to borrow — and `opened` is how
+    a test says whether it got as far as touching the database at all.
+    """
+
+    def __init__(self) -> None:
+        self.opened = 0
+
+    def __call__(self) -> Any:
+        self.opened += 1
+        return self
+
+    async def __aenter__(self) -> Any:
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        return None
+
+
+class Released:
+    """A recorder standing in for `meta_wiring.release_hand_overs`."""
+
+    def __init__(self, message_ids: list[int] | None = None) -> None:
+        self.calls: list[frozenset[int]] = []
+        self.message_ids = message_ids or []
+
+    async def __call__(self, session: Any, admin_chat_ids: frozenset[int]) -> list[int]:
+        self.calls.append(admin_chat_ids)
+        return self.message_ids
+
+
+async def test_the_sweep_runs_on_the_layers_own_chats(monkeypatch: Any) -> None:
+    """It opens a session of its own — there is no handler session at boot —
+    and it is scoped to the allowlist, because the layer cleans up after
+    itself and after nothing else."""
+    released = Released([10, 11])
+    monkeypatch.setenv("CLAUDE_ADMIN_CHAT_IDS", "7 8")
+    monkeypatch.setattr(setup.meta_wiring, "release_hand_overs", released)
+    sessions = Sessions()
+
+    assert await setup.release_stranded_turns(sessions) == 2
+    assert sessions.opened == 1
+    assert released.calls == [frozenset({7, 8})]
+
+
+async def test_the_sweep_does_not_run_when_the_layer_is_off(monkeypatch: Any) -> None:
+    """Off is a supported state. Without the allowlist there is nobody to
+    hand a message to, so there is no marker anyone could have left — and a
+    bot that queries the database on behalf of a layer that is not running
+    is a layer that is not really off."""
+    released = Released()
+    monkeypatch.delenv("CLAUDE_ADMIN_CHAT_IDS", raising=False)
+    monkeypatch.setattr(setup.meta_wiring, "release_hand_overs", released)
+    sessions = Sessions()
+
+    assert await setup.release_stranded_turns(sessions) == 0
+    assert sessions.opened == 0
+    assert released.calls == []
+
+
+async def test_the_sweep_needs_a_sessionmaker_like_everything_else(
+    monkeypatch: Any,
+) -> None:
+    """The second way to be off, and it reaches here too: `attach_meta`
+    returns None without one, so no worker exists to have stranded
+    anything."""
+    released = Released()
+    monkeypatch.setenv("CLAUDE_ADMIN_CHAT_IDS", "7")
+    monkeypatch.setattr(setup.meta_wiring, "release_hand_overs", released)
+
+    assert await setup.release_stranded_turns(None) == 0
+    assert released.calls == []
+
+
+async def test_a_failed_sweep_does_not_keep_the_bot_from_booting(
+    monkeypatch: Any, caplog: Any
+) -> None:
+    """A bot that will not start because a cleanup query failed is worse
+    than the bug the cleanup fixes. The database may be slow, the migration
+    may not have run yet, the column may be new — and none of that is a
+    reason to stop recording messages."""
+
+    async def explode(session: Any, admin_chat_ids: frozenset[int]) -> list[int]:
+        raise OSError("connection refused")
+
+    monkeypatch.setenv("CLAUDE_ADMIN_CHAT_IDS", "7")
+    monkeypatch.setattr(setup.meta_wiring, "release_hand_overs", explode)
+
+    with caplog.at_level(logging.ERROR, logger="telegrind.bot.setup"):
+        assert await setup.release_stranded_turns(Sessions()) == 0
+
+    assert "connection refused" in caplog.text

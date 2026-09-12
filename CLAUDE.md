@@ -353,8 +353,27 @@ two different promises made at two different moments — the column is the point
 of no return an edit reads, and it cannot wait for the bubble, because a
 message queued behind a running turn is not marked for the length of that turn.
 The price is real and accepted: **an edit to a message that is queued but not
-yet started is stored and never reaches Claude.** Every function here reads
-inside its own `session.begin()`, for the reason below.
+yet started is stored and never reaches Claude.**
+
+The marker's whole life is three writes, and the third is the newest: `claim`
+sets it at hand-off; `set_receipt(started=False)` takes it off inside a **live**
+worker when the turn failed, and only there — so a turn that succeeded keeps 👀
+for good; and `release_hand_overs` clears it **at boot**, for rows no worker can
+possibly own any more. Without that third one a Ctrl-C, an OOM kill or a deploy
+restart strands the message permanently: the update is never redelivered, and
+`record_edited`'s point-of-no-return gate then refuses to re-classify or
+re-route it for the life of the *database*. The release predicate is «still
+marked, and **no message the bot itself stored later in the same chat**»,
+ordered by the serial `id` — the only monotonic column here, since a forward is
+dated by its origin — and it is deliberately lopsided: it leaves a stranded
+message stranded (today's behaviour) rather than release one that was answered,
+which would re-open the double hand-over `claim` exists to prevent. It does not
+touch the bubble. A stale 👀 on a released message is corrected where it
+matters: the edit the release re-enables re-routes the message, and
+`set_receipt` puts 👀 back when the new turn starts.
+
+Every function here reads inside its own `session.begin()`, for the reason
+below.
 
 **`telegrind/bot/setup.py`** — the composition root, and the only place
 handlers are registered. Registration is subscription: importing a handler
@@ -365,7 +384,12 @@ Order matters within an observer, and `handlers` ends in a filterless
 catch-all, so `query` is imported first or `/q` is dead code behind it.
 `attach_meta` builds the `MetaConfig` from the environment and is split out so
 it can be called more than once per process, which is what makes the wiring
-testable.
+testable. `release_stranded_turns` is its sibling, with the same two-armed off
+gate: `main.py` calls it between `setup_dispatcher` and `start_polling`, which
+is the one moment at which «no worker can still own this row» is knowable —
+a worker is a bare `create_task` in this process. It never raises, because a
+bot that will not boot because a cleanup query failed is worse than the bug the
+cleanup fixes.
 
 **`telegrind/coerce.py`** — the write boundary for a fact field. A value that
 parses becomes a real JSON number, so `(fields->>'amount')::numeric` cannot
