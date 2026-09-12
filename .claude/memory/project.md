@@ -178,22 +178,26 @@ One bullet per fact, under a topical heading. No secrets.
   Forking makes the derived id self-consistent and costs one flag. The warm
   base is genuinely step 5's, and this plan pays a cold session per
   conversation.
+  <!-- src: telegrind 5dcec58 | 2026-09-12 -->
 - **A cold turn cost $0.21 against ~20k cache-creation tokens**, measured on
   `g15` 2026-09-12 with claude 2.1.269. That is the number the warm base exists
   to remove, and it is also why a failed turn is retried cold only when the
   failure could actually be a dead `--resume` — see `meta/queue.py`.
+  <!-- src: telegrind 5dcec58 | 2026-09-12 -->
 - **The spec's *Liveness* section is deliberately not implemented.** It was
   written for a draft in which Claude polled the `message` table from outside
   the bot. "Claude is a handler, not a second process" was decided 2026-09-12
   and postdates it: inbound and outbound are one process now, so a dead bot
   means no turn is ever spawned rather than a turn answering into the void.
   Stated so it can be overruled in one line, not re-derived.
+  <!-- src: telegrind 5dcec58 | 2026-09-12 -->
 - **`extractable` is vestigial on purpose, and removing it is a contract step.**
   The verdict drives the extraction tail; `extractable` is still *written* in
   step with it and read by nothing. This was the expand half of an
   expand-contract migration, taken deliberately per the spec's
   migration-reversibility rule. Dropping the column is a later hand-taken step,
   not a tidy-up for whoever notices it is dead.
+  <!-- src: telegrind 5dcec58 | 2026-09-12 -->
 - **There is a bounded window in which chatter can coin facts, and it was
   chosen.** `record` commits the row as a `fact`, classifies, then writes the
   real verdict in a second transaction — so for one model call's width the row
@@ -203,11 +207,29 @@ One bullet per fact, under a topical heading. No secrets.
   outright when anything dies mid-handler, because aiogram advances the polling
   offset as it dispatches. Spurious removable facts beat lost messages. If it
   ever bites, the tombstone goes in the re-classification path.
+  <!-- src: telegrind 5dcec58 | 2026-09-12 -->
 - **The meta layer has never been walked on the dev bot.** As of 2026-09-12 the
   whole of it — hand-off, 👀, a real `claude -p`, the reply — has only ever run
   against fakes: the plan's live-walk steps were not executed, and the suite
   structurally cannot reach a subprocess. Three review rounds in that plan each
   found something the suite could not see, and a green 164-test run once sat on
   a module that could not be imported cold. Do the walk before trusting it.
+  <!-- src: telegrind 5dcec58 | 2026-09-12 -->
 
-<!-- KB refreshed against 35574a2 on 2026-09-12 -->
+## The repo's own automation, and the branch it shares
+
+- **Orca's memory-harvest automation shares the `freeform-facts` working tree
+  and rewrites history on it.** On 2026-09-12, while a plan was executing on
+  that branch, `ff27aac` "harvest: 34 facts against 35574a2" was replaced by
+  `db9de98` — same message, different tree, 402 insertions became 415. It
+  touches docs and its own state only (`CLAUDE.md`, `docs/telegram-bot-api.md`,
+  this file, `.claude/harvest/`, `.claude/kb-harvest-state.json`) and never
+  code, but a rewrite underneath a running branch is still a rewrite: it cost
+  that run two worktree moves and forced every review package to be scoped by
+  explicit SHAs instead of `HEAD`, so an interleaved harvest commit could not
+  appear inside a review diff. Branch long-lived work off your own last commit
+  rather than off whatever `freeform-facts` points at, and merge back at the
+  end.
+  <!-- src: telegrind 5dcec58 | 2026-09-12 -->
+
+<!-- KB refreshed against 5dcec58 on 2026-09-12 -->

@@ -105,8 +105,8 @@ def _deduped(batch: list[Job]) -> list[Job]:
     answer replies to, and neither should move because an older message in
     the same batch was corrected. Those two are the whole of what `batch[-1]`
     feeds: the `fresh` check in `_turn` reads a set comprehension over the
-    batch and does not care about order at all. Two readers in a row have
-    re-derived it as a third consumer, so it is written down as a negative.
+    batch and does not care about order at all. It has twice been re-derived
+    as a third consumer, so it is written down here as a negative.
     """
     at: dict[tuple[int, int], int] = {}
     out: list[Job] = []

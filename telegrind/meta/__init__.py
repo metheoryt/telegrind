@@ -37,7 +37,9 @@ class Conversation(Protocol):
 #: What the host has to supply. These four callables, plus the sessionmaker
 #: `MetaLayer` is built with, are the whole coupling: nothing in this package
 #: imports the host's store, query or taxonomy, so separating the module later
-#: is deleting one wiring file.
+#: is deleting one wiring file. `__init__` takes a sixth argument, the
+#: `MetaConfig`, and the host builds that too — it is left out of the count
+#: here because it is this package's own type and names nothing of the host's.
 ParentOf = Callable[[AsyncSession, int, int], Awaitable[int | None]]
 #: Record the hand-over on the row *now*, before the queue is told. Separate
 #: from `set_receipt` because the column and the bubble are two different

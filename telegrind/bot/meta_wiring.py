@@ -1,16 +1,20 @@
 """Everything the meta layer needs from telegrind, and nothing more.
 
-`MetaLayer` takes five things from the host: a sessionmaker, because a worker
-outlives the update that queued it, and four callables — which are this file,
-all of it. It exists so that separating the conversation half out later is
-deleting one file rather than unpicking a merge — which is the whole reason
-Claude is a handler and not a poller.
+`MetaLayer.__init__` takes six things, and the host supplies all six: a
+`MetaConfig`, which `bot/setup.py` builds from the environment; a
+sessionmaker, because a worker outlives the update that queued it; and four
+callables — which are this file, all of it. Only five of the six are
+*coupling*, as `telegrind/meta/__init__.py` counts it: `MetaConfig` is that
+package's own type and names nothing of ours. Either way this file exists so
+that separating the conversation half out later is deleting one file rather
+than unpicking a merge — which is the whole reason Claude is a handler and
+not a poller.
 
 Every function here reads inside its own `session.begin()`. A bare read
 autobegins a transaction that never closes, and the next `session.begin()`
-then raises «a transaction is already begun» — the trap `query.py` and
-`handlers.record_edited` already document, and the one the fake sessions in
-the suite structurally cannot reproduce.
+then raises «a transaction is already begun» — the trap `bot/routing.py`'s
+question arm and `handlers.record_edited` already document at the site, and
+the one the fake sessions in the suite structurally cannot reproduce.
 """
 
 from aiogram import Bot

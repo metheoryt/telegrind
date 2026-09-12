@@ -59,12 +59,22 @@
   `session.execute`/`session.get` outside `session.begin()` opens one that never
   closes. So **every read wraps in its own `session.begin()`**, including a read
   whose only purpose is to fetch a row for a later write. This has already been
-  hit three times in this codebase — `query.py:89-93` (where the comment
-  documents it), the edit path's `record_edited`, and `meta_wiring.speak` — and
-  **the fake-session tests cannot see it**: a hand-written fake session has no
-  transaction state, so the suite passes on code that raises against Postgres.
-  Any task touching a session is reviewed by reading the code, not by running
-  the tests.
+  hit three times in this codebase — the question arm, the edit path's
+  `record_edited`, and `meta_wiring.speak` — and **the fake-session tests
+  cannot see it**: a hand-written fake session has no transaction state, so the
+  suite passes on code that raises against Postgres. Any task touching a
+  session is reviewed by reading the code, not by running the tests.
+
+  > **Correction (2026-09-12, made while fixing the review of Task 10).** This
+  > constraint originally named `query.py:89-93` as «where the comment
+  > documents it». It did, when the plan was written; Task 5 moved the
+  > answering path out of `bot/handlers/query.py` and the comment went with
+  > it. The site-level comments are now in `telegrind/bot/routing.py` (the
+  > question arm), `handlers/handlers.py` (`record_edited`) and
+  > `telegrind/bot/meta_wiring.py` (its module docstring, and `speak`). A
+  > pointer at `query.py` leads to a file that no longer mentions the trap —
+  > it was copied into CLAUDE.md and `meta_wiring.py` from here, which is why
+  > it is corrected at the source.
 - **Tests are pure unit tests: no live database, no network, no subprocess.**
   Follow the existing convention — `SimpleNamespace` fakes for aiogram objects,
   unattached SQLAlchemy model instances, hand-written fake sessions

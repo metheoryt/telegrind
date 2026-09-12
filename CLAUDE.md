@@ -8,11 +8,23 @@ Telegrind is an async Telegram bot that keeps a personal log. You write what
 happened in natural language; every message is stored verbatim in Postgres on
 arrival, and a batch pass derives facts from it when you ask. The dialogue is
 the product — there is no spreadsheet. The bot uses aiogram, SQLAlchemy
-(asyncpg) and the Anthropic API.
+(asyncpg) and the Anthropic API — and, on a dev box only, a `claude -p`
+subprocess, which is the meta layer and the fourth runtime dependency.
 
-The design this is being built to is `docs/superpowers/specs/2026-09-11-dialogue-first-design.md`;
-Phase 1 (store, react, tombstone) and Phase 2 (batch extraction and `/q`) are
-done, Phase 3 (history import) is not.
+Two specs, and both are live:
+
+- `docs/superpowers/specs/2026-09-11-dialogue-first-design.md` — the recording
+  half. Phase 1 (store, react, tombstone) and Phase 2 (batch extraction and
+  `/q`) are done, Phase 3 (history import) is not.
+- `docs/superpowers/specs/2026-09-11-claude-meta-layer-design.md` — the Claude
+  meta layer, and what `.claude/memory/project.md` means by «the spec» in its
+  meta-layer bullets. Its build order runs to eight steps; 1–4 are done (the
+  classifier and its verdict column, the bot storing its own messages,
+  natural-language questions, and the Claude handler with its allowlist,
+  queue and 👀). Step 5 is half done: forking per turn came forward into step
+  4, because a derived session id does not survive three turns without it, but
+  the warm base it was specified beside did not — which is why every
+  conversation still pays for a cold session.
 
 ## Running the Project
 
@@ -104,15 +116,19 @@ actually be called here.
 
 ### Request flow
 
-Every message takes the same path, and a stored verdict decides what happens
-at the end of it:
+Every message ends at the same router, and a stored verdict decides what
+happens there. How the verdict is reached is where the two arms differ: `/q`
+asserts one, everything else is classified.
 
 ```
 Telegram message
   → Dispatcher (aiogram)
   → populate_chat_data middleware   # injects: session, chat, config
-  → handlers/handlers.py            # store.upsert_message, COMMIT
-  → classify.verdict_for            # one cheap call, after the commit
+  ├─ handlers/query.py  ask         # Command("q"), registered first
+  │    store.upsert_message, COMMIT, verdict=question — no classifier call
+  └─ handlers/handlers.py  record   # the filterless catch-all: everything else
+       store.upsert_message, COMMIT
+       classify.verdict_for         # one cheap call, after the commit
   → bot/routing.py
       fact     → 💔, enters the extraction tail
       question → answered in words; a refusal is handed to Claude instead
@@ -121,8 +137,13 @@ Telegram message
 ```
 
 Asking no longer needs a command — the classifier takes a plain question, and
-`/q` survives only as the override for when it gets one wrong. Either way the
-question arm is the same, and it is still the only path that parses anything:
+`/q` survives only as the override for when it gets one wrong. `presumed`
+answers `question` for `/q` as well, so the two arms agree about what a `/q`
+message is; nothing in the code enforces that agreement, and `verdict_for`
+genuinely never runs for a `/q`. If you are ever debugging «why was my `/q`
+message not classified» — it was not, and it was never meant to be. From
+`routing.py` on the question arm is one path either way, and it is still the
+only path that parses anything:
 
 ```
 a question, with or without /q
@@ -179,12 +200,30 @@ read, classify, write — and an edit advances the receipt along `RECEIPT_CYCLE`
 point of no return: a message already handed to Claude is still overwritten,
 but nothing downstream reacts to it.
 
+**`telegrind/bot/handlers/query.py`** — `/q`, and nothing else. The only
+handler registered ahead of the filterless catch-all, and the only place a
+message's *first* verdict is set without asking `classify`: it stores the
+message as a `question` and then calls the same `route` a classified question
+reaches, so there is no second answering path in here. It clears `receipt_emoji` rather
+than setting one, because a question carries no facts and 💔 would promise a
+delete gesture that does nothing. `handlers` is imported inside the function
+body, not at module scope — importing it here would register the catch-all
+before this file's own decorator ran, and `ask` would be dead code behind it.
+
 **`telegrind/classify.py`** — what a message is, and therefore what happens to
-it. Four verdicts (`fact`, `question`, `talk`, `system`) and exactly one place
-that decides between them: the slash rule lives in `presumed` rather than in an
-aiogram filter, because two rules that can disagree about whether a message is
-a command is a bug found in production. `presumed` also answers `fact` for a
-message with nothing readable, so no call is spent per sticker. Every failure
+it. Four verdicts (`fact`, `question`, `talk`, `system`), and this is the only
+place one is *derived* from a message: the slash rule lives in `presumed`
+rather than in an aiogram filter, because two rules that can disagree about
+whether a message is a command is a bug found in production, and the
+`COMMAND_LIKE` filter that was that second rule is gone. Two verdicts still
+reach a row without passing through here, and both are assertions rather than
+derivations: `/q`'s own handler writes `question` — `presumed` answers
+`question` for `/q` too, so they say the same thing, and keeping them saying
+it is an obligation on both rather than something the code checks — and
+`record_edited` re-writes the *previous* verdict unchanged when the message
+was already handed to Claude, because nothing downstream may react to that
+edit. `presumed` also answers `fact` for a message with
+nothing readable, so no call is spent per sticker. Every failure
 shape — a raising call, an unknown verdict, a missing key, a response that is
 not a dict — degrades to `fact` explicitly; `verdict_for` never raises,
 because the invariant that nothing written is lost must not come to depend on
@@ -417,7 +456,10 @@ re-entrant.** A read taken "outside a transaction" and then followed by
 Session*. The rule that follows from it, and the one to apply rather than count
 the scars: **every read wraps in its own `session.begin()`**, including a read
 whose only purpose is to fetch a row for a later write — `meta_wiring.py`
-states it once for the whole file, `query.py` and `record_edited` at the site.
+states it once for the whole file and again at `speak`, and `routing.py`'s
+question arm and `handlers.record_edited` state it at the site. Not
+`bot/handlers/query.py`: the comment lived there until the answering path
+moved into `routing.py` and `answering.py`, and it moved with it.
 The suite cannot catch it: this repo's hand-written fake sessions yield from
 `begin()` unconditionally, so only reading the code or running against a real
 `Session` finds it.
@@ -457,9 +499,12 @@ looks like noise.
 default.** The bot-wide default is HTML, so an answer carrying a bare `<` — a
 comparison, a currency rendering, a line of code — comes back «can't parse
 entities» and the *whole answer* is lost rather than sent plain. The override
-belongs to text no human wrote: `meta_wiring.speak` and the one call in
-`routing.py` that sends `answer_for`'s prose. Our own fixed strings are
-markup-free and do not want it. The aiogram mechanics are in
+belongs to text no human wrote, and there are exactly two sites:
+`meta_wiring.speak`, and the one call in `routing.py` that sends whatever
+`answer_for` returned. Everything else the bot says keeps the default — with
+one harmless leak, which is that `answer_for` returns `EMPTY_QUESTION`, a
+fixed string of ours, down that same path. Do not widen it further: our own
+strings are markup-free, and the override is what marks a line as untrusted. The aiogram mechanics are in
 `docs/telegram-bot-api.md`.
 
 **The aiogram router is a module-level singleton, so a test asserting
@@ -471,6 +516,18 @@ handler modules from `sys.modules` — **the package too, and first**, or
 `from .handlers import query` resolves off the stale package attribute and
 registers nothing. Prove such a test discriminates by breaking the wiring both
 ways before believing it.
+
+**A test that passes against deliberately broken code is an ordinary outcome,
+not a freak one.** The plan that built the meta layer produced three of them:
+two caught by the implementer who had just written them, one by a reviewer
+afterwards. That is the whole argument for the ritual: revert the fix, run the named test, and watch it fail *for the
+reason you expect*. A test that fails for some other reason (an import error,
+a fake that never reaches the assertion, a fixture whose conditions the bug
+cannot occur under) has not discriminated either, and it will go on passing
+after the fix rots. Two of the three were caught exactly this way and the
+third was not caught at all until someone else read it. It costs a minute per
+test. The router-singleton trap above is one instance; the practice is
+general.
 
 **Bump `PROMPT_VERSION` only when the prompt changed meaning.** It is stamped on
 every extracted fact and is what a later re-extraction pass uses to find facts
