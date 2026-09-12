@@ -140,15 +140,22 @@ a bare bubble means the reply path still swallows the update.
 This is the case the sweep is *for*: one killed turn, and nothing in the chat
 after it. Read 13b before concluding anything from it — on its own it passes
 while the sweep is much narrower than it looks.
-`FAKE_MODE=slow`, send a `talk` message, kill the bot mid-turn. `SELECT
-receipt_emoji FROM message WHERE message_id = <it>;` → `👀`: the marker outlives
-the process, and nothing in a dead worker will ever take it off.
+`FAKE_MODE=slow`. Send one fact («4500 такси»), then **two unrelated `talk`
+messages** — not replies to each other, so the slot keys differ, both turns
+start and both bubbles actually show 👀 (item 5). Kill the bot mid-turn.
+`SELECT message_id, receipt_emoji FROM message ORDER BY id DESC LIMIT 3;` →
+both `👀`: the marker outlives the process, and nothing in a dead worker will
+ever take it off.
 
-Restart. Before polling starts the log must say `released 1 stranded
-hand-over(s): [<it>]`, and the same `SELECT` must now read NULL. **The bubble
-still shows 👀 — that is expected**, the sweep touches the row only. Now edit
-that message: it must be re-classified and handed over again, a new turn must
-answer it, and 👀 must be re-placed by the new turn.
+Two of them because the two halves below need a freshly released row each. The
+first edit hands its message over again, and every later edit of *that* message
+is ignored by design — the point of no return is back.
+
+Restart. Before polling starts the log must say `released 2 stranded
+hand-over(s): [<them>]`, and the same `SELECT` must now read NULL for both.
+**The bubbles still show 👀 — that is expected**, the sweep touches the row
+only. Now edit the first of them: it must be re-classified and handed over
+again, a new turn must answer it, and 👀 must be re-placed by the new turn.
 *Failure:* the edit is ignored and the log says `edit after hand-over`. *Means:*
 either the sweep did not run (it is called from `main.py`, and it swallows every
 exception — check the log for `could not release stranded hand-overs`), or a
@@ -159,12 +166,18 @@ confirm which one it was before touching anything.
 
 The 👀 also has to leave the bubble, not just the column. The sweep cannot
 touch reactions, so after the restart the screen and the row disagree until
-something re-places or clears the receipt — and the edit above is that
-something. Edit the released message into a **question** («сколько я потратил
-сегодня») rather than talk: expect the answer as a reply *and* the 👀 gone.
+something re-places or clears the receipt — and an edit is the only thing that
+can. Talk and fact both re-place something; a question does not, so it is the
+branch to walk. Edit **the second** released message — the one no edit has
+touched yet — into «сколько я потратил сегодня»: expect the answer as a reply
+*and* the 👀 gone.
 *Failure:* the answer arrives under a 👀 nothing is behind. *Means:* the
 unconditional clear in `record_edited` is not firing, and the receipt is
 claiming a turn that does not exist.
+*Not a failure:* 👀 comes back and Claude answers instead. That is a question
+the closed aggregate set refused, so `route` fell through to the hand-off
+(item 19) — which is why the fact goes in first, to give the question
+something to add up.
 
 Then the other direction, which is the one that must not be wrong. Let a `talk`
 message be answered normally, restart, and check that message's
