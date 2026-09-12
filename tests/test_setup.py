@@ -199,16 +199,31 @@ async def test_the_sweep_does_not_run_when_the_layer_is_off(monkeypatch: Any) ->
 
 
 async def test_the_sweep_needs_a_sessionmaker_like_everything_else(
-    monkeypatch: Any,
+    monkeypatch: Any, caplog: Any
 ) -> None:
     """The second way to be off, and it reaches here too: `attach_meta`
     returns None without one, so no worker exists to have stranded
-    anything."""
+    anything.
+
+    The quiet is the assertion. Returning 0 is *not* what distinguishes the
+    guard from its absence — without it the sweep calls `None()`, the
+    catch-all below it turns the TypeError into a logged traceback, and the
+    function returns 0 anyway. So a test that reads only the return value
+    passes with the guard deleted, and a supported off state would print an
+    ERROR on every boot for the life of that mistake. What the guard buys
+    is a bot that says nothing, so that is what is measured: no record at
+    ERROR, and the sweep never reached the database. There is nothing to
+    observe «was not called» *on* here — the sessionmaker is literally
+    `None` — which is exactly why the log is the only witness.
+    """
     released = Released()
     monkeypatch.setenv("CLAUDE_ADMIN_CHAT_IDS", "7")
     monkeypatch.setattr(setup.meta_wiring, "release_hand_overs", released)
 
-    assert await setup.release_stranded_turns(None) == 0
+    with caplog.at_level(logging.ERROR, logger="telegrind.bot.setup"):
+        assert await setup.release_stranded_turns(None) == 0
+
+    assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
     assert released.calls == []
 
 
@@ -230,3 +245,30 @@ async def test_a_failed_sweep_does_not_keep_the_bot_from_booting(
         assert await setup.release_stranded_turns(Sessions()) == 0
 
     assert "connection refused" in caplog.text
+
+
+async def test_a_malformed_allowlist_does_not_take_the_bot_down_with_it(
+    monkeypatch: Any, caplog: Any
+) -> None:
+    """«It never raises» is the promise this function is called on, and
+    `main.py` restates it at the call site — two places, so it has to be
+    literally true rather than true of the query alone.
+
+    `MetaConfig.from_env` calls `int(part)` per token, so a fat-fingered
+    `CLAUDE_ADMIN_CHAT_IDS` is a `ValueError`. Nothing reaches here with one
+    today — `setup_dispatcher` → `attach_meta` reads the same variable a few
+    lines earlier and goes down first — so this is about the sentence, not
+    about a live failure mode: a promise that holds only because something
+    upstream crashes first is one that breaks the day the order changes.
+    """
+    released = Released()
+    monkeypatch.setenv("CLAUDE_ADMIN_CHAT_IDS", "семь")
+    monkeypatch.setattr(setup.meta_wiring, "release_hand_overs", released)
+    sessions = Sessions()
+
+    with caplog.at_level(logging.ERROR, logger="telegrind.bot.setup"):
+        assert await setup.release_stranded_turns(sessions) == 0
+
+    assert sessions.opened == 0
+    assert released.calls == []
+    assert "семь" in caplog.text

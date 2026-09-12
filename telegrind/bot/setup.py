@@ -77,15 +77,32 @@ async def release_stranded_turns(
     environment a few lines later in the same boot. Neither arm is logged
     again for that reason — `attach_meta` has already said which one it is.
 
-    It never raises. A bot that will not boot because a cleanup query
-    failed is worse than the bug the cleanup exists to fix: recording
-    messages is the invariant, and everything here is recovery.
-    """
-    cfg = MetaConfig.from_env()
-    if cfg is None or async_session is None:
-        return 0
+    It is **process-local**, and that is an assumption rather than a
+    guarantee. «No worker can own this» is true of *this* process only:
+    a second instance polling the same database — an overlapping deploy,
+    or a dev bot pointed at prod — sweeps rows a live worker in the other
+    instance is holding, and that worker then answers a message the sweep
+    has already re-opened to editing. The harm ceiling is the same single
+    duplicate answer as the outage case below, so nothing here defends
+    against it; but two bots on one database is not a configuration this
+    function is safe under, and nothing else said so.
 
+    It never raises, and `MetaConfig.from_env()` is inside the guard for
+    that reason: it calls `int(part)` per token, so a fat-fingered
+    `CLAUDE_ADMIN_CHAT_IDS` is a `ValueError` and this promise is restated
+    at the call site in `main.py` — two places, so it has to be true of the
+    function rather than of the query alone. Nothing reaches it with one
+    today (`attach_meta` reads the same variable a few lines earlier and
+    goes down first), which is exactly the kind of accident that stops
+    being true when the order changes. A bot that will not boot because a
+    cleanup query failed is worse than the bug the cleanup exists to fix:
+    recording messages is the invariant, and everything here is recovery.
+    """
     try:
+        cfg = MetaConfig.from_env()
+        if cfg is None or async_session is None:
+            return 0
+
         async with async_session() as session:
             released = await meta_wiring.release_hand_overs(session, cfg.admin_chat_ids)
     except Exception:  # recovery, and the bot boots without it
