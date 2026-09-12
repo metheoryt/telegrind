@@ -4,9 +4,11 @@ There is no echo on the fact path: the confirmation that the bot understood
 is 💔, and that reaction is also the delete affordance. What the classifier
 decides is what happens next — see bot/routing.py.
 
-The row is committed *before* the classifier runs, and the classifier's
-failure mode is `fact`. Nothing written is ever lost, and that must not come
-to depend on a model call.
+The row is committed *before* the classifier runs — two transactions, with
+the model call between them and inside neither. Nothing written is ever
+lost, and that must not come to depend on a model call: aiogram advances
+the polling offset as it dispatches, so an update lost mid-handler is never
+redelivered. Do not fold the two back into one.
 
 There is no COMMAND_LIKE filter any more. The slash rule lives in
 `classify.presumed`, because two rules that can disagree about whether a
@@ -51,17 +53,34 @@ async def record(
     the user sent, so it is stored. `message_values` already handles a
     caption and a missing text, and `classify.presumed` gives a message
     with nothing readable a `fact` verdict without spending a call.
+
+    Written first, classified second. aiogram advances the polling offset
+    as it dispatches and runs handlers fire-and-forget, so a restart or a
+    hung Anthropic call inside this function loses an update that is never
+    redelivered — and the classifier is the only part of it that can hang.
     """
-    verdict = await classify.verdict_for(message.text or message.caption)
+    # The first sighting is a fact, which is what shipped before the
+    # classifier existed. Committing that is the invariant; everything
+    # after it is refinement.
     async with session.begin():
         row, _ = await store.upsert_message(
-            session,
-            chat,
-            message,
-            extractable=verdict == VERDICT_FACT,
-            verdict=verdict,
+            session, chat, message, extractable=True, verdict=VERDICT_FACT
         )
-        row.receipt_emoji = RECEIPT_EMOJI if verdict == VERDICT_FACT else None
+        row.receipt_emoji = RECEIPT_EMOJI
+
+    verdict = await classify.verdict_for(message.text or message.caption)
+
+    # A second, short transaction, and the model call is outside both. Die
+    # between them and the row is a stored fact in the extraction tail —
+    # the pre-classifier behaviour, which is the correct way to degrade.
+    if verdict != VERDICT_FACT:
+        async with session.begin():
+            row.verdict = verdict
+            row.extractable = False
+            # No receipt is placed until `route` runs, so clearing the
+            # column here is not a promise being withdrawn — it is the
+            # column catching up with a verdict that earns no receipt.
+            row.receipt_emoji = None
 
     await route(message, row, chat, config, session, bot, hand_over=HAND_OVER)
 
@@ -98,11 +117,20 @@ async def record_edited(
         row, created = await store.upsert_message(
             session, chat, edited_message, extractable=parses, verdict=verdict
         )
-        emoji = RECEIPT_EMOJI if created else next_receipt(row.receipt_emoji)
+        # Only a fact carries a receipt, on the edit path as on the ingest
+        # one. Advancing the cycle here regardless would paint ❤‍🔥 on an
+        # edited question — a bubble promising that tapping it deletes the
+        # facts on the message, on a message that has none. Re-classifying
+        # the edit is still Task 6's; this only stops the receipt claiming
+        # something that did not happen.
+        emoji: str | None = None
+        if verdict == VERDICT_FACT:
+            emoji = RECEIPT_EMOJI if created else next_receipt(row.receipt_emoji)
         row.receipt_emoji = emoji
 
         if was_extracted and parses:
             report = await extract.run_for(session, chat, config, row)
             log.info("re-extracted message %s: %s fact(s)", row.id, report.facts)
 
-    await acknowledge(bot, edited_message.chat.id, edited_message.message_id, emoji)
+    if emoji is not None:
+        await acknowledge(bot, edited_message.chat.id, edited_message.message_id, emoji)

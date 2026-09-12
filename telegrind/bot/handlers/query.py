@@ -34,9 +34,12 @@ async def ask(
     gesture that does nothing. `receipt_emoji` is cleared for the same
     reason — an edit reads it to advance the cycle.
     """
-    # Imported here, not at module scope: `handlers/__init__` imports this
-    # module first so /q wins the registration race, and pulling `handlers`
-    # in from the top of this file would reverse that order.
+    # Imported here, not at module scope. `setup_dispatcher` imports this
+    # module first so that `ask` registers ahead of the filterless
+    # catch-all; a module-scope import of `handlers` would run that module
+    # — registering `record` — before this file's own decorator executes,
+    # and `ask` would be dead code behind it. Reading HAND_OVER at call
+    # time is also what lets Task 9 set it after import.
     from telegrind.bot.handlers import handlers
 
     async with session.begin():

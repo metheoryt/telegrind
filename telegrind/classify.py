@@ -1,10 +1,12 @@
 """What a message is, and therefore what happens to it.
 
-One call, and it happens *after* the row is committed: nothing written is
-ever lost, and that invariant must not come to depend on a model call
-succeeding. A failure therefore defaults to `fact` — 💔 goes on, the
-message enters the tail, and the behaviour is exactly what shipped before
-the classifier existed.
+One call, and it happens *after* the row is committed and *outside* any
+transaction: nothing written is ever lost, and that invariant must not come
+to depend on a model call succeeding — or returning. `record` therefore
+commits the row as a `fact` first and refines it in a second transaction
+once this answers; see bot/handlers/handlers.py. A failure here defaults to
+`fact` for the same reason — 💔 goes on, the message enters the tail, and
+the behaviour is exactly what shipped before the classifier existed.
 
 This is the only place the verdict is decided. The slash rule lives here
 rather than in an aiogram filter because two rules that can disagree is a

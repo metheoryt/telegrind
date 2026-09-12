@@ -12,13 +12,22 @@ def setup_dispatcher() -> Dispatcher:
     update type — aiogram derives allowed_updates from the handlers that
     exist. So this is the wiring, not a side effect of it.
 
-    Order matters only *within* an observer, and `handlers` ends in a
-    filterless catch-all message handler — so `query` must be imported
-    first or /q is swallowed and stored as an ordinary message. Three
-    statements rather than one `from .handlers import handlers, query`:
-    ruff's isort sorts the names inside a single `from` and would put
-    `handlers` in front. `reactions` is a different observer and does not
-    compete.
+    Two hazards live in these four lines, and `tests/test_setup.py` pins
+    both.
+
+    Order matters *within* an observer, and `handlers` ends in a filterless
+    catch-all — so `query` must come first or `ask` never matches. The user
+    would still get an answer (`classify.presumed` reads `/q` as a question
+    whichever handler stores it), so nothing would look broken: the
+    explicit override, the one that exists for when the classifier is
+    wrong, would simply be dead code. Three statements rather than one
+    `from .handlers import handlers, query`: ruff's isort sorts the names
+    inside a single `from` and would put `handlers` in front.
+
+    And `reactions` is not optional despite competing with nothing. aiogram
+    derives allowed_updates from the handlers that exist, so dropping that
+    import unsubscribes `message_reaction` — which is the delete gesture,
+    the only way the user can delete anything.
 
     There is no ChatActionMiddleware any more: it went with the echo, and
     nothing types.

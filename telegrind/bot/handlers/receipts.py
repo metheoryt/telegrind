@@ -2,8 +2,9 @@
 
 Split out of `handlers.py` because it registers nothing. Importing a
 handler module is what registers its handlers, so anything that needs
-`RECEIPT_EMOJI` — `query.py` does — would otherwise pull the whole
-catch-all module in ahead of itself and lose the registration race.
+`RECEIPT_EMOJI` — `routing.py` does, as the default of `route`'s `receipt`
+keyword — would otherwise pull the whole catch-all module in with it and
+register `record` at a moment of its own choosing.
 """
 
 import logging

@@ -16,11 +16,16 @@ async def main() -> None:
     # expire_on_commit=False is load-bearing, not tidiness. `record` commits
     # the message row and then hands it to `bot/routing.py`, which reads
     # `row.verdict` — and `chat.id` off a Chat the middleware committed
-    # earlier. Under the default True those reads emit a lazy SELECT, which
-    # autobegins a transaction nothing closes, and the question arm's next
-    # `session.begin()` raises «a transaction is already begun». No test can
-    # catch its removal: the suite's hand-written fake sessions have no
-    # transaction state at all, so it would go green and fail on the box.
+    # earlier. Under the default True, commit expires those attributes and
+    # the next read has to refresh them, which is IO on an object nobody is
+    # in a transaction for. The likeliest traceback is
+    # `sqlalchemy.exc.MissingGreenlet` at the attribute access — implicit IO
+    # with no greenlet on the stack — rather than anything mentioning
+    # transactions; if it does get its SELECT away it autobegins one nothing
+    # closes, and the question arm's next `session.begin()` raises «a
+    # transaction is already begun». Either way the fix is this argument.
+    # No test can catch its removal: the suite's hand-written fake sessions
+    # have no transaction state at all, so it goes green and fails on the box.
     async_session = async_sessionmaker(engine, expire_on_commit=False)
 
     token = os.environ["BOT_TOKEN"]

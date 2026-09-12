@@ -237,15 +237,30 @@ async def test_editing_a_command_leaves_it_out_of_the_extractor(
 
 class NewMessageSession:
     """Enough session for `record`: no existing row, so upsert_message
-    always inserts."""
+    always inserts.
+
+    Unlike the other fakes this one keeps a transaction depth. A real
+    session raises «a transaction is already begun» on a nested
+    `session.begin()`, and a fake with no transaction state at all is how
+    that bug ships green — so this one refuses to nest, and `commits`
+    counts how many transactions the handler actually opened.
+    """
 
     def __init__(self) -> None:
         self.added: list[LoggedMessage] = []
+        self.depth = 0
+        self.commits = 0
 
     def begin(self) -> Any:
         @contextlib.asynccontextmanager
         async def ctx() -> Any:
-            yield
+            assert self.depth == 0, "a transaction is already begun"
+            self.depth += 1
+            try:
+                yield
+            finally:
+                self.depth -= 1
+                self.commits += 1
 
         return ctx()
 
@@ -315,6 +330,57 @@ async def test_a_plain_message_still_gets_the_fact_verdict(monkeypatch: Any) -> 
     assert bot.reactions == [(7, 4821, [RECEIPT_EMOJI])]
 
 
+async def test_the_row_is_committed_before_the_classifier_runs(
+    monkeypatch: Any,
+) -> None:
+    """The plan's first invariant, and the fakes can almost see it.
+
+    aiogram advances the polling offset as it dispatches and runs handlers
+    fire-and-forget, so a restart or a hung Anthropic call inside `record`
+    loses an update that is never redelivered. The classifier is the only
+    part of `record` that can hang, so the row has to be committed before
+    it — and the row it commits has to be a plain `fact`, because that is
+    what the message stays if the process dies right here.
+
+    The `depth == 0` assertion is the other half of the same constraint: a
+    write transaction must not be held open across a model call.
+    """
+    seen: list[tuple[int, str, bool, int]] = []
+    session = NewMessageSession()
+
+    async def classifier(*args: Any, **kwargs: Any) -> str:
+        row = session.added[0]
+        seen.append((len(session.added), row.verdict, row.extractable, session.depth))
+        return VERDICT_TALK
+
+    monkeypatch.setattr(handlers.classify, "verdict_for", classifier)
+
+    await handlers.record(message(), Chat(id=1, chat_id=7), CFG, session, FakeBot())
+
+    # One row, already a fact, already out of any transaction.
+    assert seen == [(1, VERDICT_FACT, True, 0)]
+    # And only then refined, in a second transaction of its own.
+    assert session.added[0].verdict == VERDICT_TALK
+    assert session.commits == 2
+
+
+async def test_a_message_the_classifier_leaves_alone_costs_one_transaction(
+    monkeypatch: Any,
+) -> None:
+    """A fact is already what the first transaction wrote, so there is
+    nothing to refine and no second round trip."""
+
+    async def a_fact(*args: Any, **kwargs: Any) -> str:
+        return VERDICT_FACT
+
+    monkeypatch.setattr(handlers.classify, "verdict_for", a_fact)
+
+    session = NewMessageSession()
+    await handlers.record(message(), Chat(id=1, chat_id=7), CFG, session, FakeBot())
+
+    assert session.commits == 1
+
+
 async def test_a_question_gets_no_receipt(monkeypatch: Any) -> None:
     async def question(*args: Any, **kwargs: Any) -> str:
         return VERDICT_QUESTION
@@ -378,6 +444,55 @@ async def test_editing_a_q_row_does_not_flip_its_verdict(monkeypatch: Any) -> No
     )
 
     assert existing.verdict == VERDICT_QUESTION
+
+
+async def test_editing_a_question_does_not_paint_a_receipt_on_it(
+    monkeypatch: Any,
+) -> None:
+    """Ingest stopped putting 💔 on a question; the edit path has to agree.
+
+    Otherwise editing a question advances a cycle it was never in and lands
+    ❤‍🔥 on a row with no facts — a bubble promising that tapping it deletes
+    them. The receipt must never claim something that did not happen.
+    """
+
+    async def fake_run_for(*args: object, **kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(facts=0, failed=0)
+
+    monkeypatch.setattr(extract, "run_for", fake_run_for)
+
+    existing = stored(extracted=False, verdict=VERDICT_QUESTION)
+    existing.receipt_emoji = None
+    edited = edit()
+    edited.text = "сколько я потратил на такси"
+    bot = FakeBot()
+
+    await handlers.record_edited(
+        edited, Chat(id=1, chat_id=7), EditSession(existing), CFG, bot
+    )
+
+    assert bot.reactions == []
+    assert existing.receipt_emoji is None
+
+
+async def test_editing_a_fact_still_advances_its_receipt(monkeypatch: Any) -> None:
+    """The guard is on the verdict, not on edits — an edited fact must
+    still look different, which is the only signal the bot saw the edit."""
+
+    async def fake_run_for(*args: object, **kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(facts=1, failed=0)
+
+    monkeypatch.setattr(extract, "run_for", fake_run_for)
+
+    existing = stored(extracted=True)
+    bot = FakeBot()
+
+    await handlers.record_edited(
+        edit(), Chat(id=1, chat_id=7), EditSession(existing), CFG, bot
+    )
+
+    assert existing.receipt_emoji == next_receipt(RECEIPT_EMOJI)
+    assert bot.reactions == [(7, 10, [next_receipt(RECEIPT_EMOJI)])]
 
 
 async def test_editing_a_message_with_no_prior_row_keeps_the_fact_default(
