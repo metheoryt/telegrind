@@ -514,6 +514,22 @@ the CLI print its own version and the prompt never reached the model; with it,
 the same argv parsed as text. It is one list element in `runtime.argv` and it
 looks like noise.
 
+**`CLAUDE_CWD` unset points that subprocess at the checkout you are working
+in.** `MetaConfig.from_env` falls back to `Path.cwd()`, so a bot started the
+documented way — `uv run python main.py` from the repo root — runs full Claude
+Code under `bypassPermissions` in the live tree, uncommitted work and all, on
+the first `talk` message. The spec is emphatic that Claude never edits the live
+tree and says it about *production*; dev is where this runs first, and nothing
+carried the rule across. **Point `CLAUDE_CWD` at a scratch worktree before the
+first talk message** (`git worktree add /tmp/claude-sandbox HEAD`), which is
+what `.env.dist` and the dev walk's step 0.1 both say. There is deliberately no
+guard that refuses to start: the value has a legitimate use and a bot that will
+not boot is a worse failure than one that needs a line of config.
+
+**The allowlist is on `chat_id`, not `from_user.id`.** In a private chat the
+two are the same number, which is why it has never mattered — but an admin id
+that names a *group* puts every member of that group at the `claude -p` prompt.
+
 **Model-authored text is sent with `parse_mode=None`, everything else keeps the
 default.** The bot-wide default is HTML, so an answer carrying a bare `<` — a
 comparison, a currency rendering, a line of code — comes back «can't parse
