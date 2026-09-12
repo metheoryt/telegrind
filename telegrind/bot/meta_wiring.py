@@ -213,8 +213,8 @@ async def release_hand_overs(
     price of a predicate that will not read the reply linkage. Erring this
     way is deliberate: the other direction releases a message that *was*
     answered, and the next edit then hands it over a second time. Making
-    the shield narrower means making it exact, which is the reply linkage
-    the dev walk's item 1 is what retires.
+    the shield narrower means making it exact, and the exact one is the
+    reply linkage the dev walk's item 1 retires.
 
     Scoped to the allowlist, because the layer cleans up after itself and
     after nothing else. The narrowing is SQL; the decision is Python, and
@@ -222,10 +222,12 @@ async def release_hand_overs(
     a fake session cannot evaluate SQL, so a decision left in the query
     would be a decision no test can see. The price of keeping the predicate
     in one place is that the candidate read is every message ever handed to
-    Claude in those chats: a successful turn keeps 👀 for good, so the set
-    only grows. It is one read, once, at boot, on a single-user bot. If it
-    ever stops being cheap, narrow it with `load_only` — do not move the
-    decision into the query.
+    Claude in those chats — a successful turn keeps 👀 for good, so the set
+    only grows — and the second read is every message in those chats, four
+    scalars each. Both are narrowed by columns rather than by rows, which
+    is the only narrowing available that costs the decision nothing: a
+    `load_only` above, and a JSON extract done server-side below. **Narrow
+    the bytes; never move the decision into the query.**
 
     One way it can still be wrong in the dangerous direction, and it takes
     two failures in one outage: `outbound.say` sends before it stores, so
