@@ -224,10 +224,19 @@ async def release_hand_overs(
     in one place is that the candidate read is every message ever handed to
     Claude in those chats — a successful turn keeps 👀 for good, so the set
     only grows — and the second read is every message in those chats, four
-    scalars each. Both are narrowed by columns rather than by rows, which
-    is the only narrowing available that costs the decision nothing: a
+    scalars each. Both are narrowed by columns rather than by rows: a
     `load_only` above, and a JSON extract done server-side below. **Narrow
-    the bytes; never move the decision into the query.**
+    the bytes; never move the decision into the query.** Column narrowing
+    is not the *only* decision-preserving narrowing available — the second
+    read could also take `id > min(candidate ids)`, which changes no
+    outcome either way — it is just the one worth its line today.
+
+    `load_only` leaves `verdict`, `raw`, `text` and `tg_date` deferred on
+    the candidate rows, and that is a trap with a green suite behind it:
+    reading a deferred attribute off an instance still attached to an
+    `AsyncSession` raises `MissingGreenlet`, while the fakes hand back
+    detached objects that will happily load anything. Adding one `row.text`
+    to the loop below is a crash at boot that every test passes.
 
     One way it can still be wrong in the dangerous direction, and it takes
     two failures in one outage: `outbound.say` sends before it stores, so

@@ -141,8 +141,11 @@ This is the case the sweep is *for*: one killed turn, and nothing in the chat
 after it. Read 13b before concluding anything from it — on its own it passes
 while the sweep is much narrower than it looks.
 `FAKE_MODE=slow`. Send one fact («4500 такси»), then **two unrelated `talk`
-messages** — not replies to each other, so the slot keys differ, both turns
-start and both bubbles actually show 👀 (item 5). Kill the bot mid-turn.
+messages** — «что ты думаешь про мои траты» and «а вообще как у меня дела» —
+not replies to each other, so the slot keys differ, both turns start and both
+bubbles actually show 👀 (item 5). Both must classify as `talk`; if either
+comes back a fact (💔 instead of 👀) reword it and retry, because a message
+that was never handed over strands nothing. Kill the bot mid-turn.
 `SELECT message_id, receipt_emoji FROM message ORDER BY id DESC LIMIT 3;` →
 both `👀`: the marker outlives the process, and nothing in a dead worker will
 ever take it off.
@@ -151,7 +154,12 @@ Two of them because the two halves below need a freshly released row each. The
 first edit hands its message over again, and every later edit of *that* message
 is ignored by design — the point of no return is back.
 
-Restart. Before polling starts the log must say `released 2 stranded
+Restart — and **restart with `FAKE_MODE` unset**, or with a short
+`CLAUDE_TURN_TIMEOUT`. Everything below this line waits on a turn that finishes,
+and `slow` sleeps 300s against a 600s default (`meta/config.py`), so on a
+`slow` restart the new turn simply never comes back and the two halves cannot
+be observed at all.
+Before polling starts the log must say `released 2 stranded
 hand-over(s): [<them>]`, and the same `SELECT` must now read NULL for both.
 **The bubbles still show 👀 — that is expected**, the sweep touches the row
 only. Now edit the first of them: it must be re-classified and handed over
@@ -195,9 +203,13 @@ retires it. `SELECT raw->'from_user'->>'is_bot' FROM message WHERE verdict =
 sleeps only when the prompt contains `ЖДИ`, so one turn can finish while
 another hangs.
 
-Send M1 «привет как дела» (answers after 5s), then immediately M2 «ЖДИ» as an
-**unrelated thread** — not a reply, so the slot key differs and the two run in
-parallel (item 5). Both get 👀. At ~5s M1 is answered, and `outbound.say` stores
+Send M1 «привет как дела» (answers after 5s), then immediately M2
+«ЖДИ немного, я тут думаю вслух» as an **unrelated thread** — not a reply, so
+the slot key differs and the two run in parallel (item 5). The marker has to
+ride on an unambiguously conversational sentence: the classifier is a *real*
+model call in Phase 1 (only `CLAUDE_BIN` is faked), and a bare one-word
+imperative can come back `fact` — then there is no hand-over, no 👀, and 13b
+silently tests nothing while appearing to pass. Both get 👀. At ~5s M1 is answered, and `outbound.say` stores
 the bot's own answer as a row of its own. Kill the bot while M2 is still
 hanging.
 
