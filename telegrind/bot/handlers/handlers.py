@@ -23,12 +23,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from telegrind import classify, extract, store
 from telegrind.bot.handlers.receipts import (
-    RECEIPT_CYCLE as RECEIPT_CYCLE,
+    HANDED_OVER,
+    RECEIPT_EMOJI,
+    clear_receipt,
+    next_receipt,
 )
 from telegrind.bot.handlers.receipts import (
-    RECEIPT_EMOJI,
-    acknowledge,
-    next_receipt,
+    RECEIPT_CYCLE as RECEIPT_CYCLE,
 )
 from telegrind.bot.router import router
 from telegrind.bot.routing import HandOver, route
@@ -93,44 +94,96 @@ async def record_edited(
     config: ChatConfig,
     bot: Bot,
 ) -> None:
-    """Overwrite the text, and re-extract if there was anything to redo.
+    """Overwrite the text, re-derive the verdict, and act on it.
 
-    The check has to happen *before* upsert_message, which clears
-    extracted_at by design: after it, «was this already parsed» has no
-    answer left.
+    An edit can change the answer: «взял 3000» corrected to «потратил 3000
+    на такси» is exactly the case where a fact moves from one kind to
+    another, and correcting data or a typo is what edits are actually used
+    for. So the verdict is re-derived on the same principle as extracted_at.
+
+    👀 is the point of no return. A message already handed to Claude is
+    still overwritten — nothing written is ever lost — but nothing
+    downstream reacts to it: no re-send, no new turn, and no
+    re-classification either. The correct behaviour would be to rewind the
+    session, which is transcript surgery on a .jsonl we do not own, for a
+    gesture whose workaround is saying the correction out loud.
+
+    The extracted-or-not check has to happen *before* upsert_message, which
+    clears extracted_at by design — and inside a transaction of its own, or
+    the next `session.begin()` raises on the autobegun one.
     """
+    # Three blocks, and the boundaries are load-bearing. A bare read
+    # autobegins, so `previous` cannot be fetched outside a transaction or
+    # the `session.begin()` below raises «a transaction is already begun» —
+    # the same trap query.py documents. And the classifier call must sit
+    # between two transactions, never inside one.
     async with session.begin():
         previous = await store.get_message(session, chat.id, edited_message.message_id)
+        # Read off the row, not off Telegram: a meta layer that committed
+        # the hand-over but failed to place the reaction still holds the
+        # point of no return.
+        handed_over = previous is not None and previous.receipt_emoji == HANDED_OVER
         was_extracted = previous is not None and previous.extracted_at is not None
+        was_fact = previous is not None and previous.verdict == VERDICT_FACT
+        previous_verdict = previous.verdict if previous is not None else VERDICT_FACT
 
-        # Derived, not hardcoded: `record` classifies but this observer does
-        # not, and upsert_message assigns the flag unconditionally — so
-        # `True` here would turn a stored /q back into extractor input the
-        # first time the user fixes a typo in their own question.
-        parses = not (edited_message.text or "").startswith("/")
-        # Preserved, not re-derived: reclassifying on edit is Task 6's job,
-        # not this one's. Deriving a verdict from the `/` prefix here would
-        # be wrong regardless — it would flip an edited /q row from
-        # VERDICT_QUESTION to VERDICT_FACT/SYSTEM. A row with no previous
-        # sighting keeps upsert_message's first-sighting default.
-        verdict = previous.verdict if previous is not None else VERDICT_FACT
-        row, created = await store.upsert_message(
-            session, chat, edited_message, extractable=parses, verdict=verdict
+    if handed_over:
+        # Returning here is also what keeps the receipt: upsert_message
+        # never touches receipt_emoji, and the clearing below — which a
+        # non-fact verdict would otherwise trigger — is never reached. 👀
+        # survives its own edit.
+        async with session.begin():
+            await store.upsert_message(
+                session,
+                chat,
+                edited_message,
+                extractable=False,
+                verdict=previous_verdict,
+            )
+        log.info("edit after hand-over on %s, ignored", edited_message.message_id)
+        return
+
+    # `text or caption`, the same expression `record` and `route` read: an
+    # edited photo caption has no `.text`, and reading only that would hand
+    # the classifier None — which `presumed` answers `fact`, putting an
+    # edited question into the extraction tail and leaving it unanswered.
+    verdict = await classify.verdict_for(edited_message.text or edited_message.caption)
+
+    async with session.begin():
+        row, _ = await store.upsert_message(
+            session,
+            chat,
+            edited_message,
+            extractable=verdict == VERDICT_FACT,
+            verdict=verdict,
         )
-        # Only a fact carries a receipt, on the edit path as on the ingest
-        # one. Advancing the cycle here regardless would paint ❤‍🔥 on an
-        # edited question — a bubble promising that tapping it deletes the
-        # facts on the message, on a message that has none. Re-classifying
-        # the edit is still Task 6's; this only stops the receipt claiming
-        # something that did not happen.
-        emoji: str | None = None
         if verdict == VERDICT_FACT:
-            emoji = RECEIPT_EMOJI if created else next_receipt(row.receipt_emoji)
+            # A first sighting as a fact gets the default; a message that
+            # was already one gets the next emoji along, and that change is
+            # the only thing telling the user the bot saw the edit.
+            emoji = next_receipt(row.receipt_emoji) if was_fact else RECEIPT_EMOJI
+        else:
+            emoji = None
         row.receipt_emoji = emoji
 
-        if was_extracted and parses:
+        if was_extracted and verdict == VERDICT_FACT:
             report = await extract.run_for(session, chat, config, row)
             log.info("re-extracted message %s: %s fact(s)", row.id, report.facts)
 
-    if emoji is not None:
-        await acknowledge(bot, edited_message.chat.id, edited_message.message_id, emoji)
+    if emoji is None and was_fact:
+        # The receipt promised a delete gesture the message no longer has.
+        # Cleared before `route`, never after: on a fact that became talk
+        # the sequence is 💔 → bare → 👀, and the other order would wipe a
+        # hand-over receipt the meta layer had just placed.
+        await clear_receipt(bot, chat.chat_id, edited_message.message_id)
+
+    await route(
+        edited_message,
+        row,
+        chat,
+        config,
+        session,
+        bot,
+        hand_over=HAND_OVER,
+        receipt=emoji or RECEIPT_EMOJI,
+    )

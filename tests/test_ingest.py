@@ -8,9 +8,9 @@ from telegrind.bot.handlers import handlers
 from telegrind.bot.handlers.handlers import (
     RECEIPT_CYCLE,
     RECEIPT_EMOJI,
-    acknowledge,
     next_receipt,
 )
+from telegrind.bot.handlers.receipts import HANDED_OVER, acknowledge
 from telegrind.config import ChatConfig
 from telegrind.models import (
     KIND_TEXT,
@@ -160,9 +160,21 @@ def edit() -> SimpleNamespace:
     )
 
 
+async def _noop_route(*args: Any, **kwargs: Any) -> None:
+    """`route` is pinned by tests/test_routing.py; here it is in the way."""
+
+
+async def _a_fact(*args: Any, **kwargs: Any) -> str:
+    """A stand-in classifier. Every edit test needs one now that the edit
+    path re-classifies — an unpatched `verdict_for` on text without a
+    leading slash is a live Anthropic call, and conftest loads `.env`."""
+    return VERDICT_FACT
+
+
 async def test_an_edit_of_an_extracted_message_re_extracts_it(
     monkeypatch: Any,
 ) -> None:
+    monkeypatch.setattr(handlers.classify, "verdict_for", _a_fact)
     called: list[int] = []
 
     async def fake_run_for(
@@ -187,6 +199,7 @@ async def test_an_edit_of_an_extracted_message_re_extracts_it(
 async def test_an_edit_of_an_unextracted_message_makes_no_call(
     monkeypatch: Any,
 ) -> None:
+    monkeypatch.setattr(handlers.classify, "verdict_for", _a_fact)
     called: list[int] = []
 
     async def fake_run_for(
@@ -211,6 +224,9 @@ async def test_an_edit_of_an_unextracted_message_makes_no_call(
 async def test_editing_a_command_leaves_it_out_of_the_extractor(
     monkeypatch: Any,
 ) -> None:
+    """`classify.presumed` reads the `/q` without a model call, and the
+    question verdict is what keeps the row out of the tail."""
+    monkeypatch.setattr(handlers, "route", _noop_route)
     called: list[int] = []
 
     async def fake_run_for(
@@ -424,9 +440,16 @@ async def test_talk_is_stored_and_kept_out_of_the_extraction_tail(
 
 
 async def test_editing_a_q_row_does_not_flip_its_verdict(monkeypatch: Any) -> None:
-    """Editing a /q row still starts with '/', so `parses` is False here too
-    — but the verdict must stay VERDICT_QUESTION, not fall back to the
-    fact/system default that a re-derivation would produce."""
+    """The edit re-derives the verdict now rather than preserving it, and it
+    has to land back on VERDICT_QUESTION.
+
+    `classify.presumed` is what makes that true and what makes it free: the
+    edited text still opens with `/q`, so the same rule that gave the row its
+    verdict in the first place gives it again, with no model call. The old
+    fact/system default a naive re-derivation would produce is the failure
+    this pins.
+    """
+    monkeypatch.setattr(handlers, "route", _noop_route)
 
     async def fake_run_for(*args: object, **kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(facts=0, failed=0)
@@ -456,6 +479,12 @@ async def test_editing_a_question_does_not_paint_a_receipt_on_it(
     them. The receipt must never claim something that did not happen.
     """
 
+    async def a_question(*args: Any, **kwargs: Any) -> str:
+        return VERDICT_QUESTION
+
+    monkeypatch.setattr(handlers.classify, "verdict_for", a_question)
+    monkeypatch.setattr(handlers, "route", _noop_route)
+
     async def fake_run_for(*args: object, **kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(facts=0, failed=0)
 
@@ -477,7 +506,14 @@ async def test_editing_a_question_does_not_paint_a_receipt_on_it(
 
 async def test_editing_a_fact_still_advances_its_receipt(monkeypatch: Any) -> None:
     """The guard is on the verdict, not on edits — an edited fact must
-    still look different, which is the only signal the bot saw the edit."""
+    still look different, which is the only signal the bot saw the edit.
+
+    `route` is deliberately the real one here: the advanced emoji reaches
+    Telegram through its `receipt=` keyword, so a handler that computed the
+    right emoji and then let `route` re-place 💔 would pass every other
+    assertion in this file.
+    """
+    monkeypatch.setattr(handlers.classify, "verdict_for", _a_fact)
 
     async def fake_run_for(*args: object, **kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(facts=1, failed=0)
@@ -498,8 +534,9 @@ async def test_editing_a_fact_still_advances_its_receipt(monkeypatch: Any) -> No
 async def test_editing_a_message_with_no_prior_row_keeps_the_fact_default(
     monkeypatch: Any,
 ) -> None:
-    """A row upsert_message has never seen before has no verdict to
-    preserve, so it keeps the ordinary first-sighting default."""
+    """A row upsert_message has never seen before takes whatever the
+    classifier makes of the edited text — here, the ordinary fact."""
+    monkeypatch.setattr(handlers.classify, "verdict_for", _a_fact)
 
     async def fake_run_for(*args: object, **kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(facts=0, failed=0)
@@ -510,3 +547,153 @@ async def test_editing_a_message_with_no_prior_row_keeps_the_fact_default(
     await handlers.record_edited(edit(), Chat(id=1, chat_id=7), session, CFG, FakeBot())
 
     assert session.added[0].verdict == VERDICT_FACT
+
+
+async def test_an_edit_after_the_handover_is_ignored(monkeypatch: Any) -> None:
+    """👀 is the point of no return. The row is still overwritten — nothing
+    written is ever lost — but nothing downstream reacts to it."""
+    called: list[str] = []
+
+    async def loud(*args: Any, **kwargs: Any) -> str:
+        called.append("classified")
+        return VERDICT_FACT
+
+    monkeypatch.setattr(handlers.classify, "verdict_for", loud)
+
+    async def fake_route(*args: Any, **kwargs: Any) -> None:
+        called.append("routed")
+
+    monkeypatch.setattr(handlers, "route", fake_route)
+
+    existing = stored(extracted=False)
+    existing.verdict = VERDICT_TALK
+    existing.receipt_emoji = HANDED_OVER
+
+    await handlers.record_edited(
+        edit(), Chat(id=1, chat_id=7), EditSession(existing), CFG, FakeBot()
+    )
+
+    assert called == []
+    assert existing.text == "5500 такси"
+
+
+async def test_the_handover_receipt_survives_the_edit_that_it_ignores(
+    monkeypatch: Any,
+) -> None:
+    """The marker is the state. Clearing it would make the next edit
+    classifiable again and hand the same message over twice."""
+
+    async def loud(*args: Any, **kwargs: Any) -> str:
+        raise AssertionError("a handed-over message must not be re-classified")
+
+    monkeypatch.setattr(handlers.classify, "verdict_for", loud)
+    monkeypatch.setattr(handlers, "route", _noop_route)
+
+    existing = stored(extracted=False)
+    existing.verdict = VERDICT_TALK
+    existing.receipt_emoji = HANDED_OVER
+    bot = FakeBot()
+
+    await handlers.record_edited(
+        edit(), Chat(id=1, chat_id=7), EditSession(existing), CFG, bot
+    )
+
+    assert existing.receipt_emoji == HANDED_OVER
+    assert existing.verdict == VERDICT_TALK
+    assert bot.reactions == []
+
+
+async def test_an_edit_that_turns_a_fact_into_talk_clears_the_receipt(
+    monkeypatch: Any,
+) -> None:
+    async def talk(*args: Any, **kwargs: Any) -> str:
+        return VERDICT_TALK
+
+    monkeypatch.setattr(handlers.classify, "verdict_for", talk)
+    monkeypatch.setattr(handlers, "route", _noop_route)
+
+    existing = stored(extracted=False)
+    bot = FakeBot()
+    await handlers.record_edited(
+        edit(), Chat(id=1, chat_id=7), EditSession(existing), CFG, bot
+    )
+
+    assert bot.reactions == [(7, 10, [])]
+    assert existing.receipt_emoji is None
+
+
+async def test_an_edit_that_stays_a_fact_advances_the_cycle(
+    monkeypatch: Any,
+) -> None:
+    async def fact(*args: Any, **kwargs: Any) -> str:
+        return VERDICT_FACT
+
+    monkeypatch.setattr(handlers.classify, "verdict_for", fact)
+    monkeypatch.setattr(handlers, "route", _noop_route)
+
+    existing = stored(extracted=False)
+    await handlers.record_edited(
+        edit(), Chat(id=1, chat_id=7), EditSession(existing), CFG, FakeBot()
+    )
+    assert existing.receipt_emoji == "❤‍🔥"
+
+
+async def test_an_edited_question_is_answered_again(monkeypatch: Any) -> None:
+    """The typo-fix case. Without it, correcting a question gets neither a
+    reaction nor an answer — the hole steps 1 and 3 were folded to close."""
+
+    async def question(*args: Any, **kwargs: Any) -> str:
+        return VERDICT_QUESTION
+
+    monkeypatch.setattr(handlers.classify, "verdict_for", question)
+    routed: list[str] = []
+
+    async def fake_route(*args: Any, **kwargs: Any) -> None:
+        routed.append(args[1].verdict)
+
+    monkeypatch.setattr(handlers, "route", fake_route)
+
+    await handlers.record_edited(
+        edit(),
+        Chat(id=1, chat_id=7),
+        EditSession(stored(extracted=False)),
+        CFG,
+        FakeBot(),
+    )
+    assert routed == [VERDICT_QUESTION]
+
+
+async def test_an_edited_caption_is_classified_from_the_caption(
+    monkeypatch: Any,
+) -> None:
+    """The caption cousin, on the edit path.
+
+    A photo of a receipt captioned «сколько я потратил на это» has no
+    `.text`. Classifying from `.text` alone would hand the classifier None,
+    which `presumed` answers `fact` without a call — so the corrected
+    question would silently become a fact, collect 💔 and enter the
+    extraction tail instead of being answered. Whatever decides the verdict
+    must read the same words `route` answers from.
+    """
+    seen: list[str | None] = []
+
+    async def classifier(text: str | None, *args: Any, **kwargs: Any) -> str:
+        seen.append(text)
+        return VERDICT_QUESTION
+
+    monkeypatch.setattr(handlers.classify, "verdict_for", classifier)
+    monkeypatch.setattr(handlers, "route", _noop_route)
+
+    edited = edit()
+    edited.text = None
+    edited.caption = "сколько я потратил на это"
+
+    await handlers.record_edited(
+        edited,
+        Chat(id=1, chat_id=7),
+        EditSession(stored(extracted=False)),
+        CFG,
+        FakeBot(),
+    )
+
+    assert seen == ["сколько я потратил на это"]
