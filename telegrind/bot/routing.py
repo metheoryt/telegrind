@@ -79,7 +79,17 @@ async def route(
             body = message.text or message.caption
             text = await answer_for(question_of(body), chat, config, session)
         if text is not None:
-            await say(bot, session, chat, text, reply_to=message.message_id)
+            # `parse_mode=None`, and only here. `answer.render` writes this
+            # sentence, and the bot's default is HTML: an answer carrying a
+            # bare `<` — a comparison, a currency rendering — comes back as
+            # «can't parse entities» and the whole answer is lost. The
+            # pending notice above and REFUSAL below are ours, fixed and
+            # markup-free, so they keep the default; the override belongs
+            # to model-authored text, the same rule `meta_wiring.speak`
+            # states for Claude's side.
+            await say(
+                bot, session, chat, text, reply_to=message.message_id, parse_mode=None
+            )
             return
         # The bot could not express it, so Claude does. A misroute across
         # the fact/question line then costs a second of latency instead of

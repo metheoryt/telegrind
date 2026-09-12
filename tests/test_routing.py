@@ -2,9 +2,12 @@ import contextlib
 from types import SimpleNamespace
 from typing import Any
 
+from aiogram.client.default import Default
+
 from telegrind.bot import routing
 from telegrind.bot.answering import REFUSAL
 from telegrind.bot.handlers.receipts import RECEIPT_EMOJI
+from telegrind.bot.outbound import BOT_DEFAULT
 from telegrind.models import (
     VERDICT_FACT,
     VERDICT_QUESTION,
@@ -52,6 +55,9 @@ class Recorder:
     def __init__(self) -> None:
         self.reactions: list[tuple[int, str | None]] = []
         self.said: list[tuple[str, int | None]] = []
+        #: The parse_mode each `say` went out with, kept apart from `said`
+        #: so the assertions that do not care about it stay two-tuples.
+        self.modes: list[str | Default | None] = []
         self.handed: list[int] = []
 
     async def acknowledge(
@@ -70,8 +76,10 @@ class Recorder:
         text: str,
         *,
         reply_to: int | None = None,
+        parse_mode: str | Default | None = BOT_DEFAULT,
     ) -> Any:
         self.said.append((text, reply_to))
+        self.modes.append(parse_mode)
         return SimpleNamespace(message_id=901)
 
 
@@ -355,3 +363,46 @@ async def test_a_system_row_is_stored_and_nothing_else(monkeypatch: Any) -> None
     assert rec.reactions == []
     assert rec.said == []
     assert rec.handed == []
+
+
+async def test_the_answer_goes_out_unparsed_and_the_bots_own_words_do_not(
+    monkeypatch: Any,
+) -> None:
+    """`answer.render` writes prose, and the bot sends with parse_mode=HTML.
+
+    An answer carrying a bare `<` — a comparison, a currency rendering, a
+    stray tag-shaped word — comes back from Telegram as a 400 «can't parse
+    entities» and the whole answer is lost, which is the worst possible
+    trade for the chance to make something bold. The same hazard was fixed
+    next door in `meta_wiring.speak`; this arm is the other place the bot
+    sends text no human wrote.
+
+    The pending notice and REFUSAL are ours, fixed, and markup-free, so
+    they keep the bot-wide default — narrowing the override to the one call
+    site that needs it is what keeps this a statement about *authorship*
+    rather than a blanket disabling of HTML.
+    """
+    rec = Recorder()
+    monkeypatch.setattr(routing, "acknowledge", rec.acknowledge)
+    monkeypatch.setattr(routing, "say", rec.say)
+
+    async def answered(*args: Any, **kwargs: Any) -> str:
+        return "Потратил <2000 ₸ за неделю."
+
+    monkeypatch.setattr(routing, "answer_for", answered)
+
+    class Pending(FakeSession):
+        async def execute(self, statement: object) -> SimpleNamespace:
+            return SimpleNamespace(
+                scalar_one_or_none=lambda: None,
+                scalars=lambda: iter([object()]),
+            )
+
+    await routing.route(
+        msg(), row(VERDICT_QUESTION), Chat(id=1, chat_id=7), CFG, Pending(), object()
+    )
+
+    assert rec.said[-1] == ("Потратил <2000 ₸ за неделю.", 10)
+    assert rec.modes[-1] is None
+    # The notice ahead of it is the bot's own sentence and is unaffected.
+    assert rec.modes[0] is BOT_DEFAULT
