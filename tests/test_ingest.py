@@ -504,6 +504,12 @@ async def test_editing_a_question_does_not_paint_a_receipt_on_it(
     Otherwise editing a question advances a cycle it was never in and lands
     ❤‍🔥 on a row with no facts — a bubble promising that tapping it deletes
     them. The receipt must never claim something that did not happen.
+
+    The clearing call below is not a receipt and is not painting one: it is
+    the empty reaction list, and it is unconditional on an edit that earns
+    no receipt because the column is not proof of what the bubble shows —
+    see `test_a_released_row_edited_into_a_question_loses_the_stale_marker`.
+    What this test pins is that no *emoji* is placed.
     """
 
     async def a_question(*args: Any, **kwargs: Any) -> str:
@@ -527,7 +533,7 @@ async def test_editing_a_question_does_not_paint_a_receipt_on_it(
         edited, Chat(id=1, chat_id=7), EditSession(existing), CFG, bot
     )
 
-    assert bot.reactions == []
+    assert bot.reactions == [(7, 10, [])]
     assert existing.receipt_emoji is None
 
 
@@ -860,3 +866,44 @@ async def test_a_talk_row_edited_into_a_fact_gets_the_default_receipt(
     )
 
     assert existing.receipt_emoji == RECEIPT_EMOJI
+
+
+async def test_a_released_row_edited_into_a_question_loses_the_stale_marker(
+    monkeypatch: Any,
+) -> None:
+    """The startup sweep clears the column and cannot touch the bubble.
+
+    A turn killed mid-flight leaves 👀 on screen and 👀 in the column; the
+    sweep at the next boot takes the column back to NULL so the message is
+    editable again, and there is no API to take a reaction off a message
+    the bot is not currently handling — so the row and the screen disagree
+    until something re-places or clears it. An edit is that something, and
+    two of the three verdicts already cover it: `talk` is handed over again
+    and re-places 👀, `fact` paints 💔 over it.
+
+    A question is the third, and it answers itself — `route` says the
+    number and places nothing — so the 👀 would survive with no turn behind
+    it, claiming the message is with Claude while the answer sits under it.
+    The receipt must never claim something that did not happen, so the
+    column going to NULL has to reach the bubble too. `was_fact` cannot see
+    this: a released row's column is already NULL, so nothing about it
+    remembers that a bubble was ever placed.
+    """
+
+    async def a_question(*args: Any, **kwargs: Any) -> str:
+        return VERDICT_QUESTION
+
+    monkeypatch.setattr(handlers.classify, "verdict_for", a_question)
+    monkeypatch.setattr(handlers, "route", _noop_route)
+
+    # What the sweep leaves behind: talk, handed over once, marker cleared.
+    released = stored(extracted=False, verdict=VERDICT_TALK)
+    released.receipt_emoji = None
+    bot = FakeBot()
+
+    await handlers.record_edited(
+        edit(), Chat(id=1, chat_id=7), EditSession(released), CFG, bot
+    )
+
+    assert bot.reactions == [(7, 10, [])]
+    assert released.receipt_emoji is None

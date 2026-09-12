@@ -216,11 +216,22 @@ async def record_edited(
             )
             log.info("tombstoned %s fact(s) of edited message %s", count, row.id)
 
-    if emoji is None and was_fact:
+    if emoji is None and previous is not None:
         # The receipt promised a delete gesture the message no longer has.
         # Cleared before `route`, never after: on a fact that became talk
         # the sequence is 💔 → bare → 👀, and the other order would wipe a
         # hand-over receipt the meta layer had just placed.
+        #
+        # On *any* row we have seen before, not just a fact — the column is
+        # not proof of what the bubble shows. The startup sweep clears
+        # `receipt_emoji` on a turn its process was killed mid-flight and
+        # cannot reach the reaction, so a released row carries NULL under a
+        # 👀 that is still on screen. `talk` and `fact` both re-place
+        # something over it; a question answers itself and places nothing,
+        # and the 👀 would outlive every turn behind it. Telegram has no
+        # way to read a message's reactions back, so «clear it anyway» is
+        # the only available answer — and on a message that had none it
+        # costs one call that changes nothing.
         await clear_receipt(bot, chat.chat_id, edited_message.message_id)
 
     await route(
