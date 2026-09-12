@@ -60,7 +60,7 @@ def argv(
     ]
     if resume_from is not None:
         line += ["--resume", str(resume_from), "--fork-session"]
-    line += ["--session-id", str(session_id), prompt]
+    line += ["--session-id", str(session_id), "--", prompt]
     return line
 
 
@@ -77,7 +77,11 @@ async def _spawn(argv: list[str], cwd: str, timeout: float) -> tuple[int, str, s
         proc.kill()
         await proc.wait()
         raise
-    return proc.returncode or 0, out.decode(), err.decode()
+    return (
+        proc.returncode or 0,
+        out.decode(errors="replace"),
+        err.decode(errors="replace"),
+    )
 
 
 async def run_turn(
@@ -107,11 +111,11 @@ async def run_turn(
         # Measured 2026-09-12: a --resume naming a session that was never
         # written (the merged-batch case the session design warns about)
         # fails here, before any model call — exit 1, stdout empty, stderr
-        # "No conversation found with session ID: <uuid>". That sentence
-        # lands verbatim in the text below, which is what makes a failed
-        # resume distinguishable from any other crash: the caller can match
-        # on "No conversation found" to retry with no resume, per the
-        # session design's own escape hatch.
+        # "No conversation found with session ID: <uuid>". That sentence lands
+        # verbatim in the text below, which is useful evidence, but it is
+        # truncated to 400 characters, so it is not a guaranteed substring.
+        # The caller should branch on `ok` plus "did I pass a resume", not on
+        # this wording — that is robust against the CLI changing its message.
         log.warning("turn %s exited %s: %s", session_id, code, err.strip())
         return TurnResult(text=f"Упал с кодом {code}: {err.strip()[:400]}", ok=False)
 
@@ -121,7 +125,16 @@ async def run_turn(
         log.warning("turn %s answered with something that is not JSON", session_id)
         return TurnResult(text="Ответ пришёл в нечитаемом виде.", ok=False)
 
+    if not isinstance(payload, dict):
+        log.warning("turn %s answered with JSON that is not an object", session_id)
+        return TurnResult(text="Ответ пришёл в нечитаемом виде.", ok=False)
+
     if payload.get("is_error"):
         return TurnResult(text=str(payload.get("result") or "Ошибка."), ok=False)
 
-    return TurnResult(text=str(payload.get("result") or ""), ok=True)
+    result_text = payload.get("result")
+    if not result_text:
+        log.warning("turn %s returned no result text", session_id)
+        return TurnResult(text="Ответ пришёл пустым.", ok=False)
+
+    return TurnResult(text=str(result_text), ok=True)

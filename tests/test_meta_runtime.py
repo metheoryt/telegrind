@@ -112,3 +112,69 @@ async def test_is_error_true_is_a_failure_even_with_exit_zero() -> None:
     )
     assert result.ok is False
     assert "не смог найти факт" in result.text
+
+
+def test_the_prompt_is_separated_from_flags_with_a_double_dash() -> None:
+    """A prompt beginning with `-` would otherwise be parsed as a flag —
+    measured 2026-09-12: `--version` as the trailing positional printed the
+    CLI's own version instead of reaching the model. `--` must sit
+    immediately before the prompt in both the fresh-session and the
+    resume-and-fork shapes."""
+    fresh = runtime.argv(CFG, "-x", session_id=NEW, resume_from=None)
+    assert fresh[-1] == "-x"
+    assert fresh[-2] == "--"
+
+    resumed = runtime.argv(CFG, "-x", session_id=NEW, resume_from=BASE)
+    assert resumed[-1] == "-x"
+    assert resumed[-2] == "--"
+
+
+async def test_missing_result_is_a_failure_not_a_silent_success() -> None:
+    """`is_error` falsy with `result` absent must not read as a success with
+    nothing to say — that is a promise (👀) broken silently. The text must be
+    its own message, not a fallthrough to the `is_error` branch's "Ошибка."."""
+    result = await runtime.run_turn(
+        CFG,
+        "x",
+        session_id=NEW,
+        spawn=spawning({"is_error": False}),
+    )
+    assert result.ok is False
+    assert result.text not in ("", "Ошибка.")
+
+
+async def test_null_result_is_a_failure_not_a_silent_success() -> None:
+    result = await runtime.run_turn(
+        CFG,
+        "x",
+        session_id=NEW,
+        spawn=spawning({"result": None, "is_error": False}),
+    )
+    assert result.ok is False
+    assert result.text not in ("", "Ошибка.")
+
+
+async def test_empty_string_result_is_a_failure_not_a_silent_success() -> None:
+    result = await runtime.run_turn(
+        CFG,
+        "x",
+        session_id=NEW,
+        spawn=spawning({"result": "", "is_error": False}),
+    )
+    assert result.ok is False
+    assert result.text not in ("", "Ошибка.")
+
+
+async def test_a_non_dict_payload_is_a_failure_not_a_crash() -> None:
+    """`json.loads` can succeed on a bare list, `null`, or a string — none of
+    those support `.get`, so this must not raise `AttributeError` out of a
+    function whose docstring promises it never raises."""
+    for body in ("[1,2,3]", "null", '"x"'):
+
+        async def spawn(
+            argv: list[str], cwd: str, timeout: float, body: str = body
+        ) -> tuple[int, str, str]:
+            return 0, body, ""
+
+        result = await runtime.run_turn(CFG, "x", session_id=NEW, spawn=spawn)
+        assert result.ok is False
