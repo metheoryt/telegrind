@@ -165,6 +165,21 @@ async def test_empty_string_result_is_a_failure_not_a_silent_success() -> None:
     assert result.text not in ("", "Ошибка.")
 
 
+async def test_is_error_wins_over_an_empty_result() -> None:
+    """The two failure branches are order-dependent: a failed turn that also
+    said nothing must still be reported as the CLI's own error, not as an
+    empty answer. Nothing else in the suite pins that order — every other
+    `is_error: True` fixture carries a non-empty `result`."""
+    result = await runtime.run_turn(
+        CFG,
+        "x",
+        session_id=NEW,
+        spawn=spawning({"is_error": True}),
+    )
+    assert result.ok is False
+    assert result.text == "Ошибка."
+
+
 async def test_a_non_dict_payload_is_a_failure_not_a_crash() -> None:
     """`json.loads` can succeed on a bare list, `null`, or a string — none of
     those support `.get`, so this must not raise `AttributeError` out of a
