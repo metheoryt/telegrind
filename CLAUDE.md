@@ -16,13 +16,14 @@ done, Phase 3 (history import) is not.
 
 ## Running the Project
 
-**With Docker (preferred):**
+**With Docker** — the recording half, and the easiest way to get one:
 ```bash
 docker compose up
 ```
 
-**Locally:**
+**Locally** — and this is the only way to run with Claude:
 ```bash
+docker compose up postgres
 uv sync -p /usr/bin/python3.14
 uv run python main.py
 ```
@@ -39,7 +40,10 @@ simply off — `talk` is stored, left bare, and nothing answers it.
 
 Copy `.env.dist` to `.env` and fill in `BOT_TOKEN`, `DATABASE_URL` and
 `ANTHROPIC_API_KEY` before running, or run `./dev-setup.sh` which writes both
-`.env` and a `compose.override.yml` for you.
+`.env` and a `compose.override.yml` for you. `dev-setup.sh` writes only what is
+needed to boot, so the `CLAUDE_*` keys are not in what it generates — copy them
+out of `.env.dist` by hand, and note that an unset `CLAUDE_ADMIN_CHAT_IDS`
+leaves the meta layer off without complaining.
 
 `.env` carries the **host** database URL (`localhost:5433`) so `alembic` and
 `pytest` work from a shell. `compose.yml` overrides it for the bot service,
