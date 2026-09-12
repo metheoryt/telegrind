@@ -29,6 +29,13 @@ Spawn = Callable[[list[str], str, float], Awaitable[tuple[int, str, str]]]
 class TurnResult:
     text: str
     ok: bool
+    #: The process's exit status, when a process actually finished. `None`
+    #: means none did — it could not start, or it was killed on the timeout.
+    #: A fact rather than a policy: it is the only thing that separates «the
+    #: CLI refused before the turn began» from «the turn ran and went
+    #: wrong», and `queue.py` needs that separation to decide whether a cold
+    #: retry could possibly help.
+    exit_code: int | None = 0
 
 
 def argv(
@@ -102,10 +109,11 @@ async def run_turn(
         return TurnResult(
             text=f"Не уложился в {int(cfg.timeout)} секунд — попробуй ещё раз.",
             ok=False,
+            exit_code=None,
         )
     except OSError as exc:
         log.warning("could not start %s: %s", cfg.binary, exc)
-        return TurnResult(text=f"Не смог запуститься: {exc}", ok=False)
+        return TurnResult(text=f"Не смог запуститься: {exc}", ok=False, exit_code=None)
 
     if code != 0:
         # Measured 2026-09-12: a --resume naming a session that was never
@@ -117,7 +125,9 @@ async def run_turn(
         # The caller should branch on `ok` plus "did I pass a resume", not on
         # this wording — that is robust against the CLI changing its message.
         log.warning("turn %s exited %s: %s", session_id, code, err.strip())
-        return TurnResult(text=f"Упал с кодом {code}: {err.strip()[:400]}", ok=False)
+        return TurnResult(
+            text=f"Упал с кодом {code}: {err.strip()[:400]}", ok=False, exit_code=code
+        )
 
     try:
         payload = json.loads(out)
