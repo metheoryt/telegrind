@@ -460,6 +460,13 @@ annotation on every function including every test and nested fake; `T20` bans
 language. On Python 3.14, PEP 758 makes unparenthesized
 `except APIError, NoValidUrlKeyFound:` valid and deferred annotations make
 quoted forward references wrong (`UP037`) — do not "fix" either.
+And one that a green gate will not show you: a **malformed** `# noqa` — prose
+that merely begins that way, like `# noqa: this is not a real suppression` —
+is reported as a `warning:` line, and `ruff check` then prints
+*All checks passed!* and exits 0 anyway. Measured 2026-09-12. So the
+suppression is silently absent and the gate says nothing is wrong; if you
+write a comment that starts with `# noqa`, read the lines above the summary,
+not just the exit code.
 <!-- src: telegrind 35574a2 | 2026-09-12 -->
 
 **aiogram stops handler propagation on any non-`SkipHandler` return.** A handler
