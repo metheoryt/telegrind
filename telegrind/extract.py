@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from telegrind import llm, store, taxonomy
 from telegrind.coerce import to_instant, to_json_value
 from telegrind.config import ChatConfig
-from telegrind.models import VERDICT_SYSTEM, Chat, LoggedMessage
+from telegrind.models import Chat, LoggedMessage
 
 log = logging.getLogger(__name__)
 
@@ -31,11 +31,24 @@ def author_of(row: LoggedMessage, chat_id: int) -> str:
     branches on authorship dies on that `None` if the third arm is
     missing. Nothing is dropped for where it came from: authorship
     changes what a fact *means*, and meaning is the model's job. A fourth
-    arm handles the bot's own messages, now that they are in the window too.
+    arm handles the bot's own messages, now that they are in the window too
+    — and it asks Telegram's `is_bot`, not the verdict, because `system` is
+    also what the user's own slash commands get.
     """
-    if row.verdict == VERDICT_SYSTEM:
+    if ((row.raw or {}).get("from_user") or {}).get("is_bot"):
         # The bot's own messages are in the window since the outbound store
         # landed. Attributed to «я» they read as the user asserting them.
+        #
+        # Read off the sender, not off `verdict == VERDICT_SYSTEM`. That
+        # verdict covers two different authors: `classify.presumed` gives
+        # it to every non-`/q` slash command the *user* typed, and
+        # `store.context_before` applies no verdict filter, so a `/start`
+        # of the user's own sits in the window and was being labelled as
+        # the bot's own words. `is_bot` is what Telegram itself says, and
+        # `outbound.say` stores the sent message so the bot's rows carry
+        # it. The key is `from_user`, aiogram's field name: `upsert_message`
+        # dumps with `model_dump(mode="json")` and no `by_alias=True`, so
+        # the Bot API's `from` never appears in this column.
         return "бот"
     origin = (row.raw or {}).get("forward_origin")
     if not origin:
