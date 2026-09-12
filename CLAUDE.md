@@ -366,11 +366,23 @@ re-route it for the life of the *database*. The release predicate is «still
 marked, and **no message the bot itself stored later in the same chat**»,
 ordered by the serial `id` — the only monotonic column here, since a forward is
 dated by its origin — and it is deliberately lopsided: it leaves a stranded
-message stranded (today's behaviour) rather than release one that was answered,
-which would re-open the double hand-over `claim` exists to prevent. It does not
-touch the bubble. A stale 👀 on a released message is corrected where it
-matters: the edit the release re-enables re-routes the message, and
-`set_receipt` puts 👀 back when the new turn starts.
+message stranded rather than release one that was answered, which would re-open
+the double hand-over `claim` exists to prevent. **So what it recovers is the
+stranded messages after the chat's last bot row, not every stranded turn.** Any
+row the bot stored afterwards shields the message for the life of the database,
+and that includes the answer to a turn that ran *beside* it: two concurrent
+turns where the first finishes and the second is killed leave the second
+stranded for good. That is the ordinary output of this queue, not a corner
+case; narrowing the shield means making it exact, which needs the reply linkage
+nothing has yet verified.
+
+It does not touch the bubble, so a released row carries NULL under a 👀 that is
+still on screen. The edit the release re-enables is what corrects that:
+`record_edited` clears the receipt on **any** edit that earns no emoji — not
+just on a former fact — because the column is no longer proof of what the
+bubble shows, and the re-classified message then gets whatever its new verdict
+earns (👀 again for talk, 💔 for a fact, nothing for a question the bot answers
+itself).
 
 Every function here reads inside its own `session.begin()`, for the reason
 below.
