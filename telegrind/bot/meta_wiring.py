@@ -18,7 +18,7 @@ the one the fake sessions in the suite structurally cannot reproduce.
 """
 
 from aiogram import Bot
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from telegrind import store
@@ -126,6 +126,25 @@ async def speak(
     )
 
 
+def _the_bots_own(is_bot: str | None, verdict: str) -> bool:
+    """Did the bot itself put this message in the chat?
+
+    `is_bot` is `raw['from_user']['is_bot']` as text, so `"true"`,
+    `"false"`, or None when the row carries no author at all. Telegram sets
+    it on the bot's own sent message, `outbound.say` stores that message,
+    and `extract.author_of` has read the same key since 2026-09-12.
+
+    The second arm is a belt, not a second test. `system` is the verdict of
+    every message the bot sends *and* of every non-`/q` command the user
+    types, so accepting it on its own would let a `/start` count as the bot
+    speaking. It counts only when there is no author to read — the shape
+    that would appear if the `from_user` key were ever missing from an
+    outbound row, which is the one assumption in this file that no test can
+    reach and the one whose failure is in the dangerous direction.
+    """
+    return is_bot == "true" or (verdict == VERDICT_SYSTEM and is_bot is None)
+
+
 async def release_hand_overs(
     session: AsyncSession, admin_chat_ids: frozenset[int]
 ) -> list[int]:
@@ -161,14 +180,18 @@ async def release_hand_overs(
     after M, so «nothing after it» implies «no reply to it», and the
     conservative half is the half that must not be wrong.
 
-    *Two clauses for «the bot's own»*, joined by OR for the same reason.
-    `raw['from_user']['is_bot']` is what `extract.author_of` reads — the
-    key is `from_user`, not the Bot API's `from`, because `upsert_message`
-    dumps with `model_dump(mode="json")` and no `by_alias=True` — and
-    `verdict == VERDICT_SYSTEM` is what `outbound.say` writes on every one
-    of those rows. Either alone would do; together, a row missing the JSON
-    key still shields. `system` also covers the user's own non-`/q`
-    commands, which only ever over-protects.
+    *«The bot's own» is `_the_bots_own`*, and it is Python rather than SQL
+    precisely because it is the subtle half. `raw['from_user']['is_bot']`
+    is what Telegram says and what `extract.author_of` reads — the key is
+    `from_user`, not the Bot API's `from`, because `upsert_message` dumps
+    with `model_dump(mode="json")` and no `by_alias=True`. `verdict ==
+    VERDICT_SYSTEM` is emphatically **not** a second way of asking: it is
+    also what every non-`/q` slash command the *user* types gets, and a
+    `/start` sitting between two stranded turns would strand the earlier
+    one forever — in exactly the case a kill produces, several messages in
+    flight at once. It survives only as the belt for the one fact no test
+    here can reach, that the bot's own rows really do carry that key: a
+    `system` row with **no author to read** is treated as the bot's.
 
     So it errs towards leaving a stranded message stranded — today's
     behaviour — and away from releasing one that was answered, which would
@@ -213,23 +236,28 @@ async def release_hand_overs(
         if not candidates:
             return []
 
+        # Grouped by authorship, not filtered by it: the aggregate is the
+        # database's to do — a chat's whole history in at most a handful of
+        # rows — while *which* of those groups counts as the bot speaking
+        # stays in Python, where a test can see it. `is_bot` has to be the
+        # same expression object in the select and the GROUP BY.
+        is_bot = LoggedMessage.raw["from_user"]["is_bot"].astext
         spoken = await session.execute(
-            select(LoggedMessage.chat_pk, func.max(LoggedMessage.id))
-            .where(
-                LoggedMessage.chat_pk.in_({row.chat_pk for row in candidates}),
-                or_(
-                    LoggedMessage.raw["from_user"]["is_bot"].astext == "true",
-                    LoggedMessage.verdict == VERDICT_SYSTEM,
-                ),
+            select(
+                LoggedMessage.chat_pk,
+                is_bot,
+                LoggedMessage.verdict,
+                func.max(LoggedMessage.id),
             )
-            .group_by(LoggedMessage.chat_pk)
+            .where(LoggedMessage.chat_pk.in_({row.chat_pk for row in candidates}))
+            .group_by(LoggedMessage.chat_pk, is_bot, LoggedMessage.verdict)
         )
-        # `.tuples()` is a typing narrowing and nothing else — the same
-        # two-column rows, typed as the tuples they are, because `dict()`
-        # over a bare `Row` is a `ty` error and the comprehension that
-        # avoids it is a ruff one (C416). The two gates disagree; this
-        # satisfies both.
-        last_spoken: dict[int, int] = dict(spoken.tuples().all())
+        last_spoken: dict[int, int] = {}
+        # `.tuples()` is a typing narrowing and nothing else: the same rows,
+        # typed as the tuples they are.
+        for chat_pk, author, verdict, last in spoken.tuples().all():
+            if _the_bots_own(author, verdict):
+                last_spoken[chat_pk] = max(last_spoken.get(chat_pk, 0), last)
 
         for row in candidates:
             if row.receipt_emoji != HANDED_OVER:

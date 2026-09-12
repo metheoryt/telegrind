@@ -155,7 +155,11 @@ message be answered normally, restart, and check that message's
 `receipt_emoji` is **still 👀** and that editing it changes nothing on screen.
 *Failure:* a second answer to a message Claude already answered. *Means:* the
 sweep released an answered row and re-opened the double hand-over `claim`
-exists to prevent.
+exists to prevent — and most likely because the bot's own stored row does not
+carry `raw['from_user']['is_bot']` after all. **That is the one fact the sweep
+rests on that no test in the suite can reach**, and this is the only item that
+retires it. `SELECT raw->'from_user'->>'is_bot' FROM message WHERE verdict =
+'system' ORDER BY id DESC LIMIT 5;` answers it directly.
 
 ---
 

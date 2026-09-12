@@ -395,7 +395,7 @@ class FakeResult:
     def __init__(
         self,
         scalars: list[Any] | None = None,
-        rows: list[tuple[int, int]] | None = None,
+        rows: list[tuple[Any, ...]] | None = None,
     ) -> None:
         self._scalars = scalars or []
         self._rows = rows or []
@@ -407,7 +407,7 @@ class FakeResult:
         """`Result.tuples()` narrows the typing and returns the same rows."""
         return self
 
-    def all(self) -> list[tuple[int, int]]:
+    def all(self) -> list[tuple[Any, ...]]:
         return list(self._rows)
 
 
@@ -424,11 +424,11 @@ class SweepSession:
     def __init__(
         self,
         candidates: list[LoggedMessage],
-        protective: list[tuple[int, int]] | None = None,
+        spoken: list[tuple[int, str | None, str, int]] | None = None,
     ) -> None:
         self.answers = [
             FakeResult(scalars=candidates),
-            FakeResult(rows=protective or []),
+            FakeResult(rows=spoken or []),
         ]
         self.depth = 0
         self.read_depths: list[int] = []
@@ -480,7 +480,7 @@ async def test_a_message_claude_already_answered_keeps_its_marker() -> None:
     would let the next edit hand the same message over a second time —
     exactly the double hand-over `claim` exists to prevent."""
     row = handed_over_row(id=5, chat_pk=1, message_id=10)
-    session = SweepSession([row], protective=[(1, 6)])
+    session = SweepSession([row], spoken=[(1, "true", VERDICT_SYSTEM, 6)])
 
     assert await meta_wiring.release_hand_overs(session, frozenset({7})) == []
     assert row.receipt_emoji == HANDED_OVER
@@ -492,7 +492,9 @@ async def test_an_answer_in_another_chat_shields_nothing() -> None:
     whole sweep would do nothing for the only user who has two chats."""
     stranded = handed_over_row(id=5, chat_pk=1, message_id=10)
     answered = handed_over_row(id=8, chat_pk=2, message_id=20)
-    session = SweepSession([stranded, answered], protective=[(2, 9)])
+    session = SweepSession(
+        [stranded, answered], spoken=[(2, "true", VERDICT_SYSTEM, 9)]
+    )
 
     assert await meta_wiring.release_hand_overs(session, frozenset({7, 8})) == [10]
     assert stranded.receipt_emoji is None
@@ -528,3 +530,42 @@ async def test_an_empty_allowlist_asks_the_database_nothing() -> None:
     session = SweepSession([handed_over_row(id=5, chat_pk=1, message_id=10)])
     assert await meta_wiring.release_hand_overs(session, frozenset()) == []
     assert session.read_depths == []
+
+
+async def test_the_users_own_slash_command_shields_nothing() -> None:
+    """`verdict == system` is not «the bot said it». `classify.presumed`
+    gives that verdict to every non-`/q` command the *user* types, and a
+    `/start` between two stranded turns would otherwise strand the earlier
+    one forever — in exactly the case a kill produces, several messages in
+    flight at once. `is_bot` is what Telegram itself says, and it is the
+    same key `extract.author_of` reads.
+    """
+    row = handed_over_row(id=5, chat_pk=1, message_id=10)
+    session = SweepSession([row], spoken=[(1, "false", VERDICT_SYSTEM, 7)])
+
+    assert await meta_wiring.release_hand_overs(session, frozenset({7})) == [10]
+    assert row.receipt_emoji is None
+
+
+async def test_an_author_we_cannot_read_still_shields() -> None:
+    """The belt on the one fact here that no test can reach: that the bot's
+    own stored rows really do carry `raw['from_user']['is_bot']`. They do —
+    `author_of` has shipped on it since 2026-09-12 — but if a `system` row
+    ever turns up with no author to read, it is treated as the bot's own,
+    because the direction that must not be wrong is releasing a message
+    Claude already answered.
+    """
+    row = handed_over_row(id=5, chat_pk=1, message_id=10)
+    session = SweepSession([row], spoken=[(1, None, VERDICT_SYSTEM, 7)])
+
+    assert await meta_wiring.release_hand_overs(session, frozenset({7})) == []
+    assert row.receipt_emoji == HANDED_OVER
+
+
+async def test_a_boot_with_nothing_marked_stops_after_one_question() -> None:
+    """The steady state, and every boot after the first takes it: nothing
+    carries the marker, so there is nothing to date against anything and
+    the second query is never asked."""
+    session = SweepSession([])
+    assert await meta_wiring.release_hand_overs(session, frozenset({7})) == []
+    assert session.read_depths == [1]
