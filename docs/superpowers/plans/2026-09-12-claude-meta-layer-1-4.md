@@ -1675,7 +1675,8 @@ async def record_edited(
     # Three blocks, and the boundaries are load-bearing. A bare read
     # autobegins, so `previous` cannot be fetched outside a transaction or
     # the `session.begin()` below raises «a transaction is already begun» —
-    # the same trap query.py documents. And the classifier call must sit
+    # the same trap routing.py's question arm documents. And the
+    # classifier call must sit
     # between two transactions, never inside one.
     async with session.begin():
         previous = await store.get_message(

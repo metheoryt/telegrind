@@ -84,9 +84,11 @@ async def route(
             # bare `<` — a comparison, a currency rendering — comes back as
             # «can't parse entities» and the whole answer is lost. The
             # pending notice above and REFUSAL below are ours, fixed and
-            # markup-free, so they keep the default; the override belongs
-            # to model-authored text, the same rule `meta_wiring.speak`
-            # states for Claude's side.
+            # markup-free, so they keep the default. `answer_for` can also
+            # return our own EMPTY_QUESTION down this branch, which is
+            # markup-free too and simply comes along — the rule is that a
+            # site which *can* carry model-authored text overrides, the
+            # same rule `meta_wiring.speak` states for Claude's side.
             await say(
                 bot, session, chat, text, reply_to=message.message_id, parse_mode=None
             )
