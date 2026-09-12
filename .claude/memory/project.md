@@ -276,3 +276,60 @@ One bullet per fact, under a topical heading. No secrets.
   <!-- src: telegrind db9de98 | 2026-09-12 -->
 
 <!-- KB refreshed against db9de98 on 2026-09-12 -->
+
+## Vendor-API facts routed here from the 2026-09-12 shared proposals
+
+The harvest tagged these `global`; `/memory-review` routed them to this repo on
+2026-09-12 because they are domain facts, not fleet-wide ones. **Note:** the Google
+Sheets rows describe the pre-dialogue-first layer deleted 2026-09-11 (`248fe9d`) —
+they are kept because the vendor behaviour is true independently of telegrind, not
+because that code still exists.
+
+### `dateparser` (measured against 1.2, 2026-09-11)
+
+- **`RELATIVE_BASE` must be the user's local wall clock, not UTC.** At 02:00 in a
+  UTC+6 zone it is still the previous day in UTC, so a naive UTC base makes
+  «сегодня» resolve one day behind what the writer meant.
+- **`dateparser.parse` returns `None` — no date at all, not a wrong one — for every
+  Russian `<day> <time-of-day>` compound**: «вчера вечером», «вчера утром»,
+  «позавчера вечером», «в понедельник утром», «вчера днём», «вчера ночью», «сегодня
+  вечером». The silent `None` means the phrase falls through to whatever fallback the
+  caller supplies, so a relative date quietly becomes "now". Strip the time-of-day
+  qualifier with a regex and re-parse the day alone.
+- **A relative date parser is the wrong tool for a period BOUNDARY.** «август»
+  through `dateparser` yields *this day* in August, not the month. Month ranges have
+  to arrive as explicit ISO dates, half-open with the upper bound exclusive so
+  nothing lands in two months.
+
+### Google Drive / Sheets
+
+- **A Google service account has no Drive of its own.** `about.get` returns
+  `storageQuota {limit: "0", usage: "0"}`, and both `files.create` of a Google-native
+  spreadsheet and `files.copy` fail 403 `storageQuotaExceeded`; creating inside a
+  shared folder does not dodge it, because **quota follows the creator**. So a
+  service-account bot can read and write any workbook shared with it forever but can
+  never create or own one. The only way for a bot to create a spreadsheet is OAuth as
+  a real user (the `drive.file` scope is non-sensitive, needs no verification, and its
+  refresh token does not expire — but it can only touch files the app itself created,
+  so importing a pre-existing workbook must happen BEFORE switching). A 403
+  `SERVICE_DISABLED` is a different error: the Drive API is not enabled in the GCP
+  project at all.
+- **Sheets `values.append` places rows after the sheet's *data extent*, not after the
+  last row of the range you declare.** On a worksheet carrying user formula columns
+  filled down every row, that extent sits far below the range just cleared: measured
+  on a real 3501-row workbook, a rebuild appended all 3501 rows starting at row 3505,
+  leaving 3503 blank rows above and growing the grid from 3502 to 7005. Write at an
+  explicit `A<row>` range instead, growing the grid when needed and never shrinking
+  it. Separately, a worksheet created with `rows=1` makes any `A2:E` range a hard 400
+  (`exceeds grid limits. Max rows: 1`), not a no-op — create with a real row allowance
+  and guard clear-style operations with a `row_count <= 1` early return.
+
+### The meta layer's derived session ids
+
+- **A session id derived from the message being replied to does not survive three
+  turns without `--fork-session`.** Trace: Claude answers M1 in `uuid5(M1)` and
+  replies to M1; a user reply F1 to that answer resolves back to M1, and
+  resume-in-place continues `uuid5(M1)`, whose answer replies to F1; the next user
+  reply resolves to F1, and `uuid5(F1)` was never created. **Forking each turn into
+  its own derived id is what makes the scheme self-consistent**, and it is one extra
+  flag. (The general `claude -p` session-control facts went to `global.md`.)

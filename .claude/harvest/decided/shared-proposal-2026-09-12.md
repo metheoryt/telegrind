@@ -113,3 +113,49 @@ global | add | **When a fix turns out to cover less than its name implies, Maxim
 - The fake-sessions row above overlaps the first pass's fake-wrong-type row.
   They are different failures — wrong types versus absent transaction state —
   but if only one is wanted in `global.md`, merge them rather than filing both.
+
+---
+
+# /cyphy:memory-review decision — 2026-09-12 (applied on g15)
+
+Every row decided. 34 applied, 2 rejected as already recorded, 1 carried.
+
+APPLIED -> ~/.claude/memory/global.md (22): Postgres FILTER does not evaluate excluded
+rows; Python float() accepts underscores; `docker compose config --format json` prints
+live secrets; an illegal HTTP header makes the Anthropic client print the API key;
+structured outputs via output_config (and the full measured schema surface);
+cache_control no-ops below the minimum cacheable prefix; claude-haiku-4-5 is the
+budget_tokens generation; headless `claude -p` session control; a cold `claude -p` pays
+the whole preamble; an unattended run needs BOTH bypass flags; the CLI parses a trailing
+positional as flags without `--`; hooks merge additively across scopes; the gortex hook
+rejects the ENTIRE Bash chain; the gortex async-return annotation win; annotating an
+inherited attribute does not help; a repo's resolution ceiling is its third-party deps;
+gortex DOES model aiogram decorators; `gortex init --agents` writes project-scope
+auto-approval; `pkill -f` kills the calling shell (MERGED with qaz-code's row); a
+background task killed for "low memory" while memory is fine; a hand-made git worktree
+is invisible to Orca; the memory-harvest automation commits into the repo's working tree.
+APPLIED -> ~/.claude/memory/personality/practices.md (5): a fake supplying the wrong type
+hides the bug it covers, MERGED with the second-pass "fakes are structurally blind to
+SQLAlchemy async bugs" row exactly as this file's own reviewer note suggested; SQLAlchemy
+2 bare reads autobegin; a malformed `# noqa` warns and exits 0; select(Model) renders
+every column so a rendered-string assertion can never fail; a test can pass against
+broken code when the mutation lands after the observation point.
+APPLIED -> ~/.claude/memory/personality/habits.md (1): Maxim ships a partial fix with the
+gap documented over holding the branch.
+APPLIED -> telegrind/.claude/memory/project.md (6): dateparser RELATIVE_BASE must be
+local wall clock; dateparser returns None for Russian day+time-of-day compounds; a
+relative parser is the wrong tool for a period boundary; a derived session id needs
+--fork-session; a Google service account has no Drive of its own; Sheets values.append
+appends after the DATA EXTENT. Routed out of the `global` tier per Maxim's decision this
+session. The Sheets rows describe the layer deleted 2026-09-11 and are kept only because
+the vendor behaviour outlives it.
+
+REJECTED, already recorded (2): host:g15 "roughly 4 GB of VRAM, recalled rather than
+measured" — ~/.claude/host-memory.md already states "GPU: RTX 3050 Ti Laptop, 4 GB VRAM"
+with the driver and CUDA versions, and qaz-code's MEASURED throughput row applied this
+session supersedes the recalled one. And "Maxim wants a multi-task implementation run
+started in an isolated Orca-managed worktree from the beginning" — already in
+~/.claude/memory/core.md as a non-negotiable, dated 2026-09-12, the same day, with the
+same substance ("Никогда не редактировать код в main checkout").
+
+CARRIED to latitude (NOT a rejection) (1): "Claude Code is not installed on latitude."
