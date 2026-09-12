@@ -107,6 +107,30 @@ One bullet per fact, under a topical heading. No secrets.
   then reset, then restart.
   <!-- src: telegrind 35574a2 | 2026-09-12 -->
 
+- **Prod is NOT the dialogue-first code — it is the 2026-08-01 marvin/workbook
+  build.** Measured 2026-09-12: image `telegrind-bot:local` created 2026-08-01,
+  container env still carries `MARVIN_AGENT_MODEL` and
+  `GOOGLE_SERVICE_ACCOUNT_FILE`, `src` sits at `ffce27a` on `main`, and the prod
+  database (`postgres`, not `telegrind`) holds only `alembic_version`, `chat`
+  and `file` at revision `2700e0b3a8b6` — no `message`, no `fact`, zero logged
+  messages. `getWebhookInfo` shows `allowed_updates` without `message_reaction`.
+  So anything CLAUDE.md describes — the 💔 receipt, tombstone-by-reaction, `/q`
+  — is absent from what actually runs, and every prod reply goes through marvin
+  to Anthropic. `2700e0b3a8b6` IS in the current migration graph
+  (`20260424015753_unique_chat_id`), so a real deploy is a plain
+  `alembic upgrade head`, not a data migration.
+  <!-- src: latitude prod inspection | 2026-09-12 -->
+- **A dead `ANTHROPIC_API_KEY` presents as "the bot stopped reacting", not as an
+  error to the user.** On 2026-09-12 every message raised
+  `ModelHTTPError 401 authentication_error` deep inside marvin/pydantic-ai and
+  the user saw only silence; Telegram was healthy throughout (`pending_update_count`
+  0, no webhook), so the polling side is a red herring. Check the key against
+  `https://api.anthropic.com/v1/models` directly before reading any traceback.
+  Fix: replace the value in `vps/homeserver/telegrind/.env.prod` and
+  `docker compose -f compose.prod.yml up -d` — **`docker restart` reuses the
+  baked-in env and the new key never loads.**
+  <!-- src: latitude prod inspection | 2026-09-12 -->
+
 ## Extraction — what the corpus taught
 
 - **The observed taxonomy is a magnet, not just a brake, and a catch-all kind
@@ -171,4 +195,84 @@ One bullet per fact, under a topical heading. No secrets.
   sums when they carry no number, confusing to an announced backlog count.
   <!-- src: telegrind 35574a2 | 2026-09-12 -->
 
-<!-- KB refreshed against 35574a2 on 2026-09-12 -->
+## Routing — where the shipped code and the meta-layer spec part company
+
+- **An edit preserves the row's previous verdict; it does not re-derive one.**
+  The design doc says an edited message is re-classified, and the code
+  deliberately does not do that yet: re-deriving from the `/` prefix on the
+  edit path would flip a stored `/q` row from `question` back to `fact` the
+  first time the user fixed a typo in their own question. A row with no
+  previous sighting falls through to the first-sighting default. Do not read
+  the spec's re-classification paragraph as a description of what runs.
+  <!-- src: telegrind db9de98 | 2026-09-12 -->
+- **`extractable` is still on `message` on purpose, and dropping it is a hand
+  step.** The verdict migration is the expand half of an expand/contract pair:
+  it adds `verdict` non-null with a server default, backfills it from what the
+  old flag meant (`/q%` → `question`, every other unextractable row →
+  `system`), and leaves `extractable` in place and still written. That is what
+  keeps the downgrade a plain `drop_column` and the spec's rollback reachable.
+  The contract step — dropping the column and its writers — is taken by hand
+  once the verdict has held, and nothing in the migration graph will prompt for
+  it.
+  <!-- src: telegrind db9de98 | 2026-09-12 -->
+
+## Environment and the test harness
+
+- **A bare `uv sync` destroys the venv it was replacing.** The repo carries no
+  `.python-version` and only `requires-python = ">=3.14"`, so `uv` picks the
+  freethreaded CPython 3.14.7 it manages; `psycopg-binary` 3.3.3 publishes no
+  `cp314t` wheel, the resolve fails, and `uv` has already removed the old
+  environment by then. This bites every fresh clone and every new worktree.
+  The working form is `uv sync -p /usr/bin/python3.14`.
+  <!-- src: telegrind db9de98 | 2026-09-12 -->
+- **The stored `raw` JSONB carries the key `from_user`, never the Bot API's
+  `from`.** aiogram declares `from_user: User | None = Field(None, alias="from")`
+  and `store.upsert_message` dumps with `model_dump(mode="json")` and no
+  `by_alias=True`, so the alias never survives into the column. Anything
+  identifying a bot-sent row must read `raw["from_user"]["is_bot"]`; reading
+  `raw["from"]` inverts the answer and leaves the suite green, because the
+  fakes dump the same way.
+  <!-- src: telegrind db9de98 | 2026-09-12 -->
+- **`setup_dispatcher()` can only run once per process, so a registration test
+  reads pytest's collection order unless it resets first.** `router` and `dp`
+  are module-level singletons and a second `dp.include_router(router)` raises
+  *Router is already attached*. A test that asserts handler order therefore has
+  to clear the observers and drop the handler modules from `sys.modules` — the
+  package entry first, or `from .handlers import query` resolves off the stale
+  package attribute and registers nothing at all.
+  <!-- src: telegrind db9de98 | 2026-09-12 -->
+- **Registration order is match order, and a dropped import silently
+  unsubscribes an update type.** `dp.resolve_used_update_types()` derives
+  `allowed_updates` from whichever observers happen to have handlers, so losing
+  the `reactions` import removes `message_reaction` and with it the bot's only
+  delete gesture — with the suite still green, unless a test asserts both the
+  observer order and the resolved update types. Reordering the imports in
+  `setup_dispatcher()` changes which handler claims a message.
+  <!-- src: telegrind db9de98 | 2026-09-12 -->
+
+## The Claude meta layer — hazards to carry into the merge
+
+- **`CLAUDE_CWD` unset means the bot spawns Claude Code inside the live
+  checkout.** The meta-layer handler falls back to the bot's own working
+  directory, so the first conversational message runs full Claude Code — this
+  repo's `CLAUDE.md`, skills, hooks and MCP servers — under
+  `--permission-mode bypassPermissions --permission-prompts none` against
+  uncommitted work. Point it at a scratch `git worktree` before starting the
+  bot in development. The allowlist is keyed on `chat_id` rather than
+  `from_user.id`, so an admin id that names a group hands every member of that
+  group a Claude subprocess.
+  <!-- src: telegrind db9de98 | 2026-09-12 -->
+- **The multi-turn design rests on two claims measured exactly once, with no
+  test behind either.** That `--resume <base> --fork-session --session-id <new>`
+  loads the parent's history and writes the transcript under the NEW id rather
+  than back into the base; and that a dead `--resume` target exits 1 before any
+  model call (stderr `No conversation found with session ID: <uuid>`). If the
+  first is wrong the bot answers every turn as though the conversation had not
+  happened and nothing in the suite notices. Treat both as assumptions until a
+  live multi-turn walk retires them. A related consequence of the same design:
+  because each turn mints a fresh id and chains to the previous turn, every
+  outbound reply must target the message that triggered *that* turn, never a
+  fixed anchor.
+  <!-- src: telegrind db9de98 | 2026-09-12 -->
+
+<!-- KB refreshed against db9de98 on 2026-09-12 -->

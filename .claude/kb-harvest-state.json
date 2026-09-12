@@ -1,14 +1,12 @@
 {
   "last_refresh": {
-    "commit": "35574a2",
+    "commit": "db9de98",
     "date": "2026-09-12",
     "sessions_processed": [
-      "53ef4f88-6f25-4c04-b804-8c435da7f085",
-      "72bed015-9d07-426c-adcf-8d75ace91f79",
+      "07703f9d-c888-4197-85d3-2f6634a26422",
+      "55017127-fe8f-4f80-90db-112f893298ff",
       "76002530-146a-4ddc-8a01-5597be6c778a",
-      "808ef927-e3ee-4288-a8d2-1e268fadadf8",
-      "c4185692-a9db-4208-a6d5-6d0bd33d1593",
-      "e03cc61f-c9c4-4727-a842-384c32ff5a0e"
+      "e6adf2e5-26a1-52b8-b3c0-dc9e34b3e02f"
     ],
     "tiers_touched": [
       "project",
@@ -17,12 +15,26 @@
     ]
   },
   "sessions": {
+    "07703f9d-c888-4197-85d3-2f6634a26422": {
+      "cwd": "/tmp/claude-1000/-home-me-my-telegrind/c4185692-a9db-4208-a6d5-6d0bd33d1593/scratchpad",
+      "host": "g513ie",
+      "id_hash": "efbe3aef02467563133419ab4eac704e8730bea9",
+      "last_line": 56,
+      "last_ts": "2026-09-11T19:46:18.750Z"
+    },
     "53ef4f88-6f25-4c04-b804-8c435da7f085": {
       "cwd": "/home/me/orca/workspaces/telegrind/telegrind-spendings-analytics",
       "host": "desktop-wsl",
       "id_hash": "7c62ed02436f41882f2c1c656147d521ad9ba513",
       "last_line": 607,
       "last_ts": "2026-08-24T09:32:04.194Z"
+    },
+    "55017127-fe8f-4f80-90db-112f893298ff": {
+      "cwd": "/home/me/my/telegrind",
+      "host": "g513ie",
+      "id_hash": "ad1457b1de5cb96f3f1fc02c9c0d943acf976981",
+      "last_line": 234,
+      "last_ts": "2026-09-12T06:00:05.943Z"
     },
     "72bed015-9d07-426c-adcf-8d75ace91f79": {
       "cwd": "/home/me/my/telegrind",
@@ -35,8 +47,8 @@
       "cwd": "/home/me/my/telegrind",
       "host": "g513ie",
       "id_hash": "bace2ac5d0ffd726a6e0d875b3981e91d9842105",
-      "last_line": 477,
-      "last_ts": "2026-09-11T22:16:59.484Z"
+      "last_line": 3319,
+      "last_ts": "2026-09-12T05:46:50.527Z"
     },
     "808ef927-e3ee-4288-a8d2-1e268fadadf8": {
       "cwd": "/home/me/my/telegrind",
@@ -65,6 +77,13 @@
       "id_hash": "ff82c87305b3d7db418b9f588b5fabe7d8fde649",
       "last_line": 4675,
       "last_ts": "2026-09-11T18:00:32.159Z"
+    },
+    "e6adf2e5-26a1-52b8-b3c0-dc9e34b3e02f": {
+      "cwd": "/tmp/claude-1000/-home-me-my-telegrind/c4185692-a9db-4208-a6d5-6d0bd33d1593/scratchpad",
+      "host": "g513ie",
+      "id_hash": "7b215538334600c76ad1e51c5631d77a80f2ae02",
+      "last_line": 50,
+      "last_ts": "2026-09-11T18:59:55.954Z"
     }
   }
 }

@@ -71,3 +71,45 @@ host:latitude | add | **Claude Code is not installed on latitude.** Node 20 is p
   regardless of how the baseline commit is computed. `last_refresh.commit` in
   `kb-harvest-state.json` is `35574a2` because that is the tree this pass
   actually read, not the branch tip at commit time.
+
+---
+
+# Second pass — telegrind, 2026-09-12 (against `db9de98`)
+
+Appended by a later harvest run the same day; the rows above are from the first
+pass and are untouched. This pass read 4 digests (2 of them empty probe
+sessions) plus the two `verdict` commits the first pass flagged as uncovered.
+Same format:
+
+`tier | action | the fact, as exact text to paste | target file | source | confidence`
+
+## global
+
+global | add | **The Claude Code CLI parses a trailing positional prompt as flags unless a `--` separator precedes it.** Measured against claude 2.1.269: `claude -p --output-format json --resume <uuid> --fork-session --session-id <new> "--version"` printed `2.1.269 (Claude Code)` and the prompt never reached the model; inserting `--` before the prompt made it reach session-load instead. Any program that pipes arbitrary user text into a `claude -p` argv must pass `--` first, or a message beginning with a dash is argv injection into a subprocess that may be running with permissions bypassed. | ~/.claude/memory/global.md | 76002530-146a-4ddc-8a01-5597be6c778a | high
+global | add | **A malformed `# noqa` comment makes ruff print a warning and then exit 0 anyway.** Prose that merely begins that way — `# noqa: this is not a real suppression` — produces a `warning:` line followed by "All checks passed!" and exit 0. The suppression is silently absent while the gate reports success, so a green lint run is not evidence that a `# noqa` you wrote is doing anything. Read the lines above the summary, not just the exit code. Measured 2026-09-12. | ~/.claude/memory/global.md | 76002530-146a-4ddc-8a01-5597be6c778a | high
+global | add | **`select(Model)` in SQLAlchemy 2 always renders every mapped column in the SELECT list, whatever the WHERE clause says.** So asserting on the rendered statement string cannot prove which column a query filters on — a naive `"columnname" in rendered` assertion is trivially true and can therefore never fail. Assert on `.whereclause` instead. | ~/.claude/memory/global.md | 76002530-146a-4ddc-8a01-5597be6c778a | high
+global | add | **A test can pass against deliberately broken code because the mutation lands after the test's observation point.** An ordering assertion around `asyncio.create_task` is the canonical case: the task never yields, so moving the operation after the submit still leaves it ordered before the caller returns, and the test stays green. The only reliable check that a test is load-bearing is to revert the fix (or mutate the exact line) and watch that named test fail for the expected reason. | ~/.claude/memory/global.md | 76002530-146a-4ddc-8a01-5597be6c778a | high
+global | add | **Hand-written fake sessions and fake ORM rows are structurally blind to a whole class of SQLAlchemy async bug**, because they carry no transaction state and hand back detached instances. A bare read that autobegins a transaction, a removed `expire_on_commit=False`, and a deferred `load_only` column read off a session-attached instance all pass a green suite and only fail against real Postgres, typically as `sqlalchemy.exc.MissingGreenlet`. Any change touching a session has to be reviewed by reading the code; running the tests proves nothing. | ~/.claude/memory/global.md | 76002530-146a-4ddc-8a01-5597be6c778a | high
+global | add | **A hand-made `git worktree add` is invisible to Orca's registry, so Orca automation can still collide with it.** The registered form is `orca worktree create --repo name:<repo> --name <n> --base-branch <b> --setup skip --no-parent`. Use `--setup skip` and do the environment by hand whenever the repo's Orca setup hook would run a bare dependency sync that is known to be unsafe. | ~/.claude/memory/global.md | 76002530-146a-4ddc-8a01-5597be6c778a | high
+global | add | **The memory-harvest automation commits into a repo's own working tree, so a long agent run sharing that checkout gets its files swept into someone else's commits and sees its base move underneath it.** Observed 2026-09-12: a harvest commit was replaced by a rewritten one carrying the same message and a different tree, mid-run. Start multi-commit implementation work in a separate worktree, and scope every review diff by explicit commit SHAs rather than by `HEAD`. | ~/.claude/memory/global.md | 76002530-146a-4ddc-8a01-5597be6c778a | high
+global | add | **Maxim wants a multi-task implementation run started in an isolated Orca-managed worktree from the beginning, not in the repo's main checkout.** Stated directly after interleaved automation commits disrupted a ten-task run: "we should've started this implementation in a separate worktree", then "let's maybe stop here and go into an orca worktree instead". | ~/.claude/memory/global.md | 76002530-146a-4ddc-8a01-5597be6c778a | high
+global | add | **When a fix turns out to cover less than its name implies, Maxim prefers shipping the partial fix with the gap documented honestly — in the code and in the test plan — over holding the branch to build the complete version**, provided the partial fix is strictly better than the status quo and cannot make anything worse. | ~/.claude/memory/global.md | 76002530-146a-4ddc-8a01-5597be6c778a | medium
+
+## Notes for the reviewer (second pass)
+
+- The `verdict` drift the first pass flagged as uncovered has now been written
+  into the repo's own `CLAUDE.md` and `project.md` (Lane 1), together with the
+  trap it produced: the extraction tail switched from `extractable` to
+  `verdict`, and `upsert_message`'s permissive `fact` default silently
+  re-admitted `/start`, `/help` and every command typo into the tail.
+- Two of the four digests this pass are `BANANA` probe sessions in a scratchpad
+  cwd and carry no facts at all.
+- Rows already recorded elsewhere were dropped rather than re-proposed: the
+  dead-prod-key and stale-prod-image findings were already written into
+  `project.md` by the session that made them; "Telegram includes exactly one
+  level of reply" is already in `docs/telegram-bot-api.md`; and the verdict's
+  never-null rationale is already written out in
+  `docs/superpowers/specs/2026-09-11-claude-meta-layer-design.md`.
+- The fake-sessions row above overlaps the first pass's fake-wrong-type row.
+  They are different failures — wrong types versus absent transaction state —
+  but if only one is wanted in `global.md`, merge them rather than filing both.

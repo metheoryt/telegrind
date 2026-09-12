@@ -235,3 +235,18 @@ was checked against the installed aiogram tree and still stands.
   The practical consequence: "I sent a message and nothing happened" has two
   indistinguishable causes, a dead process and a raising handler, and only a
   unit test driving the handler tells them apart.
+
+### aiogram defaults and `parse_mode` (2026-09-12)
+
+- **A bot-wide `parse_mode` turns any `<` or `>` in a reply into a lost
+  message, and a per-call `parse_mode=None` really does override it.** With
+  `Bot(default=DefaultBotProperties(parse_mode="HTML"))` — which is what
+  `main.py` constructs — Telegram rejects an unescaped `<` or `>` with a 400
+  `can't parse entities` and the whole reply is discarded, which matters most
+  for model-authored prose nobody escaped. Passing `parse_mode=None` on the
+  call is a genuine override, not a fall-through to the default: in aiogram
+  3.27 `BaseSession.prepare_value` returns on `None` before it reaches the
+  `Default` branch, and `build_form_data` drops falsy values, so the field is
+  simply absent from the request. Verified against the installed tree and
+  in-process, never against live Telegram.
+  <!-- src: telegrind db9de98 | 2026-09-12 -->

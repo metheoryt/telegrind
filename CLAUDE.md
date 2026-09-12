@@ -268,3 +268,41 @@ every extracted fact and is what a later re-extraction pass uses to find facts
 produced by an older prompt; a gratuitous bump invalidates the eval baseline and
 stamps mismatched versions on facts written during live testing.
 <!-- src: telegrind 35574a2 | 2026-09-12 -->
+
+- **Switching the column a selector reads means every writer must pass it
+  explicitly.** When `unextracted_tail` stopped filtering on `extractable` and
+  started filtering on `verdict`, `/start`, `/help` and every command typo
+  began reaching the extraction tail: `COMMAND_LIKE` is a text-prefix filter,
+  the command handler was the only thing that had ever set `extractable=False`,
+  and `upsert_message`'s new `verdict` argument defaulted to `fact`. A
+  permissive default on the new column silently re-admits everything the old
+  flag excluded, and nothing fails — the rows simply get parsed. Pass the new
+  column from every call site instead of leaning on its default.
+  <!-- src: telegrind db9de98 | 2026-09-12 -->
+
+- **An update lost mid-handler is never redelivered, so nothing may precede the
+  commit.** aiogram advances the polling offset as each update is yielded and
+  dispatches with `handle_as_tasks=True`, so a handler that dies takes the
+  update with it — Telegram will not send it again. Any model call placed
+  before the message row is committed is therefore a permanent data-loss window
+  on a bot whose whole promise is verbatim storage on arrival. The shape that
+  keeps the promise: commit first with a safe default, make the model call
+  outside any transaction, then refine the row in a second short transaction.
+  The same mechanic is why an unguarded exception anywhere on the reply path
+  swallows the user's message rather than surfacing an error.
+  <!-- src: telegrind db9de98 | 2026-09-12 -->
+
+## Message routing — the `verdict` column
+
+- **`message.verdict` — not `extractable` — is what selects the extraction
+  tail.** It is a never-null string holding one of `fact`, `question`, `talk`
+  or `system`; only `fact` enters `unextracted_tail`. `/q` writes `question`,
+  every other slash command and everything the bot itself sends writes
+  `system`, and ordinary text and voice write `fact`. `extractable` is still
+  set in step with it and is no longer read by anything — that pairing is the
+  expand half of an expand/contract migration, deliberate, not two flags left
+  to disagree. The reasoning is written out in
+  `docs/superpowers/specs/2026-09-11-claude-meta-layer-design.md`.
+  <!-- conflicts-with: "The slash catch-all first (stored with `extractable=False`, so a command never coins a category)" -->
+  <!-- conflicts-with: "`/q <question>` → handlers/query.py # store the question, extractable=False" -->
+  <!-- src: telegrind db9de98 | 2026-09-12 -->
