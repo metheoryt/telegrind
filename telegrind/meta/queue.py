@@ -18,6 +18,13 @@ ends — `submit` drops a message whose turn is already in flight, and the
 batch builder collapses a message that arrives twice before the batch
 closes. The hand-off still succeeds either way: the message is being
 handled, just not twice.
+
+The two ends are not symmetric, and the asymmetry is deliberate. The batch
+builder keeps the *last* text, because a prompt that has not been spawned
+yet can still be corrected. `submit` keeps the *first*, because one that
+has cannot — so an edit arriving mid-turn is answered as it was written,
+and the correction is dropped. Nothing says so out loud: 👀 is already
+lit, the hand-off returns True, and the only trace is a log line.
 """
 
 import asyncio
@@ -137,7 +144,8 @@ class Turns:
             # An edit landing in there is handed over a second time, and
             # by then the worker is already inside `_turn` — so this is
             # not a merge, it is a second turn answering the same message
-            # on the same session id.
+            # on the same session id. The edit's text is dropped: the
+            # prompt it would have corrected is already with the model.
             log.info("message %s is already in a running turn", job.message_id)
             return
         slot = (job.chat_id, job.key)
