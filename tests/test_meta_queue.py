@@ -198,13 +198,130 @@ async def test_a_delivery_that_blows_up_takes_the_eyes_off() -> None:
     assert spy.marked[-1] == (10, False)
 
 
-async def test_a_second_message_after_the_queue_drained_starts_a_new_worker() -> None:
-    """A chat runs for months, so a finished worker drops its slot. The next
-    message has to rebuild it or the bot goes quiet for good."""
+async def test_a_finished_worker_leaves_no_slot_behind() -> None:
+    """The pop in `_work`'s `finally` is a leak fix, and only that.
+
+    `_queues` and `_workers` are keyed by (chat_id, turn key), and the turn
+    key is a message_id — so a chat that talks for months coins a new key
+    on every message and both dicts grow by one entry each, forever, with
+    nothing ever reading them again.
+
+    It is *not* what keeps the bot talking: `submit` restarts a finished
+    worker through its own `worker.done()` branch, on the queue it finds or
+    the one it creates, pop or no pop. The second half below pins that the
+    slot rebuilds, so the leak fix cannot be mistaken for a lifeline.
+    """
     spy = Spy()
     turns = Turns(CFG, run=spy.run, deliver=spy.deliver, mark=spy.mark)
     await turns.submit(job(10, key=10))
-    await turns.drain()
-    await turns.submit(job(20, key=20))
+    # Awaiting the worker directly rather than `drain()`, which prunes
+    # `_workers` itself — through it the `_workers` assertion below would
+    # hold whatever the worker did, and half the test would be decoration.
+    await turns._workers[(7, 10)]
+
+    assert turns._queues == {}
+    assert turns._workers == {}
+
+    # Same key, so this is the slot that was just dropped being rebuilt.
+    await turns.submit(job(11, key=10))
     await turns.drain()
     assert len(spy.prompts) == 2
+
+
+async def test_a_message_already_in_flight_is_not_turned_twice() -> None:
+    """The residual window in `route`'s question arm, closed.
+
+    `record` commits `receipt_emoji = None` and the question arm then sits
+    in `answer_for` for two model calls before `claim` runs. An edit landing
+    in there finds a bare row, `record_edited`'s `handed_over` gate lets it
+    through, and the same message is handed over a second time. Measured:
+    the worker needs two event-loop ticks to enter `_turn` and close the
+    batch, so the second hand-off does not merge — it becomes a second turn.
+    Two answers to one message, and two `claude -p --session-id <uuid>`
+    processes on the *same* uuid, because both derive it from one
+    message_id.
+    """
+    gate = asyncio.Event()
+    spy = Spy(gate=gate)
+    turns = Turns(CFG, run=spy.run, deliver=spy.deliver, mark=spy.mark)
+    await turns.submit(job(10, key=10, text="вопрос"))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert len(spy.prompts) == 1  # the worker really is inside the turn
+
+    await turns.submit(job(10, key=10, text="вопрос"))
+    gate.set()
+    await turns.drain()
+
+    assert len(spy.calls) == 1  # one process, one session id
+    assert spy.delivered == [("ok", 10)]
+
+
+async def test_a_signal_killed_process_is_not_retried_cold() -> None:
+    """A negative exit code is the machine talking, not the session.
+
+    `runtime._spawn` returns `proc.returncode or 0`, and a process killed
+    by a signal reports the negative of it — -9 for SIGKILL, whose most
+    plausible source here is the OOM killer. That is truthy, so a predicate
+    written as «not 0 and not None» reads it as a `--resume` naming a
+    session that is not there and buys a full cold retry: 20k
+    cache-creation tokens and a second `claude` process, doubling exactly
+    the memory pressure that killed the first one.
+    """
+    spy = Spy(result="Упал с кодом -9.", ok=False, exit_code=-9)
+    turns = Turns(CFG, run=spy.run, deliver=spy.deliver, mark=spy.mark)
+    await turns.submit(job(11, key=10))
+    await turns.drain()
+
+    assert spy.calls[0][1] is not None  # it really did pass a resume
+    assert len(spy.calls) == 1
+
+
+async def test_a_receipt_that_blows_up_does_not_strand_the_queue() -> None:
+    """Taking 👀 *off* is the step that can fail with work still waiting.
+
+    The receipt is a cue; the turn is the work. Unguarded, a Telegram
+    outage or a database hiccup while clearing 👀 propagates out of `_turn`
+    and kills the worker — and because the failure happens with a job
+    already queued behind this one on the same key, `_work`'s `finally`
+    finds a non-empty queue, keeps the slot, and that job waits for a
+    message that may never come. Two losses from one cosmetic failure: this
+    turn's answer, and the next turn entirely.
+    """
+    gate = asyncio.Event()
+    spy = Spy(gate=gate, ok=False, result="Упал.")
+
+    async def boom(job: Job, started: bool) -> None:
+        if not started:
+            raise RuntimeError("Telegram is down")
+        await spy.mark(job, started)
+
+    turns = Turns(CFG, run=spy.run, deliver=spy.deliver, mark=boom)
+    await turns.submit(job(10, key=10))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert len(spy.prompts) == 1  # the turn is running, so 11 queues behind it
+
+    await turns.submit(job(11, key=10))
+    gate.set()
+    await turns.drain()
+
+    assert len(spy.prompts) == 2  # the job behind it was not stranded
+    assert spy.delivered == [("Упал.", 10), ("Упал.", 11)]
+
+
+async def test_a_receipt_that_blows_up_on_the_way_in_does_not_lose_the_turn() -> None:
+    """The other end of the same guard: 👀 going *on*, before the run.
+
+    Unguarded this one never reaches `self._run` at all, so the failure to
+    place a reaction costs the whole answer.
+    """
+
+    async def boom(job: Job, started: bool) -> None:
+        raise RuntimeError("Telegram is down")
+
+    spy = Spy()
+    turns = Turns(CFG, run=spy.run, deliver=spy.deliver, mark=boom)
+    await turns.submit(job(10, key=10))
+    await turns.drain()
+    assert spy.delivered == [("ok", 10)]
