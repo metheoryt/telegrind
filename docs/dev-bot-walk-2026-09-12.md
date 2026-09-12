@@ -58,6 +58,10 @@ case "$FAKE_MODE" in
   garbage) echo 'not json' ;;
   empty)   echo '{"is_error":false,"result":"","session_id":"s"}' ;;
   long)    python3 -c 'import json;print(json.dumps({"is_error":False,"result":"x"*5000}))' ;;
+  mixed)   case "$*" in
+             *ЖДИ*) sleep 300 ;;
+             *) sleep 5; echo '{"is_error":false,"result":"ок","session_id":"s"}' ;;
+           esac ;;
   html)    echo '{"is_error":false,"result":"if a < b && c > d then <b>ok</b>"}' ;;
   *)       echo '{"is_error":false,"result":"ок","session_id":"s"}' ;;
 esac
@@ -132,7 +136,10 @@ the angle brackets. `FAKE_MODE=long` → arrives truncated at 4096, not dropped.
 a plain question. Expect a sentence in the chat saying it failed — silence with
 a bare bubble means the reply path still swallows the update.
 
-**13. Ctrl-C mid-turn, deliberately — and the startup sweep that recovers it.**
+**13a. Ctrl-C mid-turn, deliberately — and the startup sweep that recovers it.**
+This is the case the sweep is *for*: one killed turn, and nothing in the chat
+after it. Read 13b before concluding anything from it — on its own it passes
+while the sweep is much narrower than it looks.
 `FAKE_MODE=slow`, send a `talk` message, kill the bot mid-turn. `SELECT
 receipt_emoji FROM message WHERE message_id = <it>;` → `👀`: the marker outlives
 the process, and nothing in a dead worker will ever take it off.
@@ -146,9 +153,18 @@ answer it, and 👀 must be re-placed by the new turn.
 either the sweep did not run (it is called from `main.py`, and it swallows every
 exception — check the log for `could not release stranded hand-overs`), or a
 protective row shielded the message: any row the bot itself stored later in that
-chat, including a `/q` answer or a `Разбираю N сообщений…` notice sent after it.
-The second is the predicate erring on its safe side, not a bug — but confirm
-which one it was before touching anything.
+chat — a `/q` answer, a `Разбираю N сообщений…` notice, or the answer to another
+turn (13b). The second is the predicate erring on its safe side, not a bug — but
+confirm which one it was before touching anything.
+
+The 👀 also has to leave the bubble, not just the column. The sweep cannot
+touch reactions, so after the restart the screen and the row disagree until
+something re-places or clears the receipt — and the edit above is that
+something. Edit the released message into a **question** («сколько я потратил
+сегодня») rather than talk: expect the answer as a reply *and* the 👀 gone.
+*Failure:* the answer arrives under a 👀 nothing is behind. *Means:* the
+unconditional clear in `record_edited` is not firing, and the receipt is
+claiming a turn that does not exist.
 
 Then the other direction, which is the one that must not be wrong. Let a `talk`
 message be answered normally, restart, and check that message's
@@ -160,6 +176,35 @@ carry `raw['from_user']['is_bot']` after all. **That is the one fact the sweep
 rests on that no test in the suite can reach**, and this is the only item that
 retires it. `SELECT raw->'from_user'->>'is_bot' FROM message WHERE verdict =
 'system' ORDER BY id DESC LIMIT 5;` answers it directly.
+
+**13b. Two turns at once, only the second killed — where the sweep stops.**
+*This is the boundary, and 13a cannot see it.* `FAKE_MODE=mixed`: that branch
+sleeps only when the prompt contains `ЖДИ`, so one turn can finish while
+another hangs.
+
+Send M1 «привет как дела» (answers after 5s), then immediately M2 «ЖДИ» as an
+**unrelated thread** — not a reply, so the slot key differs and the two run in
+parallel (item 5). Both get 👀. At ~5s M1 is answered, and `outbound.say` stores
+the bot's own answer as a row of its own. Kill the bot while M2 is still
+hanging.
+
+```sql
+SELECT id, message_id, verdict, receipt_emoji FROM message ORDER BY id;
+```
+Expect M1, then M2, then the answer to M1 — `verdict = 'system'`, a **larger
+`id` than M2**, and both M1 and M2 still carrying 👀.
+
+Restart. The log must **not** say `released ... stranded hand-over(s)` (nothing
+is logged when nothing is released), M2's `receipt_emoji` must still read 👀,
+and editing M2 must log `edit after hand-over`. **That is the documented
+behaviour, not a failure:** M2 is shielded by an answer belonging to a
+different turn, so it stays stranded for the life of the database and only a
+new message recovers it — the sweep recovers the stranded messages *after the
+chat's last bot row*, which here is M1's answer.
+*Failure:* M2 **is** released. *Means:* the predicate is not the one
+`release_hand_overs` documents — most likely the bot's own row is not being
+recognised as the bot's (`SELECT raw->'from_user'->>'is_bot'`), which is the
+same fact 13a's second half rests on and the direction that must not be wrong.
 
 ---
 

@@ -18,8 +18,9 @@ the one the fake sessions in the suite structurally cannot reproduce.
 """
 
 from aiogram import Bot
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from telegrind import store
 from telegrind.bot import outbound
@@ -193,9 +194,27 @@ async def release_hand_overs(
     here can reach, that the bot's own rows really do carry that key: a
     `system` row with **no author to read** is treated as the bot's.
 
-    So it errs towards leaving a stranded message stranded — today's
-    behaviour — and away from releasing one that was answered, which would
-    let the next edit hand the same message over a second time.
+    **What it recovers, and what it does not.** «Nothing after it» is the
+    whole predicate, so what this releases is *the stranded messages after
+    the chat's last bot row* — which is a killed turn only when that turn
+    was the last thing in the chat. Anything the bot stored afterwards
+    shields the message for the life of the database, and that is not only
+    an extra message the user caused (a `/q` answer, a `Разбираю N
+    сообщений…` notice): **the answer to a turn that ran beside it counts
+    too.** M1 and M2 are both handed over, M1's turn finishes and stores
+    its answer, M2's is killed — M2's id is now smaller than a bot row, so
+    M2 stays stranded and nothing but a new message recovers it. Two turns
+    at once where the first finishes is the ordinary output of this queue,
+    not an exotic case, so the honest summary is «recovers the tail of the
+    chat, not every stranded turn».
+
+    It is the conservative half doing its job — the shield says «a turn ran
+    to the end in this chat», not «this message was answered» — and the
+    price of a predicate that will not read the reply linkage. Erring this
+    way is deliberate: the other direction releases a message that *was*
+    answered, and the next edit then hands it over a second time. Making
+    the shield narrower means making it exact, which is the reply linkage
+    the dev walk's item 1 is what retires.
 
     Scoped to the allowlist, because the layer cleans up after itself and
     after nothing else. The narrowing is SQL; the decision is Python, and
@@ -226,6 +245,20 @@ async def release_hand_overs(
     async with session.begin():
         result = await session.execute(
             select(LoggedMessage)
+            # Four columns, not the row. `raw` is the whole Telegram
+            # Message as JSON and the only large one, and this set only
+            # grows — a successful turn keeps 👀 for good, so every message
+            # ever handed to Claude comes back at every boot. Nothing here
+            # reads `raw`, and leaving it on the server is the difference
+            # between a boot that stays the same size and one that does
+            # not. It narrows the bytes, not the decision.
+            .options(
+                load_only(
+                    LoggedMessage.chat_pk,
+                    LoggedMessage.message_id,
+                    LoggedMessage.receipt_emoji,
+                )
+            )
             .join(Chat, Chat.id == LoggedMessage.chat_pk)
             .where(
                 LoggedMessage.receipt_emoji == HANDED_OVER,
@@ -236,28 +269,29 @@ async def release_hand_overs(
         if not candidates:
             return []
 
-        # Grouped by authorship, not filtered by it: the aggregate is the
-        # database's to do — a chat's whole history in at most a handful of
-        # rows — while *which* of those groups counts as the bot speaking
-        # stays in Python, where a test can see it. `is_bot` has to be the
-        # same expression object in the select and the GROUP BY.
+        # Rows, not an aggregate. «How far the bot has spoken» reads like a
+        # detail of the query and is half the predicate: a `func.max` here
+        # becomes a `func.min` with the whole suite green, because a fake
+        # session cannot evaluate SQL — and `min` releases turns that
+        # finished, which is the one direction that must not be wrong. So
+        # the database is asked only for the rows it was going to scan
+        # anyway, and both halves of the decision are folded below, where a
+        # test can watch them.
         is_bot = LoggedMessage.raw["from_user"]["is_bot"].astext
         spoken = await session.execute(
             select(
                 LoggedMessage.chat_pk,
                 is_bot,
                 LoggedMessage.verdict,
-                func.max(LoggedMessage.id),
-            )
-            .where(LoggedMessage.chat_pk.in_({row.chat_pk for row in candidates}))
-            .group_by(LoggedMessage.chat_pk, is_bot, LoggedMessage.verdict)
+                LoggedMessage.id,
+            ).where(LoggedMessage.chat_pk.in_({row.chat_pk for row in candidates}))
         )
         last_spoken: dict[int, int] = {}
         # `.tuples()` is a typing narrowing and nothing else: the same rows,
         # typed as the tuples they are.
-        for chat_pk, author, verdict, last in spoken.tuples().all():
+        for chat_pk, author, verdict, spoken_id in spoken.tuples().all():
             if _the_bots_own(author, verdict):
-                last_spoken[chat_pk] = max(last_spoken.get(chat_pk, 0), last)
+                last_spoken[chat_pk] = max(last_spoken.get(chat_pk, 0), spoken_id)
 
         for row in candidates:
             if row.receipt_emoji != HANDED_OVER:

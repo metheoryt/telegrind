@@ -432,6 +432,11 @@ class SweepSession:
         ]
         self.depth = 0
         self.read_depths: list[int] = []
+        #: The statements themselves, because two things about this sweep
+        #: are decided by the SELECT and nothing else can see them: which
+        #: chats it looks at, and that the second read hands back rows for
+        #: Python to fold rather than folding them server-side.
+        self.statements: list[Any] = []
 
     def begin(self) -> Any:
         @contextlib.asynccontextmanager
@@ -446,6 +451,7 @@ class SweepSession:
 
     async def execute(self, statement: object) -> FakeResult:
         self.read_depths.append(self.depth)
+        self.statements.append(statement)
         return self.answers.pop(0)
 
 
@@ -569,3 +575,90 @@ async def test_a_boot_with_nothing_marked_stops_after_one_question() -> None:
     session = SweepSession([])
     assert await meta_wiring.release_hand_overs(session, frozenset({7})) == []
     assert session.read_depths == [1]
+
+
+async def test_the_latest_bot_row_is_what_shields_not_whichever_came_back_first() -> (
+    None
+):
+    """«How far the bot has spoken» is a *maximum*, and it is half the
+    predicate rather than a detail of it.
+
+    A chat accumulates bot rows forever, and they arrive in whatever order
+    the database hands them over. Fold them with anything but a max — the
+    first row, the last row, the smallest — and a message answered long
+    into a chat's life dates against a bot row from before it was ever
+    sent, so «nothing after it» comes out true and the sweep releases a
+    turn that finished. That is the direction the whole design exists to
+    avoid, and it is one character away in either language.
+
+    So the rows below are deliberately unsorted, and the one that matters
+    sits in the middle: 51 shields the message at 50, and nothing shields
+    the one at 60.
+    """
+    stranded = handed_over_row(id=50, chat_pk=1, message_id=50)
+    unanswered = handed_over_row(id=60, chat_pk=1, message_id=60)
+    session = SweepSession(
+        [stranded, unanswered],
+        spoken=[
+            (1, "true", VERDICT_SYSTEM, 11),
+            (1, "true", VERDICT_SYSTEM, 51),
+            (1, "true", VERDICT_SYSTEM, 20),
+        ],
+    )
+
+    assert await meta_wiring.release_hand_overs(session, frozenset({7})) == [60]
+    assert stranded.receipt_emoji == HANDED_OVER
+    assert unanswered.receipt_emoji is None
+
+
+async def test_the_second_read_hands_back_rows_rather_than_folding_them() -> None:
+    """The fold belongs in Python, where the test above can see it.
+
+    A `func.max(...)` with a GROUP BY reads like a narrowing and is not one:
+    it *is* the «how far has the bot spoken» half of the predicate, and a
+    fake session cannot evaluate SQL, so written that way the decision
+    swaps `max` for `min` with the whole suite green — and `min` releases
+    answered turns. This is the only test that can tell the two apart, so
+    it asks the statement itself.
+    """
+    session = SweepSession([handed_over_row(id=5, chat_pk=1, message_id=10)])
+
+    await meta_wiring.release_hand_overs(session, frozenset({7}))
+
+    spoken = str(session.statements[1]).lower()
+    assert "max(" not in spoken
+    assert "min(" not in spoken
+    assert "group by" not in spoken
+
+
+async def test_the_candidate_read_is_scoped_to_the_allowlist() -> None:
+    """The layer cleans up after itself and after nothing else.
+
+    Nothing but `claim` writes 👀 today and `claim` is reachable only
+    through the allowlist-gated hand-off, so dropping the scoping costs
+    nothing *now* — which is exactly why it would go unnoticed. The moment
+    a second writer of that column exists, an unscoped sweep clears markers
+    belonging to a mechanism it knows nothing about. The narrowing is the
+    one thing here that is SQL's to do, so this is where it has to be read.
+    """
+    session = SweepSession([handed_over_row(id=5, chat_pk=1, message_id=10)])
+
+    await meta_wiring.release_hand_overs(session, frozenset({7, 8}))
+
+    candidates = session.statements[0]
+    assert "chat.chat_id IN" in str(candidates)
+    bound = candidates.compile().params
+    assert [sorted(v) for v in bound.values() if isinstance(v, list)] == [[7, 8]]
+
+
+async def test_the_candidate_read_leaves_the_telegram_dump_on_the_server() -> None:
+    """`raw` is the whole Telegram Message as JSON, and the candidate set
+    only grows: a successful turn keeps 👀 for good, so every message ever
+    handed to Claude comes back at every boot. Four scalars per row is a
+    boot that stays the same size; the full ORM entity is tens of MB of it
+    eventually, to read a chat id and an emoji."""
+    session = SweepSession([handed_over_row(id=5, chat_pk=1, message_id=10)])
+
+    await meta_wiring.release_hand_overs(session, frozenset({7}))
+
+    assert "message.raw" not in str(session.statements[0])
