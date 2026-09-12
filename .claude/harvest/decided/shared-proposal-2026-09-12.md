@@ -158,4 +158,8 @@ started in an isolated Orca-managed worktree from the beginning" — already in
 ~/.claude/memory/core.md as a non-negotiable, dated 2026-09-12, the same day, with the
 same substance ("Никогда не редактировать код в main checkout").
 
-CARRIED to latitude (NOT a rejection) (1): "Claude Code is not installed on latitude."
+APPLIED -> machines/.claude/memory/project.md (1): "Claude Code is not installed on
+latitude." Originally parked as a carry-to-latitude item; RETARGETED 2026-09-12 because
+latitude has no Claude Code and therefore no /memory-review run to apply it — the row's
+own content. It follows this repo's existing convention that latitude facts live in the
+machines repo store, since a services host has no ~/.claude to read one. 0 carried.
