@@ -1,6 +1,10 @@
+import asyncio
 import json
+import signal
 import uuid
 from typing import Any
+
+import pytest
 
 from telegrind.meta import runtime
 from telegrind.meta.config import MetaConfig
@@ -193,3 +197,105 @@ async def test_a_non_dict_payload_is_a_failure_not_a_crash() -> None:
 
         result = await runtime.run_turn(CFG, "x", session_id=NEW, spawn=spawn)
         assert result.ok is False
+
+
+class FakeProc:
+    """Enough of an `asyncio.subprocess.Process` for `_spawn`.
+
+    `communicate` is a coroutine that either answers or never returns; the
+    second is how a hung turn is reproduced without hanging a test, because
+    `wait_for` cancels it on the timeout.
+    """
+
+    def __init__(self, *, hangs: bool = False, pid: int = 4242) -> None:
+        self.pid = pid
+        self.returncode = 0
+        self._hangs = hangs
+        self.killed = False
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        if self._hangs:
+            await asyncio.Event().wait()
+        return b'{"result": "ok"}', b""
+
+    def kill(self) -> None:
+        self.killed = True
+
+    async def wait(self) -> int:
+        return self.returncode
+
+
+def spawning_fake(monkeypatch: Any, proc: FakeProc) -> dict[str, Any]:
+    """Stand in for `asyncio.create_subprocess_exec` and record the kwargs.
+
+    A fake, not a subprocess: nothing here starts a process, so the
+    no-subprocess rule holds.
+    """
+    seen: dict[str, Any] = {}
+
+    async def create(*argv: str, **kwargs: Any) -> FakeProc:
+        seen["argv"] = list(argv)
+        seen.update(kwargs)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
+    return seen
+
+
+async def test_a_turn_never_inherits_the_terminal(monkeypatch: Any) -> None:
+    """A bot started from a shell hands its TTY to every turn otherwise.
+
+    `claude -p` reading the operator's keyboard is not a mode anyone asked
+    for, and in the systemd case stdin is whatever the unit happened to
+    get.
+    """
+    seen = spawning_fake(monkeypatch, FakeProc())
+
+    await runtime._spawn(["/usr/bin/claude", "-p"], "/app", 1.0)
+
+    assert seen["stdin"] is asyncio.subprocess.DEVNULL
+
+
+async def test_a_timed_out_turn_kills_the_whole_process_group(
+    monkeypatch: Any,
+) -> None:
+    """`claude` is a node process that spawns its own tools and MCP
+    servers. `proc.kill()` signals the direct child only, so those outlive
+    the timeout — and the bot goes on running beside them.
+
+    `start_new_session=True` is what makes a group to kill; without it the
+    group is the bot's own, and killing it would kill the bot.
+    """
+    proc = FakeProc(hangs=True, pid=4242)
+    seen = spawning_fake(monkeypatch, proc)
+    killed: list[tuple[int, int]] = []
+
+    def killpg(pgid: int, sig: int) -> None:
+        killed.append((pgid, sig))
+
+    monkeypatch.setattr(runtime.os, "killpg", killpg)
+
+    with pytest.raises(TimeoutError):
+        await runtime._spawn(["/usr/bin/claude", "-p"], "/app", 0.01)
+
+    assert seen["start_new_session"] is True
+    assert killed == [(4242, signal.SIGKILL)]
+
+
+async def test_a_group_that_is_already_gone_is_not_an_error(
+    monkeypatch: Any,
+) -> None:
+    """The race is real: the process can exit between the timeout firing
+    and the signal. A ProcessLookupError here would replace the timeout —
+    which `run_turn` handles and says out loud — with an exception that
+    reaches `queue._turn`'s catch-all as «что-то сломалось»."""
+    proc = FakeProc(hangs=True)
+    spawning_fake(monkeypatch, proc)
+
+    def gone(pgid: int, sig: int) -> None:
+        raise ProcessLookupError
+
+    monkeypatch.setattr(runtime.os, "killpg", gone)
+
+    with pytest.raises(TimeoutError):
+        await runtime._spawn(["/usr/bin/claude", "-p"], "/app", 0.01)

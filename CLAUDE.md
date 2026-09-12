@@ -318,7 +318,13 @@ the user. `runtime.py` spawns one process per turn with `--resume <base>
 self-consistent past the third turn of a thread, and it is full Claude Code —
 the same CLAUDE.md, skills, hooks and MCP servers the user has in the TUI.
 `run_turn` never raises; 👀 is a promise, and a crashed or hung process breaks
-it silently unless the failure is said out loud.
+it silently unless the failure is said out loud. `_spawn` starts the turn in a
+session of its own with `stdin=DEVNULL`, and a timeout kills the **process
+group**, not the child: `claude` is a node process that spawns its own tools
+and MCP servers, and `proc.kill()` leaves those running after the turn was
+given up on. No test can see the orphans — nothing here may start a process —
+so the two keywords are asserted against a fake and the survival itself is the
+dev walk's to confirm.
 
 **`telegrind/meta/queue.py`** — one turn at a time per session key, and the
 rest queue. Same key, wait; different key, run now, because different fork

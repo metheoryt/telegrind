@@ -11,8 +11,11 @@ returns one object carrying `result`, `is_error` and `session_id`.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
+import os
+import signal
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -97,16 +100,41 @@ def argv(
 
 
 async def _spawn(argv: list[str], cwd: str, timeout: float) -> tuple[int, str, str]:
+    """One process per turn, in a session of its own, deaf to the terminal.
+
+    `stdin=DEVNULL`, because the bot is started by hand from a shell on
+    dev: without it every turn inherits that TTY, and `claude -p` reading
+    the operator's keyboard is not a mode anyone asked for.
+
+    `start_new_session=True` is the other half of the timeout. `claude` is
+    a node process that spawns its own tools and MCP servers, and
+    `proc.kill()` signals the direct child only — the children outlive the
+    turn that was given up on, and the bot goes on running beside them.
+    The new session makes a process group whose id is the child's pid, so
+    `killpg` reaches all of it. Without it the group is the *bot's* own,
+    and killing the group would kill the bot.
+
+    Not verified end to end: no test may start a process, so the argument
+    is asserted against a fake `create_subprocess_exec` and the orphan
+    survival itself is walk item 18's to confirm.
+    """
     proc = await asyncio.create_subprocess_exec(
         *argv,
         cwd=cwd,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
     )
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except TimeoutError:
-        proc.kill()
+        # Suppressed, not ignored: the process can exit between the timeout
+        # firing and the signal, and a ProcessLookupError here would
+        # replace the TimeoutError — which `run_turn` handles and says out
+        # loud — with a crash string.
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
         await proc.wait()
         raise
     return (
