@@ -107,22 +107,44 @@ def test_an_emoji_that_is_no_longer_in_the_cycle_still_changes() -> None:
 
 
 class EditSession:
-    """Enough session for record_edited: one lookup, reused by the upsert."""
+    """Enough session for record_edited: one lookup, reused by the upsert.
+
+    It keeps a transaction depth for the same reason `NewMessageSession`
+    does — a real session raises «a transaction is already begun» on a
+    nested `session.begin()`, and a fake with no transaction state at all
+    is how that bug ships green. `record_edited` opens three at most and
+    never overlaps them, which is the rule the module docstring states.
+
+    `scalars` is here because the tombstone arm reads the message's live
+    facts; an empty iterator keeps it out of the way of whatever each test
+    is actually pinning.
+    """
 
     def __init__(self, existing: LoggedMessage | None) -> None:
         self.existing = existing
         self.added: list[LoggedMessage] = []
+        self.depth = 0
+        self.commits = 0
 
     def begin(self) -> Any:
         @contextlib.asynccontextmanager
         async def ctx() -> Any:
-            yield
+            assert self.depth == 0, "a transaction is already begun"
+            self.depth += 1
+            try:
+                yield
+            finally:
+                self.depth -= 1
+                self.commits += 1
 
         return ctx()
 
     async def execute(self, statement: object) -> SimpleNamespace:
         row = self.existing
-        return SimpleNamespace(scalar_one_or_none=lambda: row)
+        return SimpleNamespace(
+            scalar_one_or_none=lambda: row,
+            scalars=lambda: iter(()),
+        )
 
     def add(self, obj: object) -> None:
         self.added.append(obj)
@@ -552,6 +574,9 @@ async def test_editing_a_message_with_no_prior_row_keeps_the_fact_default(
     await handlers.record_edited(edit(), Chat(id=1, chat_id=7), session, CFG, FakeBot())
 
     assert session.added[0].verdict == VERDICT_FACT
+    # And the default receipt, not the next emoji along: there is no
+    # previous sighting to have shown the user a 💔 already.
+    assert session.added[0].receipt_emoji == RECEIPT_EMOJI
 
 
 async def test_an_edit_after_the_handover_is_ignored(monkeypatch: Any) -> None:
@@ -748,12 +773,52 @@ async def test_an_edit_that_stops_being_a_fact_tombstones_what_it_derived(
     assert tombstoned == [42]
 
 
-async def test_an_edit_of_a_row_that_was_never_extracted_tombstones_nothing(
+async def test_an_edit_after_a_failed_re_extraction_still_retires_the_facts(
     monkeypatch: Any,
 ) -> None:
-    """There is nothing to orphan, and a tombstone is not free: it is what
-    the tap gesture means, so placing one here would make a later untap
-    restore facts the message never had."""
+    """`extracted_at` is not «has facts», and this is the gap between them.
+
+    Edit an extracted fact and the pass reruns; if its model call raises,
+    `store.mark_failed` writes `extract_error` and leaves `extracted_at`
+    None — deliberately, so the row stays pending and the next /q retries
+    it — while the *previous* pass's facts are still live. Edit it again
+    before any pass succeeds and a `was_extracted` guard reads False, skips
+    this arm, and the row leaves the tail for good with the stale facts on
+    it. The predicate has to be «we have seen this message before».
+    """
+
+    async def talk(*args: Any, **kwargs: Any) -> str:
+        return VERDICT_TALK
+
+    monkeypatch.setattr(handlers.classify, "verdict_for", talk)
+    monkeypatch.setattr(handlers, "route", _noop_route)
+
+    tombstoned: list[int] = []
+
+    async def fake_tombstone(session: Any, message_pk: int, at: Any) -> int:
+        tombstoned.append(message_pk)
+        return 1
+
+    monkeypatch.setattr(handlers.store, "tombstone_facts", fake_tombstone)
+
+    # The state mark_failed leaves behind: pending again, error recorded,
+    # and the facts of the last successful pass untouched.
+    existing = stored(extracted=False)
+    existing.extract_error = "APIConnectionError: Connection error."
+
+    await handlers.record_edited(
+        edit(), Chat(id=1, chat_id=7), EditSession(existing), CFG, FakeBot()
+    )
+
+    assert tombstoned == [42]
+
+
+async def test_an_edit_of_a_message_we_have_never_stored_tombstones_nothing(
+    monkeypatch: Any,
+) -> None:
+    """No previous row, so there is nothing whose facts could be stale —
+    and `row.id` is not assigned until the flush, so asking would be asking
+    about the wrong thing."""
 
     async def talk(*args: Any, **kwargs: Any) -> str:
         return VERDICT_TALK
@@ -762,14 +827,36 @@ async def test_an_edit_of_a_row_that_was_never_extracted_tombstones_nothing(
     monkeypatch.setattr(handlers, "route", _noop_route)
 
     async def never(session: Any, message_pk: int, at: Any) -> int:
-        raise AssertionError("nothing was extracted, so nothing can be tombstoned")
+        raise AssertionError("we have never seen this message, so it has no facts")
 
     monkeypatch.setattr(handlers.store, "tombstone_facts", never)
 
     await handlers.record_edited(
-        edit(),
-        Chat(id=1, chat_id=7),
-        EditSession(stored(extracted=False)),
-        CFG,
-        FakeBot(),
+        edit(), Chat(id=1, chat_id=7), EditSession(None), CFG, FakeBot()
     )
+
+
+async def test_a_talk_row_edited_into_a_fact_gets_the_default_receipt(
+    monkeypatch: Any,
+) -> None:
+    """💔 first, not ❤‍🔥. The cycle is «you already saw this one and I saw
+    your edit», and a row that was never a fact has never been in it — so
+    advancing unconditionally would show the second emoji on a message
+    whose facts are being recorded for the first time."""
+
+    monkeypatch.setattr(handlers.classify, "verdict_for", _a_fact)
+    monkeypatch.setattr(handlers, "route", _noop_route)
+
+    async def never(*args: object, **kwargs: object) -> SimpleNamespace:
+        raise AssertionError("nothing was extracted, so there is nothing to redo")
+
+    monkeypatch.setattr(extract, "run_for", never)
+
+    existing = stored(extracted=False, verdict=VERDICT_TALK)
+    existing.receipt_emoji = None
+
+    await handlers.record_edited(
+        edit(), Chat(id=1, chat_id=7), EditSession(existing), CFG, FakeBot()
+    )
+
+    assert existing.receipt_emoji == RECEIPT_EMOJI

@@ -173,7 +173,7 @@ async def record_edited(
         if was_extracted and verdict == VERDICT_FACT:
             report = await extract.run_for(session, chat, config, row)
             log.info("re-extracted message %s: %s fact(s)", row.id, report.facts)
-        elif was_extracted:
+        elif previous is not None:
             # The facts were derived from text that no longer exists, and
             # the row has just left the extraction tail — `unextracted_tail`
             # selects on the verdict — so no pass will ever revisit them.
@@ -182,8 +182,18 @@ async def record_edited(
             # itself here: the same soft, restorable tombstone the tap
             # gesture places, in the same transaction as the verdict that
             # orphaned them. Without it `/q` goes on counting an expense
-            # whose message now reads «а почему это вообще расход» — and
-            # the receipt that offered to delete it has just come off.
+            # whose message now reads «а почему это вообще расход», on a
+            # message whose 💔 this very edit took off — so nothing on
+            # screen says the fact is still there.
+            #
+            # The predicate is «we have seen this message before», not
+            # `was_extracted`. A re-extraction whose model call failed
+            # leaves `extracted_at` None (`store.mark_failed` writes only
+            # `extract_error`) while the previous pass's facts are still
+            # live, so `was_extracted` is a proxy that goes wrong in
+            # exactly the state this arm exists for. Asking is cheap and
+            # never wrong: `tombstone_facts` selects the live facts itself
+            # and stamps nothing on a message that has none.
             count = await store.tombstone_facts(
                 session, row.id, row.edited_at or datetime.now(UTC)
             )
