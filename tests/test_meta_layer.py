@@ -356,7 +356,11 @@ def test_the_meta_package_imports_nothing_of_the_hosts() -> None:
     """
     package = pathlib.Path(meta.__file__).parent
     offenders: dict[str, set[str]] = {}
-    for path in sorted(package.glob("*.py")):
+    # `rglob`, not `glob`. The whole value of this test is that it does not
+    # rot, and a subpackage added under `meta/` would slip past a
+    # non-recursive walk in silence — which is the exact failure mode it
+    # exists to replace.
+    for path in sorted(package.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         touched: set[str] = set()
         for node in ast.walk(tree):
@@ -378,5 +382,5 @@ def test_the_meta_package_imports_nothing_of_the_hosts() -> None:
             name for name in strangers if not name.startswith("telegrind.meta.")
         }
         if strangers:
-            offenders[path.name] = strangers
+            offenders[str(path.relative_to(package))] = strangers
     assert offenders == {}
