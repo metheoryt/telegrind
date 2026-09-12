@@ -47,7 +47,15 @@ async def test_a_plain_message_is_its_own_turn() -> None:
 
 
 async def test_a_reply_to_ones_own_message_is_that_message() -> None:
-    assert await sessions.turn_key(msg(11, user_msg(10)), parent_of=nothing) == 10
+    """`parent_of` here answers something other than 10, so the assertion
+    only passes if the bot-branch guard is never taken — an inverted guard
+    would call this and return the wrong value instead of passing by
+    accident."""
+
+    async def parent_of(message_id: int) -> int | None:
+        return 999
+
+    assert await sessions.turn_key(msg(11, user_msg(10)), parent_of=parent_of) == 10
 
 
 async def test_a_reply_to_a_bot_message_is_what_the_bot_replied_to() -> None:
