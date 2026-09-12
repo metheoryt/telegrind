@@ -147,9 +147,14 @@ def stored(*, extracted: bool, verdict: str = VERDICT_FACT) -> LoggedMessage:
 
 
 def edit() -> SimpleNamespace:
+    """An edited message. Its `chat.id` deliberately differs from the
+    `Chat.chat_id` every test passes alongside it: the receipt and its
+    clearing must be addressed by the row the middleware resolved, and the
+    two are the same number in production, so only the fixture can tell a
+    swap apart."""
     return SimpleNamespace(
         message_id=10,
-        chat=SimpleNamespace(id=7),
+        chat=SimpleNamespace(id=3260987),
         text="5500 такси",
         caption=None,
         voice=None,
@@ -697,3 +702,74 @@ async def test_an_edited_caption_is_classified_from_the_caption(
     )
 
     assert seen == ["сколько я потратил на это"]
+
+
+async def test_an_edit_that_stops_being_a_fact_tombstones_what_it_derived(
+    monkeypatch: Any,
+) -> None:
+    """The facts came from text that no longer exists, and nothing else will
+    ever clear them.
+
+    `store.unextracted_tail` selects on the verdict, so the row has just
+    left the tail for good; `replace_facts` — the helper that tombstones
+    what an edit dropped — is reachable only from an extraction pass. Left
+    alone, `/q` goes on counting an expense whose message now reads «а
+    почему это вообще расход», and the 💔 that offered to delete it was
+    taken off the bubble by this very edit.
+    """
+
+    async def talk(*args: Any, **kwargs: Any) -> str:
+        return VERDICT_TALK
+
+    monkeypatch.setattr(handlers.classify, "verdict_for", talk)
+    monkeypatch.setattr(handlers, "route", _noop_route)
+
+    async def never(*args: object, **kwargs: object) -> SimpleNamespace:
+        raise AssertionError("a row that is no longer a fact must not be extracted")
+
+    monkeypatch.setattr(extract, "run_for", never)
+
+    tombstoned: list[int] = []
+
+    async def fake_tombstone(session: Any, message_pk: int, at: Any) -> int:
+        tombstoned.append(message_pk)
+        return 1
+
+    monkeypatch.setattr(handlers.store, "tombstone_facts", fake_tombstone)
+
+    await handlers.record_edited(
+        edit(),
+        Chat(id=1, chat_id=7),
+        EditSession(stored(extracted=True)),
+        CFG,
+        FakeBot(),
+    )
+
+    assert tombstoned == [42]
+
+
+async def test_an_edit_of_a_row_that_was_never_extracted_tombstones_nothing(
+    monkeypatch: Any,
+) -> None:
+    """There is nothing to orphan, and a tombstone is not free: it is what
+    the tap gesture means, so placing one here would make a later untap
+    restore facts the message never had."""
+
+    async def talk(*args: Any, **kwargs: Any) -> str:
+        return VERDICT_TALK
+
+    monkeypatch.setattr(handlers.classify, "verdict_for", talk)
+    monkeypatch.setattr(handlers, "route", _noop_route)
+
+    async def never(session: Any, message_pk: int, at: Any) -> int:
+        raise AssertionError("nothing was extracted, so nothing can be tombstoned")
+
+    monkeypatch.setattr(handlers.store, "tombstone_facts", never)
+
+    await handlers.record_edited(
+        edit(),
+        Chat(id=1, chat_id=7),
+        EditSession(stored(extracted=False)),
+        CFG,
+        FakeBot(),
+    )

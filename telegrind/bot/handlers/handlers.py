@@ -8,7 +8,10 @@ The row is committed *before* the classifier runs — two transactions, with
 the model call between them and inside neither. Nothing written is ever
 lost, and that must not come to depend on a model call: aiogram advances
 the polling offset as it dispatches, so an update lost mid-handler is never
-redelivered. Do not fold the two back into one.
+redelivered. Do not fold the two back into one. `record_edited` honours the
+same rule in the mirror order — read, classify, then write, since an edit
+has a previous row to consult — so neither handler ever holds a write
+transaction open across a model call.
 
 There is no COMMAND_LIKE filter any more. The slash rule lives in
 `classify.presumed`, because two rules that can disagree about whether a
@@ -16,6 +19,7 @@ message is a command is a bug found in production.
 """
 
 import logging
+from datetime import UTC, datetime
 
 from aiogram import Bot
 from aiogram.types import Message
@@ -169,6 +173,21 @@ async def record_edited(
         if was_extracted and verdict == VERDICT_FACT:
             report = await extract.run_for(session, chat, config, row)
             log.info("re-extracted message %s: %s fact(s)", row.id, report.facts)
+        elif was_extracted:
+            # The facts were derived from text that no longer exists, and
+            # the row has just left the extraction tail — `unextracted_tail`
+            # selects on the verdict — so no pass will ever revisit them.
+            # `replace_facts` is what tombstones what an edit dropped, and
+            # it is reachable only from a pass, so the row has to do it
+            # itself here: the same soft, restorable tombstone the tap
+            # gesture places, in the same transaction as the verdict that
+            # orphaned them. Without it `/q` goes on counting an expense
+            # whose message now reads «а почему это вообще расход» — and
+            # the receipt that offered to delete it has just come off.
+            count = await store.tombstone_facts(
+                session, row.id, row.edited_at or datetime.now(UTC)
+            )
+            log.info("tombstoned %s fact(s) of edited message %s", count, row.id)
 
     if emoji is None and was_fact:
         # The receipt promised a delete gesture the message no longer has.
