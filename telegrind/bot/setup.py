@@ -1,10 +1,64 @@
-from aiogram import Dispatcher
+import logging
 
+from aiogram import Dispatcher
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from telegrind.meta import MetaConfig, MetaLayer
+
+from . import meta_wiring
 from .dispatcher import dp
 from .router import router
 
+log = logging.getLogger(__name__)
 
-def setup_dispatcher() -> Dispatcher:
+
+def attach_meta(
+    async_session: async_sessionmaker[AsyncSession] | None,
+) -> MetaLayer | None:
+    """Build the conversation half and make it reachable from ingest.
+
+    Off is a supported state rather than a misconfiguration: without
+    CLAUDE_ADMIN_CHAT_IDS the recording half runs exactly as before, talk
+    is stored and left bare, and a refused question keeps saying so instead
+    of going silent. There are two ways to be off and they are logged
+    apart — an unset allowlist is a choice, a missing sessionmaker is a
+    caller that forgot, and a worker opens its own session so it genuinely
+    cannot run without one.
+
+    Separate from `setup_dispatcher` because that function can only run
+    once per process — `dp.include_router` on a module-level singleton —
+    which would leave the assignment below untestable. It touches no
+    router, so a test can call it as often as it likes.
+    """
+    # Imported here, not at module scope: `setup_dispatcher` owns the order
+    # handler modules are first imported in, and a module-level import here
+    # would take that away from it.
+    from .handlers import handlers
+
+    cfg = MetaConfig.from_env()
+    if cfg is None:
+        log.info("meta layer off: CLAUDE_ADMIN_CHAT_IDS is not set")
+        return None
+    if async_session is None:
+        log.info("meta layer off: no sessionmaker was passed to setup_dispatcher")
+        return None
+
+    layer = MetaLayer(
+        cfg,
+        async_session=async_session,
+        parent_of=meta_wiring.parent_of,
+        claim=meta_wiring.claim,
+        set_receipt=meta_wiring.set_receipt,
+        speak=meta_wiring.speak,
+    )
+    handlers.HAND_OVER = layer.hand_over
+    log.info("meta layer on for %s chat(s)", len(cfg.admin_chat_ids))
+    return layer
+
+
+def setup_dispatcher(
+    async_session: async_sessionmaker[AsyncSession] | None = None,
+) -> Dispatcher:
     """Import the handler modules, which is what registers them.
 
     Registration is subscription: importing a handler module registers its
@@ -31,11 +85,21 @@ def setup_dispatcher() -> Dispatcher:
 
     There is no ChatActionMiddleware any more: it went with the echo, and
     nothing types.
+
+    The sessionmaker is optional and only the meta layer wants it — a
+    worker outlives the update that queued it, so it cannot borrow the
+    handler's session. Without one, `attach_meta` says so and the bot runs
+    as the recording half alone.
     """
     from . import middleware  # noqa: F401, I001
     from .handlers import query as query
     from .handlers import handlers as handlers
     from .handlers import reactions as reactions
+
+    # After the imports above, never before: this is what hands the ingest
+    # handler something to hand a message to, and that module has to exist
+    # in the order `setup_dispatcher` chose.
+    attach_meta(async_session)
 
     dp.include_router(router)
 

@@ -11,7 +11,6 @@ from telegrind.bot.setup import setup_dispatcher
 
 
 async def main() -> None:
-    dp = setup_dispatcher()
     engine = create_async_engine(os.environ["DATABASE_URL"], echo=False)
     # expire_on_commit=False is load-bearing, not tidiness. `record` commits
     # the message row and then hands it to `bot/routing.py`, which reads
@@ -27,6 +26,11 @@ async def main() -> None:
     # No test can catch its removal: the suite's hand-written fake sessions
     # have no transaction state at all, so it goes green and fails on the box.
     async_session = async_sessionmaker(engine, expire_on_commit=False)
+
+    # Built after the sessionmaker, because the meta layer needs it: a turn
+    # answers long after the update that queued it, so its worker opens a
+    # session of its own rather than borrowing the handler's.
+    dp = setup_dispatcher(async_session)
 
     token = os.environ["BOT_TOKEN"]
     bot = Bot(token, default=DefaultBotProperties(parse_mode="HTML"))

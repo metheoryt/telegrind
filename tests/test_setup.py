@@ -1,13 +1,21 @@
-"""One test, and it has to stay one.
+"""One test of `setup_dispatcher`, and it has to stay one.
 
 `setup_dispatcher()` ends in `dp.include_router(router)`, and both are
 module-level singletons — a second call raises «Router is already
-attached». So everything about the wiring is asserted in a single pass.
+attached». So everything about the *registration* is asserted in a single
+pass.
+
+`attach_meta` is split out of it for exactly that reason: it touches no
+router, so it can be called as often as a test likes, and the one line in
+`setup_dispatcher` worth pinning — the assignment that makes a hand-off
+reachable at all — becomes testable. The tests below are that.
 """
 
+import logging
 import sys
 from typing import Any
 
+from telegrind.bot import setup
 from telegrind.bot.router import router
 from telegrind.bot.setup import setup_dispatcher
 
@@ -64,3 +72,61 @@ def test_the_wiring_registers_in_order_and_subscribes_the_reaction_update(
 
     assert [h.callback.__name__ for h in router.message.handlers] == ["ask", "record"]
     assert "message_reaction" in dp.resolve_used_update_types()
+
+
+def a_sessionmaker() -> Any:
+    """Stands in for `async_sessionmaker`. `attach_meta` only stores it."""
+    return None
+
+
+def test_the_hand_off_is_reachable_once_the_layer_is_attached(
+    monkeypatch: Any,
+) -> None:
+    """`handlers.HAND_OVER` is a module global set from the outside, and a
+    typo in that one line is silent: routing would log «nobody to hand
+    message N to» forever and the bot would look like it simply never
+    talks."""
+    from telegrind.bot.handlers import handlers
+
+    monkeypatch.setenv("CLAUDE_ADMIN_CHAT_IDS", "7")
+    monkeypatch.setattr(handlers, "HAND_OVER", None)
+
+    layer = setup.attach_meta(a_sessionmaker)
+
+    assert layer is not None
+    assert layer.hand_over == handlers.HAND_OVER
+
+
+def test_no_allowlist_leaves_the_recording_half_running_alone(
+    monkeypatch: Any,
+) -> None:
+    """Off is a supported state, not a misconfiguration: without the
+    allowlist the bot stores and counts exactly as it did before."""
+    from telegrind.bot.handlers import handlers
+
+    monkeypatch.delenv("CLAUDE_ADMIN_CHAT_IDS", raising=False)
+    monkeypatch.setattr(handlers, "HAND_OVER", None)
+
+    assert setup.attach_meta(a_sessionmaker) is None
+    assert handlers.HAND_OVER is None
+
+
+def test_a_missing_sessionmaker_is_not_blamed_on_the_allowlist(
+    monkeypatch: Any, caplog: Any
+) -> None:
+    """Two different reasons to be off, and the log has to say which. A
+    worker outlives the update that queued it and opens its own session, so
+    a caller that passed no sessionmaker has a real bug — and being told
+    «CLAUDE_ADMIN_CHAT_IDS is not set» about an allowlist that *is* set
+    sends the next hour in the wrong direction."""
+    from telegrind.bot.handlers import handlers
+
+    monkeypatch.setenv("CLAUDE_ADMIN_CHAT_IDS", "7")
+    monkeypatch.setattr(handlers, "HAND_OVER", None)
+
+    with caplog.at_level(logging.INFO, logger="telegrind.bot.setup"):
+        assert setup.attach_meta(None) is None
+
+    assert "sessionmaker" in caplog.text
+    assert "CLAUDE_ADMIN_CHAT_IDS" not in caplog.text
+    assert handlers.HAND_OVER is None
