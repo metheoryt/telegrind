@@ -12,3 +12,5 @@ google-account.json
 .claude/skills/generated/
 # Claude Code machine-local settings
 .claude/settings.local.json
+# memory-harvest scratch state (`state-before.json` and `decided/` are tracked)
+.claude/harvest/state-remote.json
