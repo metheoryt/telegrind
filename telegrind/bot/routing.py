@@ -1,13 +1,15 @@
 """The verdict decides: a receipt, an answer, or a hand-off.
 
-The one place the three arms meet, and the seam the meta layer plugs into —
-`hand_over` is passed in, so nothing here imports `telegrind.meta` and
-removing the meta layer is deleting one argument at the call site.
+The one place the three arms meet. `hand_over` is passed in rather than
+imported, which is why removing the Claude meta layer on 2026-09-14 cost one
+argument at the call site and nothing here: it is `None` now, and every arm
+is tested that way. It stays as the seam an in-process answerer would attach
+to; Claude itself moved to its own bot on the host (`~/my/cladaeb`).
 
 The receipt is the routing signal. 💔 means «understood as a fact, will
-extract it», and tapping it deletes. 👀 means «handed to Claude», placed by
-the meta layer when the turn starts rather than here, so the queue is legible
-on screen: the messages still bare are the ones not yet seen.
+extract it», and tapping it deletes. 👀 meant «handed to Claude» and was
+placed by the meta layer when a turn started, not here — with `hand_over`
+None nothing places it, and a `talk` message is stored and left bare.
 """
 
 import logging
@@ -44,8 +46,8 @@ BROKEN = "Что-то сломалось, попробуй ещё раз."
 
 #: A hard Bot API limit on one message. Over it `send_message` is a 400,
 #: which the guard below would turn into BROKEN — losing an answer already
-#: paid for with two model calls. `meta_wiring.speak` caps its side for the
-#: same reason and says more about why splitting is not the answer.
+#: paid for with two model calls. Cap rather than split: half an answer
+#: delivered as two messages reads worse than one that says it was cut.
 TELEGRAM_LIMIT = 4096
 
 
@@ -161,8 +163,7 @@ async def _act(
             # markup-free, so they keep the default. `answer_for` can also
             # return our own EMPTY_QUESTION down this branch, which is
             # markup-free too and simply comes along — the rule is that a
-            # site which *can* carry model-authored text overrides, the
-            # same rule `meta_wiring.speak` states for Claude's side.
+            # site which *can* carry model-authored text overrides.
             await say(
                 bot,
                 session,

@@ -95,9 +95,7 @@ def by_the_bot(row: LoggedMessage) -> bool:
 
     `raw` carries aiogram's own field name `from_user`, never the Bot
     API's `from`: `upsert_message` dumps without `by_alias`, so the alias
-    never survives into the column. `meta_wiring._the_bots_own` asks the
-    same question of a row it reads back differently; if the answer ever
-    has to change, both change.
+    never survives into the column.
     """
     return bool(((row.raw or {}).get("from_user") or {}).get("is_bot"))
 

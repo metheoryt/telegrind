@@ -7,21 +7,20 @@ from aiogram.client.default import DefaultBotProperties
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from telegrind.bot.setup import release_stranded_turns, setup_dispatcher
+from telegrind.bot.setup import setup_dispatcher
 
 
 async def main() -> None:
     engine = create_async_engine(os.environ["DATABASE_URL"], echo=False)
-    # expire_on_commit=False is load-bearing, not tidiness. It has three
+    # expire_on_commit=False is load-bearing, not tidiness. It has two
     # consumers, and an invariant documented by an incomplete list is one
     # that rots. `record` commits the message row and then hands it to
     # `bot/routing.py`, which reads `row.verdict` — and `chat.id` off a Chat
-    # the middleware committed earlier. And `meta_wiring.speak` reads a Chat
-    # inside `session.begin()`, then hands it to `outbound.say`, which reads
-    # `chat.chat_id` *after* that transaction committed and before its own
-    # opens — on a session this sessionmaker built, because `_mark` and
-    # `_deliver` open their own rather than borrowing the handler's. No fake
-    # can reach that path at all. Under the default True, commit expires
+    # the middleware committed earlier. And `outbound.say` reads
+    # `chat.chat_id` after the caller's transaction committed and before its
+    # own opens. (A third consumer went with the Claude meta layer on
+    # 2026-09-14; if an answerer that outlives its update ever comes back,
+    # it is a consumer again.) Under the default True, commit expires
     # those attributes and the next read has to refresh them, which is IO on
     # an object nobody is in a transaction for. The likeliest traceback is
     # `sqlalchemy.exc.MissingGreenlet` at the attribute access — implicit IO
@@ -33,16 +32,7 @@ async def main() -> None:
     # have no transaction state at all, so it goes green and fails on the box.
     async_session = async_sessionmaker(engine, expire_on_commit=False)
 
-    # Built after the sessionmaker, because the meta layer needs it: a turn
-    # answers long after the update that queued it, so its worker opens a
-    # session of its own rather than borrowing the handler's.
-    dp = setup_dispatcher(async_session)
-
-    # Before polling, and it has to stay before it. A worker is a bare
-    # `create_task` in this process, so a row still marked handed-over at
-    # this point was marked by a process that is gone — which is the whole
-    # licence the sweep runs on. It never raises: see `release_stranded_turns`.
-    await release_stranded_turns(async_session)
+    dp = setup_dispatcher()
 
     token = os.environ["BOT_TOKEN"]
     bot = Bot(token, default=DefaultBotProperties(parse_mode="HTML"))
