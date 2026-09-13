@@ -90,6 +90,39 @@ def reply_to(row: LoggedMessage) -> int | None:
     return ((row.raw or {}).get("reply_to_message") or {}).get("message_id")
 
 
+def by_the_bot(row: LoggedMessage) -> bool:
+    """Did the bot itself put this message in the chat?
+
+    `raw` carries aiogram's own field name `from_user`, never the Bot
+    API's `from`: `upsert_message` dumps without `by_alias`, so the alias
+    never survives into the column. `meta_wiring._the_bots_own` asks the
+    same question of a row it reads back differently; if the answer ever
+    has to change, both change.
+    """
+    return bool(((row.raw or {}).get("from_user") or {}).get("is_bot"))
+
+
+async def turn_root(session: AsyncSession, chat_pk: int, message_id: int) -> int:
+    """Which message a reply to `message_id` continues.
+
+    The host half of `meta.sessions.turn_key`, and it has to agree with
+    it. They answer two halves of one question — which verdict a reply
+    inherits, and which session its turn writes to — so a chain where
+    they disagree hands Claude a message in a session that never saw the
+    thread: an answer with no memory of the conversation it is in, which
+    is the failure this resolution exists to prevent. One test feeds the
+    same chain to both.
+
+    Total by construction: an unknown parent is its own root, so a
+    conversation that predates the bot storing what it says degrades to
+    «continues nothing» rather than raising.
+    """
+    parent = await get_message(session, chat_pk, message_id)
+    if parent is None or not by_the_bot(parent):
+        return message_id
+    return reply_to(parent) or message_id
+
+
 async def upsert_message(
     session: AsyncSession,
     chat: Chat,

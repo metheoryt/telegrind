@@ -50,12 +50,30 @@ def presumed(text: str | None) -> str | None:
 async def verdict_for(
     text: str | None,
     *,
+    continues: str | None,
     call: Callable[..., Awaitable[dict]] = llm.use_tool,
 ) -> str:
-    """One classification. Never raises."""
+    """One classification. Never raises.
+
+    `continues` is the verdict of the turn this message replies into, or
+    None when it starts one. It has no default on purpose: a permissive
+    default on a new routing input is exactly how `verdict` itself once
+    re-admitted every slash command to the extraction tail, and nothing
+    failed — the rows were simply parsed.
+    """
     decided = presumed(text)
     if decided is not None:
         return decided
+
+    # The reply chain outranks the model, and it is read *after*
+    # `presumed`: that order is chosen, not inherited. /q typed as a reply
+    # to Claude still means «ask the ledger», and a sticker sent into a
+    # conversation still has nothing readable to hand over. What the chain
+    # decides is the case the text cannot: «а последний коммит какой» is a
+    # question about the ledger on its own and a continuation in a thread,
+    # and only one of the two is true at a time.
+    if continues == VERDICT_TALK:
+        return VERDICT_TALK
 
     try:
         payload = await call(llm.CLASSIFY_SYSTEM, text or "", llm.CLASSIFY_TOOL)

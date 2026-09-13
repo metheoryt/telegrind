@@ -2,8 +2,10 @@ import uuid
 from types import SimpleNamespace
 from typing import Any
 
+from telegrind import store
 from telegrind.meta import sessions
 from telegrind.meta.config import MetaConfig
+from telegrind.models import VERDICT_SYSTEM, VERDICT_TALK
 
 
 def msg(message_id: int, parent: Any = None) -> SimpleNamespace:
@@ -86,3 +88,71 @@ def test_the_allowlist_is_read_off_the_environment(monkeypatch: Any) -> None:
     cfg = MetaConfig.from_env()
     assert cfg is not None
     assert cfg.allows(7) and cfg.allows(8) and not cfg.allows(9)
+
+
+class RowSession:
+    """Enough session for `store.turn_root`: a table of our own rows.
+
+    `execute` ignores the statement and answers from the chain, which is
+    all `get_message` asks of it.
+    """
+
+    def __init__(self, rows: dict[int, Any]) -> None:
+        self.rows = rows
+        self.asked: list[int] = []
+
+    async def execute(self, statement: Any) -> SimpleNamespace:
+        wanted = statement.compile().params["message_id_1"]
+        self.asked.append(wanted)
+        return SimpleNamespace(scalar_one_or_none=lambda: self.rows.get(wanted))
+
+
+def row(message_id: int, verdict: str, *, is_bot: bool, reply_to: int | None) -> Any:
+    return SimpleNamespace(
+        message_id=message_id,
+        verdict=verdict,
+        raw={
+            "from_user": {"is_bot": is_bot},
+            **({"reply_to_message": {"message_id": reply_to}} if reply_to else {}),
+        },
+    )
+
+
+async def test_the_host_and_the_guest_resolve_the_same_root() -> None:
+    """The chain measured in the live chat on 2026-09-13: 1124 asked, 1125
+    is Claude's reply to it, 1126 replies to 1125.
+
+    Two answers to one question — which verdict does 1126 inherit, and
+    which session does its turn write to — and they are computed by two
+    different modules. If they ever disagree the message goes to Claude
+    but into the wrong session, and comes back answered with no memory of
+    the thread: the very symptom this fix exists to remove.
+    """
+    session = RowSession(
+        {
+            1125: row(1125, VERDICT_SYSTEM, is_bot=True, reply_to=1124),
+            1124: row(1124, VERDICT_TALK, is_bot=False, reply_to=None),
+        }
+    )
+
+    async def parent_of(message_id: int) -> int | None:
+        return {1125: 1124}.get(message_id)
+
+    guest = await sessions.turn_key(msg(1126, bot_msg(1125)), parent_of=parent_of)
+    host = await store.turn_root(session, 1, 1125)
+
+    assert host == guest == 1124
+
+
+async def test_a_reply_to_ones_own_message_resolves_to_that_message() -> None:
+    """No hop: the parent is the turn. Same shape as the guest's own
+    `test_a_reply_to_ones_own_message_is_that_message`."""
+    session = RowSession({10: row(10, VERDICT_TALK, is_bot=False, reply_to=999)})
+    assert await store.turn_root(session, 1, 10) == 10
+
+
+async def test_an_unknown_parent_resolves_to_itself() -> None:
+    """A message from before the bot stored what it says. Falling back to
+    the parent keeps the lookup total — the caller then finds no row and
+    reads no verdict, which is the same as not continuing anything."""
+    assert await store.turn_root(RowSession({}), 1, 10) == 10

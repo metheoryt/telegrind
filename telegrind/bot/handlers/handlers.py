@@ -48,6 +48,28 @@ log = logging.getLogger(__name__)
 HAND_OVER: HandOver | None = None
 
 
+async def _continues(
+    session: AsyncSession, chat_pk: int, message: Message
+) -> str | None:
+    """The verdict of the turn this message replies into, or None.
+
+    Read *after* the row is committed, never before: a lookup that fails
+    ahead of the commit loses the update, and this one is a refinement of
+    the routing decision, not part of storing anything.
+
+    In a transaction of its own, because a bare read autobegins one that
+    never closes and the next `session.begin()` then raises «a transaction
+    is already begun».
+    """
+    parent = message.reply_to_message
+    if parent is None:
+        return None
+    async with session.begin():
+        root_id = await store.turn_root(session, chat_pk, parent.message_id)
+        root = await store.get_message(session, chat_pk, root_id)
+        return root.verdict if root is not None else None
+
+
 @router.message()
 async def record(
     message: Message, chat: Chat, config: ChatConfig, session: AsyncSession, bot: Bot
@@ -73,7 +95,10 @@ async def record(
         )
         row.receipt_emoji = RECEIPT_EMOJI
 
-    verdict = await classify.verdict_for(message.text or message.caption)
+    verdict = await classify.verdict_for(
+        message.text or message.caption,
+        continues=await _continues(session, chat.id, message),
+    )
 
     # A second, short transaction, and the model call is outside both. Die
     # between them and the row is a stored fact in the extraction tail —
@@ -151,7 +176,10 @@ async def record_edited(
     # edited photo caption has no `.text`, and reading only that would hand
     # the classifier None — which `presumed` answers `fact`, putting an
     # edited question into the extraction tail and leaving it unanswered.
-    verdict = await classify.verdict_for(edited_message.text or edited_message.caption)
+    verdict = await classify.verdict_for(
+        edited_message.text or edited_message.caption,
+        continues=await _continues(session, chat.id, edited_message),
+    )
 
     async with session.begin():
         row, _ = await store.upsert_message(

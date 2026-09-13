@@ -35,17 +35,68 @@ def test_ordinary_text_needs_the_model() -> None:
     assert classify.presumed("4500 такси") is None
 
 
-async def test_the_model_decides_ordinary_text() -> None:
-    assert await classify.verdict_for("почему это расход", call=answering("talk")) == (
-        VERDICT_TALK
+async def test_a_reply_into_a_talk_thread_needs_no_call() -> None:
+    """The reply chain outranks the classifier.
+
+    Measured in the live chat on 2026-09-13: «а последний коммит какой»,
+    said as a reply to Claude's own answer, was classified `question` and
+    answered by the SQL engine with «По этому вопросу записей нет.» It
+    reads as a question about the ledger only when it is not said
+    mid-conversation, and the chain is what knows the difference.
+    """
+
+    async def explode(*args: Any, **kwargs: Any) -> dict:
+        raise AssertionError("a continuation needs no model call")
+
+    assert (
+        await classify.verdict_for(
+            "а последний коммит какой", continues=VERDICT_TALK, call=explode
+        )
+        == VERDICT_TALK
     )
+
+
+async def test_a_command_inside_a_talk_thread_is_still_a_command() -> None:
+    """`presumed` runs first, and that order is chosen, not inherited: /q
+    is the explicit override and must keep meaning «ask the ledger» even
+    when it is typed as a reply to Claude."""
+
+    async def explode(*args: Any, **kwargs: Any) -> dict:
+        raise AssertionError("a command needs no model call")
+
+    assert (
+        await classify.verdict_for(
+            "/q сколько я потратил", continues=VERDICT_TALK, call=explode
+        )
+        == VERDICT_QUESTION
+    )
+
+
+async def test_a_reply_into_any_other_thread_is_classified_normally() -> None:
+    """Only `talk` is contagious. A reply to one's own fact is fact
+    chaining, and a reply to a ledger answer is not a conversation."""
+    assert (
+        await classify.verdict_for(
+            "4500 такси", continues=VERDICT_QUESTION, call=answering("fact")
+        )
+        == VERDICT_FACT
+    )
+
+
+async def test_the_model_decides_ordinary_text() -> None:
+    assert await classify.verdict_for(
+        "почему это расход", continues=None, call=answering("talk")
+    ) == (VERDICT_TALK)
 
 
 async def test_a_presumed_verdict_makes_no_call() -> None:
     async def explode(*args: Any, **kwargs: Any) -> dict:
         raise AssertionError("the classifier was called for a command")
 
-    assert await classify.verdict_for("/start", call=explode) == VERDICT_SYSTEM
+    assert (
+        await classify.verdict_for("/start", continues=None, call=explode)
+        == VERDICT_SYSTEM
+    )
 
 
 async def test_a_classifier_failure_defaults_to_fact() -> None:
@@ -55,18 +106,24 @@ async def test_a_classifier_failure_defaults_to_fact() -> None:
     async def failing(*args: Any, **kwargs: Any) -> dict:
         raise RuntimeError("overloaded_error")
 
-    assert await classify.verdict_for("4500 такси", call=failing) == VERDICT_FACT
+    assert (
+        await classify.verdict_for("4500 такси", continues=None, call=failing)
+        == VERDICT_FACT
+    )
 
 
 async def test_a_verdict_the_model_invented_defaults_to_fact() -> None:
-    assert await classify.verdict_for("x", call=answering("чепуха")) == VERDICT_FACT
+    assert (
+        await classify.verdict_for("x", continues=None, call=answering("чепуха"))
+        == VERDICT_FACT
+    )
 
 
 async def test_a_payload_with_no_verdict_key_defaults_to_fact() -> None:
     async def empty(*args: Any, **kwargs: Any) -> dict:
         return {}
 
-    assert await classify.verdict_for("x", call=empty) == VERDICT_FACT
+    assert await classify.verdict_for("x", continues=None, call=empty) == VERDICT_FACT
 
 
 async def test_a_non_dict_payload_defaults_to_fact() -> None:
@@ -77,4 +134,4 @@ async def test_a_non_dict_payload_defaults_to_fact() -> None:
     async def nothing(*args: Any, **kwargs: Any) -> dict:
         return None  # type: ignore[return-value]
 
-    assert await classify.verdict_for("x", call=nothing) == VERDICT_FACT
+    assert await classify.verdict_for("x", continues=None, call=nothing) == VERDICT_FACT

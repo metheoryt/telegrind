@@ -45,6 +45,7 @@ def message(message_id: int = 4821) -> SimpleNamespace:
         voice=None,
         forward_origin=None,
         chat=SimpleNamespace(id=3260987),
+        reply_to_message=None,
         model_dump=lambda mode=None: {"message_id": message_id},
     )
 
@@ -177,6 +178,7 @@ def edit() -> SimpleNamespace:
     return SimpleNamespace(
         message_id=10,
         chat=SimpleNamespace(id=3260987),
+        reply_to_message=None,
         text="5500 такси",
         caption=None,
         voice=None,
@@ -327,8 +329,71 @@ def command_message(text: str = "/start") -> SimpleNamespace:
         voice=None,
         forward_origin=None,
         chat=SimpleNamespace(id=3260987),
+        reply_to_message=None,
         model_dump=lambda mode=None: {"message_id": 99},
     )
+
+
+class ReplySession(NewMessageSession):
+    """`record` for a reply: the chain's rows exist, this message does not."""
+
+    def __init__(self, rows: dict[int, Any]) -> None:
+        super().__init__()
+        self.rows = rows
+
+    async def execute(self, statement: Any) -> SimpleNamespace:
+        wanted = statement.compile().params.get("message_id_1")
+        return SimpleNamespace(scalar_one_or_none=lambda: self.rows.get(wanted))
+
+
+def chain_row(
+    message_id: int, verdict: str, *, is_bot: bool, parent: int | None
+) -> Any:
+    return SimpleNamespace(
+        message_id=message_id,
+        verdict=verdict,
+        raw={
+            "from_user": {"is_bot": is_bot},
+            **({"reply_to_message": {"message_id": parent}} if parent else {}),
+        },
+    )
+
+
+async def test_a_reply_to_claude_is_talk_without_asking_the_classifier(
+    monkeypatch: Any,
+) -> None:
+    """The chain measured live on 2026-09-13. 1124 was `talk`, 1125 is
+    Claude's reply to it, and 1126 - «а последний коммит какой» - went to
+    the SQL engine because the classifier only ever saw the text."""
+
+    async def explode(*args: Any, **kwargs: Any) -> dict:
+        raise AssertionError("a continuation needs no model call")
+
+    # The real classifier, with an exploding model call: what is under
+    # test here is the handler resolving the chain and handing it over,
+    # and a stubbed `verdict_for` would test the stub.
+    real = handlers.classify.verdict_for
+
+    async def guarded(text: str | None, *, continues: str | None) -> str:
+        return await real(text, continues=continues, call=explode)
+
+    monkeypatch.setattr(handlers.classify, "verdict_for", guarded)
+    monkeypatch.setattr(handlers, "route", _noop_route)
+
+    session = ReplySession(
+        {
+            1125: chain_row(1125, VERDICT_SYSTEM, is_bot=True, parent=1124),
+            1124: chain_row(1124, VERDICT_TALK, is_bot=False, parent=None),
+        }
+    )
+    reply = message(1126)
+    reply.text = "а последний коммит какой"
+    reply.reply_to_message = SimpleNamespace(message_id=1125)
+
+    await handlers.record(reply, Chat(id=1, chat_id=7), CFG, session, FakeBot())
+
+    assert session.added[0].verdict == VERDICT_TALK
+    assert session.added[0].extractable is False
 
 
 async def test_a_non_q_command_gets_the_system_verdict() -> None:
