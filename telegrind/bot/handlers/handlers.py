@@ -148,9 +148,13 @@ async def record_edited(
     # call must sit between two transactions, never inside one.
     async with session.begin():
         previous = await store.get_message(session, chat.id, edited_message.message_id)
-        # Read off the row, not off Telegram: a meta layer that committed
-        # the hand-over but failed to place the reaction still holds the
-        # point of no return.
+        # Nothing places 👀 any more — the Claude meta layer moved out to its
+        # own bot on 2026-09-14 — so this only ever matches a row a database
+        # already carried. Kept rather than dropped because dropping it would
+        # re-open those rows to re-routing, which is the one thing the marker
+        # was written to prevent. Read off the row, not off Telegram: a
+        # hand-over that committed but failed to place the reaction still
+        # holds the point of no return.
         handed_over = previous is not None and previous.receipt_emoji == HANDED_OVER
         was_extracted = previous is not None and previous.extracted_at is not None
         was_fact = previous is not None and previous.verdict == VERDICT_FACT

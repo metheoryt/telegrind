@@ -79,8 +79,9 @@ async def route(
     receipt stays as `record` left it — bare for a question or for talk —
     because no emoji in the vocabulary means «this went wrong», and a bare
     `receipt_emoji` is exactly what keeps the message recoverable:
-    `record_edited`'s point-of-no-return gate reads `== HANDED_OVER`, so an
-    edit re-classifies and re-routes it, and re-asking always works. The
+    `record_edited`'s point-of-no-return gate reads `== HANDED_OVER`, which
+    nothing writes any more, so an edit re-classifies and re-routes it, and
+    re-asking always works. The
     bare bubble on its own would claim «queued» about something that is
     not; the sentence in the chat is what corrects that claim.
     """

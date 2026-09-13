@@ -8,32 +8,27 @@ Telegrind is an async Telegram bot that keeps a personal log. You write what
 happened in natural language; every message is stored verbatim in Postgres on
 arrival, and a batch pass derives facts from it when you ask. The dialogue is
 the product — there is no spreadsheet. The bot uses aiogram, SQLAlchemy
-(asyncpg) and the Anthropic API — and, on a dev box only, a `claude -p`
-subprocess, which is the meta layer and the fourth runtime dependency.
+(asyncpg) and the Anthropic API.
 
-Two specs, and both are live:
-
-- `docs/superpowers/specs/2026-09-11-dialogue-first-design.md` — the recording
-  half. Phase 1 (store, react, tombstone) and Phase 2 (batch extraction and
-  `/q`) are done, Phase 3 (history import) is not.
-- `docs/superpowers/specs/2026-09-11-claude-meta-layer-design.md` — the Claude
-  meta layer, and what `.claude/memory/project.md` means by «the spec» in its
-  meta-layer bullets. Its build order runs to eight steps; 1–4 are done (the
-  classifier and its verdict column, the bot storing its own messages,
-  natural-language questions, and the Claude handler with its allowlist,
-  queue and 👀). Step 5 is half done: forking per turn came forward into step
-  4, because a derived session id does not survive three turns without it, but
-  the warm base it was specified beside did not — which is why every
-  conversation still pays for a cold session.
+- `docs/superpowers/specs/2026-09-11-dialogue-first-design.md` is the design.
+  Phase 1 (store, react, tombstone) and Phase 2 (batch extraction and `/q`)
+  are done, Phase 3 (history import) is not.
+- `docs/superpowers/specs/2026-09-11-claude-meta-layer-design.md` is **partly
+  superseded**. Its classifier, its `verdict` column and its routing shipped
+  and are described below. Its other half — Claude Code running as a handler
+  inside this process — was removed on 2026-09-14: a process cannot rebuild
+  and restart itself, so a handler here could never deploy this bot. Claude
+  now lives in its own bot on the host, `~/my/cladaeb`, and the code that used
+  to be `telegrind/meta/` sits there under `prior-art/`.
 
 ## Running the Project
 
-**With Docker** — the recording half, and the easiest way to get one:
+**With Docker (preferred):**
 ```bash
 docker compose up
 ```
 
-**Locally** — and this is the only way to run with Claude:
+**Locally:**
 ```bash
 docker compose up postgres
 uv sync -p /usr/bin/python3.14
@@ -45,17 +40,9 @@ the freethreaded CPython 3.14 it manages for itself — and `psycopg-binary`
 publishes no `cp314t` wheel, so the sync fails and takes the venv with it.
 Always name a non-freethreaded interpreter (`/usr/bin/python3.14` on this box).
 
-Running on the host is not only convenience: **the Claude meta layer works
-there and nowhere else.** `telegrind-bot:dev` has no `claude` binary, no
-`~/.claude` and no subscription login, so inside the container the layer is
-simply off — `talk` is stored, left bare, and nothing answers it.
-
 Copy `.env.dist` to `.env` and fill in `BOT_TOKEN`, `DATABASE_URL` and
 `ANTHROPIC_API_KEY` before running, or run `./dev-setup.sh` which writes both
-`.env` and a `compose.override.yml` for you. `dev-setup.sh` writes only what is
-needed to boot, so the `CLAUDE_*` keys are not in what it generates — copy them
-out of `.env.dist` by hand, and note that an unset `CLAUDE_ADMIN_CHAT_IDS`
-leaves the meta layer off without complaining.
+`.env` and a `compose.override.yml` for you.
 
 `.env` carries the **host** database URL (`localhost:5433`) so `alembic` and
 `pytest` work from a shell. `compose.yml` overrides it for the bot service,
@@ -93,13 +80,10 @@ and no port of the engine. Every deploy today is manual, on latitude:
   orphans the database volume, and the bot crash-loops on a fresh `pgdata` because
   alembic has no version seed.
 
-- **The Claude meta layer is dev-only, and staying that way is a decision.**
-  Prod is the container, which has no `claude` binary and no `~/.claude`.
-  Leaving `CLAUDE_ADMIN_CHAT_IDS` out of `.env.prod` is what keeps the layer
-  off, and off is a supported state rather than a misconfiguration — the
-  recording half runs exactly as it did before. Turning it on in prod is not a
-  config change: it needs a credential mount and an image carrying the CLI,
-  neither of which exists.
+- **This bot is deployed by another one.** `~/my/cladaeb` is the control bot
+  for latitude: it runs Claude Code on the host, changes this repository and
+  deploys it. It reads this bot's database, and nothing here imports or knows
+  about it.
 
 Full runbook: `vps/homeserver/DEPLOYING-A-REPO.md`.
 
@@ -131,8 +115,8 @@ Telegram message
        classify.verdict_for         # one cheap call, after the commit
   → bot/routing.py
       fact     → 💔, enters the extraction tail
-      question → answered in words; a refusal is handed to Claude instead
-      talk     → the meta layer: queued, 👀 when the turn starts
+      question → answered in words; a refusal says so
+      talk     → stored, and left bare
       system   → stored, and nothing else
 ```
 
@@ -157,21 +141,17 @@ a question, with or without /q
 ```
 
 `answer_for` returns `None` rather than prose when `spec_for` cannot express
-the question, and that `None` is what makes a refusal a hand-off:
+the question. That `None` used to be a hand-off to Claude; with the meta layer
+gone it becomes `REFUSAL` — the bot says it cannot answer that one.
 
-```
-talk — or a question the closed set of aggregates cannot answer
-  → bot/routing.py                  # hand_over, injected; nothing imports meta
-  → telegrind/meta/                 # turn key → queue → `claude -p` → the text
-  → bot/outbound.py  say            # a reply to the message that caused it
-```
+`routing.py` still takes `hand_over` as an injected parameter, and it is
+always `None` now. The seam is left in deliberately: it is tested on every arm
+with `None`, and it is where an in-process answerer would attach if one ever
+comes back. Nothing sets it, so `talk` is stored and left bare.
 
-So there *is* a reply on ingest now, on two of the four arms. A `fact` gets a
-reaction instead, and that bubble is still the delete gesture: 💔 means
-«understood as a fact, tapping this removes it». 👀 means «handed to Claude»
-and is deliberately not a heart, because a handed-over message has no facts to
-delete. Everything else stays bare, which is what makes the queue legible on
-screen — the messages with no bubble are the ones not yet seen:
+So there *is* a reply on ingest now, on one of the four arms. A `fact` gets a
+reaction instead, and that bubble is the delete gesture: 💔 means «understood
+as a fact, tapping this removes it». Everything else stays bare:
 
 ```
 Telegram message_reaction
@@ -196,9 +176,7 @@ a handler is never redelivered: classifying before the commit would be a
 model-call-wide window in which a message is silently dropped. Do not fold the
 two back into one. `record_edited` honours the same rule in the mirror order —
 read, classify, write — and an edit advances the receipt along `RECEIPT_CYCLE`
-(💔 → ❤‍🔥 → 💘), which is the only signal that the bot noticed it. 👀 is the
-point of no return: a message already handed to Claude is still overwritten,
-but nothing downstream reacts to it.
+(💔 → ❤‍🔥 → 💘), which is the only signal that the bot noticed it.
 
 **`telegrind/bot/handlers/query.py`** — `/q`, and nothing else. The only
 handler registered ahead of the filterless catch-all, and the only place a
@@ -220,19 +198,17 @@ reach a row without passing through here, and both are assertions rather than
 derivations: `/q`'s own handler writes `question` — `presumed` answers
 `question` for `/q` too, so they say the same thing, and keeping them saying
 it is an obligation on both rather than something the code checks — and
-`record_edited` re-writes the *previous* verdict unchanged when the message
-was already handed to Claude, because nothing downstream may react to that
-edit. `presumed` also answers `fact` for a message with
+`presumed` also answers `fact` for a message with
 nothing readable, so no call is spent per sticker. Every failure
 shape — a raising call, an unknown verdict, a missing key, a response that is
 not a dict — degrades to `fact` explicitly; `verdict_for` never raises,
 because the invariant that nothing written is lost must not come to depend on
 a model call returning.
 
-**`telegrind/bot/routing.py`** — the one place the four arms meet, and the seam
-the meta layer plugs into. `hand_over` is a parameter, so nothing here imports
-`telegrind.meta` and removing the conversation half is deleting one argument at
-the call site. The question arm reads `message.text or message.caption` — the
+**`telegrind/bot/routing.py`** — the one place the four arms meet.
+`hand_over` is an injected parameter and is always `None` now, which is why
+removing the conversation half cost one argument at the call site and nothing
+here; every arm is tested against `None`. The question arm reads `message.text or message.caption` — the
 same expression the classifier read, because whatever decides a verdict and
 whatever answers it must read the same words — and sends the backlog notice in
 a transaction of its own, outside the answering one. **All four arms run
@@ -293,99 +269,11 @@ question → spec, then numbers → prose. Between them sits Postgres, and the
 model is never asked to add anything up.
 
 **`telegrind/bot/handlers/receipts.py`** — the receipt vocabulary: the cycle,
-`HANDED_OVER` (👀), `acknowledge` and `clear_receipt`. Split out of
-`handlers.py` because it registers nothing — `routing.py` needs `RECEIPT_EMOJI`
-as a default, and importing it from `handlers.py` would register the catch-all
-at a moment of its own choosing. 👀 is deliberately not a fourth heart: every
-emoji in `RECEIPT_CYCLE` means «tapping this deletes the facts on this
-message», and a handed-over message has none.
-
-**`telegrind/meta/`** — the Claude half: a handler, not a second process. It
-sees the update, owns the conversation, spawns `claude -p` and sends the reply.
-It is a **guest** — nothing under it imports anything of the host's at all;
-it takes a `MetaConfig`, a sessionmaker and four callables, and
-`bot/meta_wiring.py` is the only file where the two halves touch. That is
-asserted by `tests/test_meta_layer.py`, which walks the package with `ast`,
-and not by naming three modules in prose: the boundary was breached by a
-fourth — `runtime.py` importing the host's `llm` for `META_SYSTEM`, which
-now lives in `runtime.py` itself — and every prose statement of the rule,
-here and in the plan's Global Constraints, was narrowly true while it was. `sessions.py` derives a session id from the
-message a turn answers
-(`uuid5` over `chat_id:message_id`) and resolves which turn a reply continues
-in at most two hops, so the session graph cannot drift from what Telegram shows
-the user. `runtime.py` spawns one process per turn with `--resume <base>
---fork-session --session-id <new>`: forking is what keeps the derived id
-self-consistent past the third turn of a thread, and it is full Claude Code —
-the same CLAUDE.md, skills, hooks and MCP servers the user has in the TUI.
-`run_turn` never raises; 👀 is a promise, and a crashed or hung process breaks
-it silently unless the failure is said out loud. `_spawn` starts the turn in a
-session of its own with `stdin=DEVNULL`, and a timeout kills the **process
-group**, not the child: `claude` is a node process that spawns its own tools
-and MCP servers, and `proc.kill()` leaves those running after the turn was
-given up on. No test can see the orphans — nothing here may start a process —
-so the two keywords are asserted against a fake and the survival itself is the
-dev walk's to confirm.
-
-**`telegrind/meta/queue.py`** — one turn at a time per session key, and the
-rest queue. Same key, wait; different key, run now, because different fork
-points are threads the user deliberately split. Two subtleties worth not
-undoing. **A failed turn is retried cold only when `exit_code is not None and
-exit_code > 0`** — only a process that ran to completion and exited positive
-can be a `--resume` naming a session that was never written. A timeout or a
-spawn failure has no exit code and is not about the session; a zero exit means
-the CLI loaded the session and answered, however badly; and a *negative* code
-is a signal kill, most plausibly the OOM killer, where a cold retry doubles the
-memory pressure that caused it. It is deliberately not a substring match on the
-CLI's wording — that text is truncated to 400 characters and is not a contract.
-**And the same message handed over twice is closed at both ends,
-asymmetrically:** the batch builder collapses it keeping the *last* text,
-because a prompt not yet spawned can still be corrected; `submit` drops it
-keeping the *first*, because one already with the model cannot. So an edit
-arriving mid-turn is silently dropped — 👀 is lit, the hand-off still returns
-True, and the only trace is a log line.
-
-**`telegrind/bot/meta_wiring.py`** — those four callables, and nothing more.
-Deleting this file is what separating the conversation half later means. The
-one to understand is `claim`: it writes 👀 **to the row** at hand-off time,
-before `submit` and therefore before `hand_over` returns, while the bubble goes
-on screen later, when the turn actually starts. The column and the bubble are
-two different promises made at two different moments — the column is the point
-of no return an edit reads, and it cannot wait for the bubble, because a
-message queued behind a running turn is not marked for the length of that turn.
-The price is real and accepted: **an edit to a message that is queued but not
-yet started is stored and never reaches Claude.**
-
-The marker's whole life is three writes, and the third is the newest: `claim`
-sets it at hand-off; `set_receipt(started=False)` takes it off inside a **live**
-worker when the turn failed, and only there — so a turn that succeeded keeps 👀
-for good; and `release_hand_overs` clears it **at boot**, for rows no worker can
-possibly own any more. Without that third one a Ctrl-C, an OOM kill or a deploy
-restart strands the message permanently: the update is never redelivered, and
-`record_edited`'s point-of-no-return gate then refuses to re-classify or
-re-route it for the life of the *database*. The release predicate is «still
-marked, and **no message the bot itself stored later in the same chat**»,
-ordered by the serial `id` — the only monotonic column here, since a forward is
-dated by its origin — and it is deliberately lopsided: it leaves a stranded
-message stranded rather than release one that was answered, which would re-open
-the double hand-over `claim` exists to prevent. **So what it recovers is the
-stranded messages after the chat's last bot row, not every stranded turn.** Any
-row the bot stored afterwards shields the message for the life of the database,
-and that includes the answer to a turn that ran *beside* it: two concurrent
-turns where the first finishes and the second is killed leave the second
-stranded for good. That is the ordinary output of this queue, not a corner
-case; narrowing the shield means making it exact, which needs the reply linkage
-nothing has yet verified.
-
-It does not touch the bubble, so a released row carries NULL under a 👀 that is
-still on screen. The edit the release re-enables is what corrects that:
-`record_edited` clears the receipt on **any** edit that earns no emoji — not
-just on a former fact — because the column is no longer proof of what the
-bubble shows, and the re-classified message then gets whatever its new verdict
-earns (👀 again for talk, 💔 for a fact, nothing for a question the bot answers
-itself).
-
-Every function here reads inside its own `session.begin()`, for the reason
-below.
+`acknowledge` and `clear_receipt`. Split out of `handlers.py` because it
+registers nothing — `routing.py` needs `RECEIPT_EMOJI` as a default, and
+importing it from `handlers.py` would register the catch-all at a moment of
+its own choosing. Every emoji in `RECEIPT_CYCLE` is a heart because every one
+of them means «tapping this deletes the facts on this message».
 
 **`telegrind/bot/setup.py`** — the composition root, and the only place
 handlers are registered. Registration is subscription: importing a handler
@@ -394,14 +282,9 @@ observers that have them — so dropping the `reactions` import would
 unsubscribe `message_reaction` and kill the delete gesture with a green suite.
 Order matters within an observer, and `handlers` ends in a filterless
 catch-all, so `query` is imported first or `/q` is dead code behind it.
-`attach_meta` builds the `MetaConfig` from the environment and is split out so
-it can be called more than once per process, which is what makes the wiring
-testable. `release_stranded_turns` is its sibling, with the same two-armed off
-gate: `main.py` calls it between `setup_dispatcher` and `start_polling`, which
-is the one moment at which «no worker can still own this row» is knowable —
-a worker is a bare `create_task` in this process. It never raises, because a
-bot that will not boot because a cleanup query failed is worse than the bug the
-cleanup fixes.
+It can only run once per process — `dp.include_router` on a module-level
+singleton — which is why `tests/test_setup.py` asserts everything about the
+registration in a single pass.
 
 **`telegrind/coerce.py`** — the write boundary for a fact field. A value that
 parses becomes a real JSON number, so `(fields->>'amount')::numeric` cannot
@@ -429,10 +312,8 @@ tombstoned fact does not collide with the row that replaces it.
 four, because `system` is `presumed`'s to decide and never the model's — and
 both of its tie-breaks lean the same way: towards `fact` when unsure of the
 kind, towards `question` when unsure between asking and talking, because a
-question the database cannot answer falls through to Claude anyway.
-`META_SYSTEM` is **not** here — it is argv for a subprocess, not an
-Anthropic-API call, and it lives in `telegrind/meta/runtime.py` beside the
-command line that carries it. `PROMPT_VERSION` is extraction's
+question the database cannot answer is at least refused in words.
+`PROMPT_VERSION` is extraction's
 and is what `fact.prompt_version` records; the query and prose prompts persist
 nothing and are not versioned.
 
@@ -517,8 +398,7 @@ re-entrant.** A read taken "outside a transaction" and then followed by
 `async with session.begin():` raises *A transaction is already begun on this
 Session*. The rule that follows from it, and the one to apply rather than count
 the scars: **every read wraps in its own `session.begin()`**, including a read
-whose only purpose is to fetch a row for a later write — `meta_wiring.py`
-states it once for the whole file and again at `speak`, and `routing.py`'s
+whose only purpose is to fetch a row for a later write — `routing.py`'s
 question arm and `handlers.record_edited` state it at the site. Not
 `bot/handlers/query.py`: the comment lived there until the answering path
 moved into `routing.py` and `answering.py`, and it moved with it.
@@ -527,10 +407,8 @@ The suite cannot catch it: this repo's hand-written fake sessions yield from
 `Session` finds it.
 <!-- src: telegrind 35574a2 | 2026-09-12 -->
 
-**The suite cannot see the meta layer at all, and that is by design.** No test
-may reach a subprocess, the network or a real `claude` binary, so everything
-`telegrind/meta/` does with a process is asserted against a fake `spawn`. Two
-other things are invisible for the same structural reason. `expire_on_commit=
+**Some things are invisible to the suite for structural reasons, not for want
+of a test.** `expire_on_commit=
 False` in `main.py` is load-bearing — `record` commits the row and then hands
 it to `routing.py`, which reads `row.verdict` — and no test can catch its
 removal, because a fake session has no commit that expires anything; the
@@ -577,9 +455,8 @@ that names a *group* puts every member of that group at the `claude -p` prompt.
 default.** The bot-wide default is HTML, so an answer carrying a bare `<` — a
 comparison, a currency rendering, a line of code — comes back «can't parse
 entities» and the *whole answer* is lost rather than sent plain. The override
-belongs to text no human wrote, and there are exactly two sites:
-`meta_wiring.speak`, and the one call in `routing.py` that sends whatever
-`answer_for` returned. Everything else the bot says keeps the default — with
+belongs to text no human wrote, and there is exactly one site: the call in
+`routing.py` that sends whatever `answer_for` returned. Everything else the bot says keeps the default — with
 one harmless leak, which is that `answer_for` returns `EMPTY_QUESTION`, a
 fixed string of ours, down that same path. Do not widen it further: our own
 strings are markup-free, and the override is what marks a line as untrusted. The aiogram mechanics are in
@@ -596,7 +473,8 @@ registers nothing. Prove such a test discriminates by breaking the wiring both
 ways before believing it.
 
 **A test that passes against deliberately broken code is an ordinary outcome,
-not a freak one.** The plan that built the meta layer produced three of them:
+not a freak one.** The plan that built the classifier and its routing produced
+three of them:
 two caught by the implementer who had just written them, one by a reviewer
 afterwards. That is the whole argument for the ritual: revert the fix, run the named test, and watch it fail *for the
 reason you expect*. A test that fails for some other reason (an import error,
