@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from telegrind.config import ChatConfig
 from telegrind.extract import Report, author_of, build_prompt, drafts_from, run
-from telegrind.models import KIND_TEXT, LoggedMessage
+from telegrind.models import KIND_TEXT, VERDICT_SYSTEM, LoggedMessage
 
 CFG = ChatConfig(tz_offset=6, currency="KZT")
 OWNER = 111
@@ -299,3 +299,37 @@ async def test_a_failed_call_leaves_the_tail_pending_and_countable() -> None:
     assert report.extracted == 0
     assert tail[0].extracted_at is None
     assert "503" in tail[0].extract_error
+
+
+def test_a_stored_bot_message_is_not_attributed_to_the_user() -> None:
+    """The bot's own messages are in the window now. Left as «я» they read
+    as the user asserting whatever the bot said.
+
+    The fixture carries `from_user.is_bot`, because that is what the check
+    reads. `verdict` cannot be it: the user's own non-`/q` commands are
+    `system` too — see the test below.
+    """
+    row = LoggedMessage(raw={"from_user": {"is_bot": True}}, verdict=VERDICT_SYSTEM)
+    assert author_of(row, chat_id=7) == "бот"
+
+
+def test_a_users_own_command_is_not_attributed_to_the_bot() -> None:
+    """`system` is two different authors. `classify.presumed` gives every
+    non-`/q` slash command that verdict, and `store.context_before` applies
+    no verdict filter — so a `/start` the *user* typed sits in the
+    extraction window. Read off the verdict it is labelled «бот», and the
+    prompt then tells the model the bot said it.
+
+    `raw["from_user"]["is_bot"]` is the test that cannot be wrong about
+    this: `outbound.say` stores what Telegram returned for a message the
+    bot sent, and a user's command carries `is_bot: False`. The key is
+    `from_user`, not the Bot API's `from` — `store.upsert_message` dumps
+    with `model_dump(mode="json")` and no `by_alias=True`, so aiogram's
+    field name is what lands in the column.
+    """
+    row = LoggedMessage(
+        raw={"from_user": {"id": 555, "is_bot": False}},
+        verdict=VERDICT_SYSTEM,
+        text="/start",
+    )
+    assert author_of(row, chat_id=555) == "я"

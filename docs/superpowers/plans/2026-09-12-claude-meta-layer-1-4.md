@@ -59,12 +59,22 @@
   `session.execute`/`session.get` outside `session.begin()` opens one that never
   closes. So **every read wraps in its own `session.begin()`**, including a read
   whose only purpose is to fetch a row for a later write. This has already been
-  hit three times in this codebase — `query.py:89-93` (where the comment
-  documents it), the edit path's `record_edited`, and `meta_wiring.speak` — and
-  **the fake-session tests cannot see it**: a hand-written fake session has no
-  transaction state, so the suite passes on code that raises against Postgres.
-  Any task touching a session is reviewed by reading the code, not by running
-  the tests.
+  hit three times in this codebase — the question arm, the edit path's
+  `record_edited`, and `meta_wiring.speak` — and **the fake-session tests
+  cannot see it**: a hand-written fake session has no transaction state, so the
+  suite passes on code that raises against Postgres. Any task touching a
+  session is reviewed by reading the code, not by running the tests.
+
+  > **Correction (2026-09-12, made while fixing the review of Task 10).** This
+  > constraint originally named `query.py:89-93` as «where the comment
+  > documents it». It did, when the plan was written; Task 5 moved the
+  > answering path out of `bot/handlers/query.py` and the comment went with
+  > it. The site-level comments are now in `telegrind/bot/routing.py` (the
+  > question arm), `handlers/handlers.py` (`record_edited`) and
+  > `telegrind/bot/meta_wiring.py` (its module docstring, and `speak`). A
+  > pointer at `query.py` leads to a file that no longer mentions the trap —
+  > it was copied into CLAUDE.md and `meta_wiring.py` from here, which is why
+  > it is corrected at the source.
 - **Tests are pure unit tests: no live database, no network, no subprocess.**
   Follow the existing convention — `SimpleNamespace` fakes for aiogram objects,
   unattached SQLAlchemy model instances, hand-written fake sessions
@@ -811,16 +821,28 @@ async def verdict_for(
 
     try:
         payload = await call(llm.CLASSIFY_SYSTEM, text or "", llm.CLASSIFY_TOOL)
+        verdict = str(payload.get("verdict") or "")
     except Exception as exc:
         log.warning("classifier failed, defaulting to a fact: %s", exc)
         return VERDICT_FACT
 
-    verdict = str(payload.get("verdict") or "")
     if verdict not in _ASKED:
         log.warning("classifier returned %r, defaulting to a fact", verdict)
         return VERDICT_FACT
     return verdict
 ```
+
+> **Correction (2026-09-12, made while implementing Task 10).** The block above
+> originally read the payload *outside* the `try` — `verdict = str(payload.get(
+> "verdict") or "")` sat after the `except`. A response that is valid but not a
+> dict then raises `AttributeError` straight out of `verdict_for`, which
+> contradicts both its own docstring («Never raises») and the Global Constraint
+> that every failed or unparseable model call writes `fact` explicitly rather
+> than letting an exception escape to the handler. The Task 3 implementer
+> shipped the snippet verbatim, the reviewer found the hole, and it was fixed in
+> `telegrind/classify.py` at commit `68d0581`; the plan was not corrected at the
+> time. It is corrected here so a future re-run does not reproduce it. The
+> shipped code is the authority — read `classify.py`, not this block.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -1653,7 +1675,8 @@ async def record_edited(
     # Three blocks, and the boundaries are load-bearing. A bare read
     # autobegins, so `previous` cannot be fetched outside a transaction or
     # the `session.begin()` below raises «a transaction is already begun» —
-    # the same trap query.py documents. And the classifier call must sit
+    # the same trap routing.py's question arm documents. And the
+    # classifier call must sit
     # between two transactions, never inside one.
     async with session.begin():
         previous = await store.get_message(

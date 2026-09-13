@@ -2,8 +2,9 @@
 
 Split out of `handlers.py` because it registers nothing. Importing a
 handler module is what registers its handlers, so anything that needs
-`RECEIPT_EMOJI` — `query.py` does — would otherwise pull the whole
-catch-all module in ahead of itself and lose the registration race.
+`RECEIPT_EMOJI` — `routing.py` does, as the default of `route`'s `receipt`
+keyword — would otherwise pull the whole catch-all module in with it and
+register `record` at a moment of its own choosing.
 """
 
 import logging
@@ -24,6 +25,12 @@ RECEIPT_CYCLE = ("💔", "❤‍🔥", "💘")
 
 #: What a message gets the first time it is stored.
 RECEIPT_EMOJI = RECEIPT_CYCLE[0]
+
+#: What a message handed to Claude gets. Deliberately not a fourth heart:
+#: every emoji in RECEIPT_CYCLE means «tapping this deletes the facts on
+#: this message», and a handed-over message has none. The gesture and the
+#: family of emoji that carries it stay matched.
+HANDED_OVER = "👀"
 
 
 def next_receipt(current: str | None) -> str:
@@ -58,3 +65,18 @@ async def acknowledge(bot: Bot, chat_id: int, message_id: int, emoji: str) -> No
         )
     except Exception:  # cosmetic, and the row is already safe
         log.warning("could not set the receipt reaction on %s", message_id)
+
+
+async def clear_receipt(bot: Bot, chat_id: int, message_id: int) -> None:
+    """Take the reaction off. Never fatal, for the same reason.
+
+    An empty reaction list is how setMessageReaction clears; it is what an
+    edit that turns a fact into talk needs, because the receipt left behind
+    would promise a delete gesture the message no longer has.
+    """
+    try:
+        await bot.set_message_reaction(
+            chat_id=chat_id, message_id=message_id, reaction=[]
+        )
+    except Exception:  # cosmetic, and the row is already safe
+        log.warning("could not clear the receipt reaction on %s", message_id)
