@@ -50,8 +50,8 @@ class FakeSession:
 async def test_what_the_bot_says_is_stored_as_system() -> None:
     session = FakeSession()
     await outbound.say(FakeBot(), session, Chat(id=1, chat_id=7), "Записал.")
-    assert [(r.text, r.verdict, r.extractable) for r in session.added] == [
-        ("Записал.", VERDICT_SYSTEM, False)
+    assert [(r.text, r.verdict) for r in session.added] == [
+        ("Записал.", VERDICT_SYSTEM)
     ]
 
 

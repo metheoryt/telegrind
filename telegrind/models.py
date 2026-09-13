@@ -95,15 +95,13 @@ class LoggedMessage(Model):
     )
     extract_model: Mapped[str | None] = mapped_column(default=None)
     extract_prompt_version: Mapped[str | None] = mapped_column(default=None)
-    #: False for /q, for commands, and for imported bot replies. Such a
-    #: message is stored like any other — nothing written is ever lost —
-    #: but it must never reach the extractor, or the batch pass coins a
-    #: kind out of a question and poisons the observed taxonomy.
-    extractable: Mapped[bool] = mapped_column(default=True, server_default="true")
     #: What routing decided this message is. Derived, like extracted_at,
-    #: and re-derived on an edit. It replaces `extractable` as the thing
-    #: the tail is selected by; `extractable` is still written in step
-    #: with it, and dropping that column is a later contract step.
+    #: and re-derived on an edit. It is what selects the extraction tail:
+    #: only `fact` enters it, so a question or a command is stored like any
+    #: other message — nothing written is ever lost — and never reaches the
+    #: extractor, which would otherwise coin a kind out of it and poison the
+    #: observed taxonomy. It replaced a boolean `extractable`, dropped in
+    #: `4d60c7b65ad2`.
     verdict: Mapped[str] = mapped_column(default=VERDICT_FACT, server_default="fact")
     #: The last extraction failure. Without it, dropping the echo would
     #: make a failed extraction completely silent.

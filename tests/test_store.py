@@ -182,11 +182,6 @@ async def test_restore_clears_the_tombstone() -> None:
     assert rows[0].deleted_at is None
 
 
-def test_values_do_not_carry_extractability() -> None:
-    """extractable is a handler decision, not something lifted off the message."""
-    assert "extractable" not in message_values(text_message())
-
-
 def logged(
     message_id: int, *, text: str | None = "x", extracted: bool = False
 ) -> LoggedMessage:
@@ -320,9 +315,10 @@ def _msg(message_id: int = 4821) -> SimpleNamespace:
     )
 
 
-async def test_the_tail_is_filtered_by_verdict_not_by_extractable() -> None:
-    """`extractable` is still written, but a second flag that can disagree
-    with the verdict is the bug the design forbids — so nothing reads it."""
+async def test_the_tail_is_filtered_by_the_verdict() -> None:
+    """A second flag that could disagree with the verdict is the bug the
+    design forbids, which is why `extractable` was dropped rather than
+    left unread (`4d60c7b65ad2`)."""
     session = FakeSession([])
     await store.unextracted_tail(session, chat_pk=1)
     rendered = str(session.statements[0].whereclause)

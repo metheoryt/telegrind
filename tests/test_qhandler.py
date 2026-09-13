@@ -261,9 +261,9 @@ async def test_ask_sends_the_answer_as_a_reply_to_the_question() -> None:
 
     # Both went through outbound.say, not a bare bot.send_message: the
     # question itself is stored first (verdict=question), then the two
-    # outbound sends land as system rows, extractable=False.
-    stored = [(r.text, r.verdict, r.extractable) for r in session.added]
+    # outbound sends land as system rows.
+    stored = [(r.text, r.verdict) for r in session.added]
     assert stored[1:] == [
-        ("Разбираю 1 сообщений…", VERDICT_SYSTEM, False),
-        (EMPTY_QUESTION, VERDICT_SYSTEM, False),
+        ("Разбираю 1 сообщений…", VERDICT_SYSTEM),
+        (EMPTY_QUESTION, VERDICT_SYSTEM),
     ]

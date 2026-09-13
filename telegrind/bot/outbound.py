@@ -55,7 +55,5 @@ async def say(
         parse_mode=parse_mode,
     )
     async with session.begin():
-        await store.upsert_message(
-            session, chat, sent, extractable=False, verdict=VERDICT_SYSTEM
-        )
+        await store.upsert_message(session, chat, sent, verdict=VERDICT_SYSTEM)
     return sent

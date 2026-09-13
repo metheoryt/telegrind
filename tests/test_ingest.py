@@ -268,7 +268,6 @@ async def test_editing_a_command_leaves_it_out_of_the_extractor(
 
     existing = stored(extracted=False)
     existing.text = "/q сколкьо я потратил"
-    existing.extractable = False
     message = edit()
     message.text = "/q сколько я потратил"
 
@@ -276,7 +275,7 @@ async def test_editing_a_command_leaves_it_out_of_the_extractor(
         message, Chat(id=1, chat_id=7), EditSession(existing), CFG, FakeBot()
     )
 
-    assert existing.extractable is False
+    assert existing.verdict == VERDICT_QUESTION
     assert called == []
 
 
@@ -393,7 +392,6 @@ async def test_a_reply_to_claude_is_talk_without_asking_the_classifier(
     await handlers.record(reply, Chat(id=1, chat_id=7), CFG, session, FakeBot())
 
     assert session.added[0].verdict == VERDICT_TALK
-    assert session.added[0].extractable is False
 
 
 async def test_a_non_q_command_gets_the_system_verdict() -> None:
@@ -408,7 +406,6 @@ async def test_a_non_q_command_gets_the_system_verdict() -> None:
         command_message("/start"), Chat(id=1, chat_id=7), CFG, session, bot
     )
 
-    assert session.added[0].extractable is False
     assert session.added[0].verdict == VERDICT_SYSTEM
     # No receipt: nothing was recorded as a fact, so there is nothing to
     # promise a tap would delete.
@@ -429,7 +426,6 @@ async def test_a_plain_message_still_gets_the_fact_verdict(monkeypatch: Any) -> 
     bot = FakeBot()
     await handlers.record(message(), Chat(id=1, chat_id=7), CFG, session, bot)
 
-    assert session.added[0].extractable is True
     assert session.added[0].verdict == VERDICT_FACT
     assert session.added[0].receipt_emoji == RECEIPT_EMOJI
     # Addressed by `chat.chat_id`, the row the middleware resolved from
@@ -453,12 +449,12 @@ async def test_the_row_is_committed_before_the_classifier_runs(
     The `depth == 0` assertion is the other half of the same constraint: a
     write transaction must not be held open across a model call.
     """
-    seen: list[tuple[int, str, bool, int]] = []
+    seen: list[tuple[int, str, int]] = []
     session = NewMessageSession()
 
     async def classifier(*args: Any, **kwargs: Any) -> str:
         row = session.added[0]
-        seen.append((len(session.added), row.verdict, row.extractable, session.depth))
+        seen.append((len(session.added), row.verdict, session.depth))
         return VERDICT_TALK
 
     monkeypatch.setattr(handlers.classify, "verdict_for", classifier)
@@ -466,7 +462,7 @@ async def test_the_row_is_committed_before_the_classifier_runs(
     await handlers.record(message(), Chat(id=1, chat_id=7), CFG, session, FakeBot())
 
     # One row, already a fact, already out of any transaction.
-    assert seen == [(1, VERDICT_FACT, True, 0)]
+    assert seen == [(1, VERDICT_FACT, 0)]
     # And only then refined, in a second transaction of its own.
     assert session.added[0].verdict == VERDICT_TALK
     assert session.commits == 2
@@ -506,7 +502,7 @@ async def test_a_question_gets_no_receipt(monkeypatch: Any) -> None:
     await handlers.record(message(), Chat(id=1, chat_id=7), CFG, session, bot)
 
     assert routed == [VERDICT_QUESTION]
-    assert session.added[0].extractable is False
+    assert session.added[0].verdict == VERDICT_QUESTION
     assert session.added[0].receipt_emoji is None
     assert bot.reactions == []
 
@@ -527,7 +523,6 @@ async def test_talk_is_stored_and_kept_out_of_the_extraction_tail(
     await handlers.record(message(), Chat(id=1, chat_id=7), CFG, session, bot)
 
     assert session.added[0].verdict == VERDICT_TALK
-    assert session.added[0].extractable is False
     assert bot.reactions == []
 
 
@@ -550,7 +545,6 @@ async def test_editing_a_q_row_does_not_flip_its_verdict(monkeypatch: Any) -> No
 
     existing = stored(extracted=False, verdict=VERDICT_QUESTION)
     existing.text = "/q сколкьо я потратил"
-    existing.extractable = False
     edited = edit()
     edited.text = "/q сколько я потратил"
 

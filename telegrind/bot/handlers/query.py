@@ -44,7 +44,7 @@ async def ask(
 
     async with session.begin():
         row, _ = await store.upsert_message(
-            session, chat, message, extractable=False, verdict=VERDICT_QUESTION
+            session, chat, message, verdict=VERDICT_QUESTION
         )
         row.receipt_emoji = None
 

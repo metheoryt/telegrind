@@ -126,7 +126,6 @@ async def upsert_message(
     chat: Chat,
     msg: Message,
     *,
-    extractable: bool = True,
     verdict: str = VERDICT_FACT,
 ) -> tuple[LoggedMessage, bool]:
     """Append the message, or overwrite it if we have seen this id before.
@@ -144,15 +143,12 @@ async def upsert_message(
             if key in ("transcript", "transcript_model") and value is None:
                 continue
             setattr(existing, key, value)
-        existing.extractable = extractable
         existing.verdict = verdict
         existing.extracted_at = None
         existing.extract_error = None
         return existing, False
 
-    row = LoggedMessage(
-        chat_pk=chat.id, extractable=extractable, verdict=verdict, **values
-    )
+    row = LoggedMessage(chat_pk=chat.id, verdict=verdict, **values)
     session.add(row)
     await session.flush()
     return row, True

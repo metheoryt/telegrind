@@ -50,5 +50,8 @@ Tests: `uv run pytest`. Lint: `uv run ruff check`. Types: `uv run ty check`.
 
 ## Deployment
 
-Deployed on the homeserver by the `vps` repo poll-and-build pipeline — pushing to `main` is
-the deploy. See `CLAUDE.md` and `vps/homeserver/DEPLOYING-A-REPO.md`.
+**Nothing auto-deploys.** Production runs on `latitude` as the docker compose project
+`telegrind`, and every deploy is manual: `git pull` in `homeserver/telegrind/src/`, then
+`docker compose -f homeserver/telegrind/compose.prod.yml up -d --build`. The poll-and-build
+pipeline this line used to describe ran on a box that left the fleet on 2026-08-01.
+See `CLAUDE.md` and `vps/homeserver/DEPLOYING-A-REPO.md`.

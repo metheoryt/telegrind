@@ -91,7 +91,7 @@ async def record(
     # after it is refinement.
     async with session.begin():
         row, _ = await store.upsert_message(
-            session, chat, message, extractable=True, verdict=VERDICT_FACT
+            session, chat, message, verdict=VERDICT_FACT
         )
         row.receipt_emoji = RECEIPT_EMOJI
 
@@ -106,7 +106,6 @@ async def record(
     if verdict != VERDICT_FACT:
         async with session.begin():
             row.verdict = verdict
-            row.extractable = False
             # No receipt is placed until `route` runs, so clearing the
             # column here is not a promise being withdrawn — it is the
             # column catching up with a verdict that earns no receipt.
@@ -170,7 +169,6 @@ async def record_edited(
                 session,
                 chat,
                 edited_message,
-                extractable=False,
                 verdict=previous_verdict,
             )
         log.info("edit after hand-over on %s, ignored", edited_message.message_id)
@@ -190,7 +188,6 @@ async def record_edited(
             session,
             chat,
             edited_message,
-            extractable=verdict == VERDICT_FACT,
             verdict=verdict,
         )
         if verdict == VERDICT_FACT:
@@ -206,9 +203,9 @@ async def record_edited(
         # classifier call: an edit arriving while `record` awaits
         # `classify` reads a row that is not yet handed over — so the gate
         # above lets it through — and then lands here *after* `route` has
-        # reached `hand_over`. The row ends up with 💔 and
-        # `extractable=True` while Claude is answering the same message:
-        # in the extraction tail, wearing a heart, and being talked about.
+        # reached `hand_over`. The row ends up with 💔 and a `fact`
+        # verdict while Claude is answering the same message: in the
+        # extraction tail, wearing a heart, and being talked about.
         #
         # Same class as the provisional-fact window the ledger accepted at
         # Task 5, and the same harm ceiling — spurious facts on a live row,

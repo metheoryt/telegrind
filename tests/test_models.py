@@ -42,16 +42,14 @@ def test_message_carries_extraction_state() -> None:
         "extracted_at",
         "extract_model",
         "extract_prompt_version",
-        "extractable",
         "extract_error",
     } <= columns
 
 
-def test_a_new_message_is_extractable_and_unextracted() -> None:
+def test_a_new_message_is_unextracted() -> None:
     row = LoggedMessage(chat_pk=1, message_id=2, kind="text", raw={})
     assert row.extracted_at is None
     assert row.extract_error is None
-    assert LoggedMessage.__table__.c.extractable.default.arg is True
 
 
 def test_not_yet_extracted_is_distinct_from_extracted_and_empty() -> None:
