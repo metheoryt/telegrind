@@ -333,7 +333,7 @@ because that code still exists.
   (`exceeds grid limits. Max rows: 1`), not a no-op — create with a real row allowance
   and guard clear-style operations with a `row_count <= 1` early return.
 
-## The Claude meta layer (2026-09-12)
+## The Claude meta layer — moved out 2026-09-14, kept for the prior-art copy
 
 - **`--fork-session` is load-bearing at build-order step 4, not step 5.** The
   spec puts forking in step 5 with the warm base; a derived session id without
