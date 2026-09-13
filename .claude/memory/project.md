@@ -252,6 +252,20 @@ One bullet per fact, under a topical heading. No secrets.
 
 ## The Claude meta layer — hazards to carry into the merge
 
+- **The meta layer no longer merges into telegrind — decided 2026-09-14.**
+  Claude moved out into its own bot and its own process on the host
+  (`~/my/cladaeb`), because a process cannot rebuild and restart itself: a
+  deploy run from a handler inside telegrind destroys the container the turn is
+  executing in, and the update dies with it. The hazards below still describe
+  the shipped meta-layer code and are worth keeping — the `chat_id` allowlist
+  especially, since cladaeb runs as root on latitude and must key on
+  `from_user.id` instead. What telegrind gains instead is one import: the
+  `aiogram-blackbox` recorder (`~/my/aiogram-blackbox`), which exists because
+  telegrind stores nothing it says — `_store` has three callers, all inbound,
+  and `ask` sends twice without recording either. Full reasoning:
+  `~/my/cladaeb/docs/2026-09-14-design.md`.
+  <!-- src: design conversation | 2026-09-14 -->
+
 - **`CLAUDE_CWD` unset means the bot spawns Claude Code inside the live
   checkout.** The meta-layer handler falls back to the bot's own working
   directory, so the first conversational message runs full Claude Code — this

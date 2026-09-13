@@ -1,6 +1,11 @@
 # The Claude meta layer — design
 
-Status: approved in outline 2026-09-11, pending review of this document.
+Status: **partly superseded 2026-09-14.** The colocation decision below was
+reversed — Claude now lives in a separate bot and a separate process
+(`~/my/cladaeb`), for the reason in *A second bot identity* further down. The
+routing, the classifier, the reactions and the runtime notes all still stand.
+Read `~/my/cladaeb/docs/2026-09-14-design.md` alongside this.
+
 Extends `2026-09-11-dialogue-first-design.md`, which stays the design of the
 mechanical bot. Nothing here changes what a fact is, how it is extracted or
 how it is queried.
@@ -528,9 +533,12 @@ silence the user cannot tell from thinking is worse than an error message.
 
 ## Non-goals
 
-- **No second Telegram consumer.** Long polling is exclusive; a second reader
-  of `getUpdates` would fight the bot for updates. That is why the meta layer
-  is a handler inside the one process that polls, and not a preference.
+- **No second reader of telegrind's updates.** Long polling is exclusive; two
+  processes on the same token would fight for updates. This still holds, but
+  the conclusion drawn from it in 2026-09-11 — that the meta layer must
+  therefore be a handler inside telegrind — does not. A separate bot has a
+  separate token and polls its own updates; nothing is shared. See *A second
+  bot identity* below.
 - **No mode switch.** There is no command to talk to Claude and none to stop.
   The classifier routes; the reaction shows what it decided.
 - **No echo.** A recorded fact still produces no text. "Записал" is the
@@ -539,46 +547,45 @@ silence the user cannot tell from thinking is worse than an error message.
 - **No vision, no inventory-by-photo.** Named in the dialogue-first spec's
   *Later, not now*, and staying there.
 
-## A second bot identity — later, and the seam to leave
+## A second bot identity — decided 2026-09-14, and done
 
-The meta layer could be its own Telegram bot rather than telegrind's own
-token: a group of {user, telegrind, claude}, with `@claude` as the address.
-Telegram now supports this — Bot API 9.0 added bot-to-bot messaging by
-username when both bots opt in, and 10.0 added seeing certain messages sent
-by other bots in groups, plus guest mode for replying in chats a bot has not
-joined. 9.0 is callable at the pinned aiogram 3.27 (Bot API 9.6); 10.0 needs
-the bump to 3.31.
+This section said *later*. It is now *yes*, and the reason is one the original
+analysis did not have in front of it.
 
-**None of it is needed here.** The two runtimes coordinate through a database
-on one machine, so there is nothing for them to say to each other over
-Telegram. Bot-to-bot solves a problem colocation already removed.
+**A process cannot rebuild and restart itself.** The whole point of the meta
+layer is that Claude can change telegrind — which means deploying it, which
+means `docker compose up -d --build`. Run from a handler inside telegrind, that
+destroys the container the turn is executing in. aiogram advances the polling
+offset as each update is yielded, so the update dies with the process and
+Telegram never resends it: the user sees silence and no error, on a bot whose
+whole promise is that nothing is lost. Moving the deploy into a systemd unit
+does not help — it rebuilds the same container.
 
-What a split would cost is a move from a private chat to a group, and two
-specific things break on the way:
+So Claude runs on the host, outside what it rebuilds, as its own bot with its
+own token: `cladaeb`, at `~/my/cladaeb`.
 
-- **Privacy mode.** A bot in a group receives only mentions, commands and
-  replies to itself unless privacy mode is turned off in BotFather.
-  "Write anything and it is recorded" does not survive with it on.
-- **`message_reaction` requires the bot to be an administrator in the chat.**
-  In a private chat the bot is privileged by construction, which is why the
-  receipt-and-delete gesture works today. In a group it stops arriving until
-  telegrind is made an admin, and the whole delete affordance rides on it.
-  (Related and already true: the update is not delivered for reactions set by
-  bots, so the bot never sees its own receipt.)
+**The group is not part of it.** The original analysis of what a group would
+cost was correct and still applies — privacy mode would have to be turned off
+in BotFather, and `message_reaction` is delivered only to an administrator, so
+telegrind's 💔 tap-to-delete gesture would need re-privileging. The split
+therefore goes to a *private chat* with cladaeb instead: the user talks to
+telegrind in one chat and to cladaeb in another, and nothing about telegrind's
+chat changes at all.
 
-And `@claude` is precisely the mode switch this design lists as a non-goal.
-It can live as an explicit override, the way `/q` does — but not as the way.
+**Colocation still does the coordinating** — the two runtimes never speak over
+Telegram. But the database alone is not enough, because telegrind stores
+nothing it says: `_store` has three callers, all inbound, and `ask` calls
+`bot.send_message(...)` twice without recording either. That gap is filled by
+`aiogram-blackbox` (`~/my/aiogram-blackbox`), a recorder library telegrind
+imports, writing every inbound update, every outbound API call and every
+handler exception to JSONL on a volume. cladaeb reads those files and imports
+nothing from either app.
 
-**What is actually reusable is not the bot identity.** It is the runtime and
-the deploy loop: a Claude Code process colocated with an app, reading that
-app's database, replying through that app's token, and rebuilding that app on
-a restart-and-roll-back cycle. `embedthat` runs on the same `latitude`, so one
-Claude runtime there can serve both today, with per-app configuration — which
-database, which token, which chat.
-
-**The seam to leave open is one line: the token Claude sends through is
-configuration, not a constant.** Splitting later then means a different token
-and a group chat, and nothing in this design changes.
+**What this section got right and keeps:** the reusable thing is the runtime
+and the deploy loop, not the bot identity. `embedthat` runs on the same
+`latitude`, so one Claude runtime there serves both, with per-app
+configuration — which checkout, which database, which chat. cladaeb is the
+host's control bot, not telegrind's second one.
 
 ## The Claude runtime
 
