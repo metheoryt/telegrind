@@ -10,7 +10,11 @@ Deleted or frozen once it has run. It is one file for the same reason.
 """
 
 import logging
+from datetime import UTC, datetime
 from typing import Any
+
+from aiogram.types import Chat as TgChat
+from aiogram.types import Message, User, Voice
 
 from telegrind.models import VERDICT_FACT, VERDICT_QUESTION, VERDICT_SYSTEM
 
@@ -66,3 +70,73 @@ def verdict_of(entry: dict, *, bot_id: int) -> str:
         command = text.split(maxsplit=1)[0].split("@")[0]
         return VERDICT_QUESTION if command == "/q" else VERDICT_SYSTEM
     return VERDICT_FACT
+
+
+def _stub_reply(message_id: int, *, chat_id: int, date: datetime) -> Message:
+    """The parent, as much of it as anything ever reads.
+
+    `store.reply_to` reads `raw["reply_to_message"]["message_id"]` and
+    nothing else — Telegram does not nest a second hop, which is why the
+    column is read rather than the object. A stub carrying the id is
+    therefore complete, not partial. Its date is the child's: an aiogram
+    `Message` requires one, and no reader of this object looks at it.
+    """
+    return Message(
+        message_id=message_id, date=date, chat=TgChat(id=chat_id, type="private")
+    )
+
+
+def message_from(entry: dict, *, chat_id: int, bot_id: int) -> Message | None:
+    """One export entry as the aiogram object live ingestion would see.
+
+    Returns None for anything that is not a user-or-bot message: the two
+    service entries, and any future shape with no `user<N>` author.
+
+    Built as an aiogram object rather than as column values because
+    `store.message_values` dumps it into `raw`, and three readers parse
+    that column afterwards — `store.by_the_bot`, `store.reply_to` and
+    `extract.author_of`. Going through the same type is what makes the
+    shape identical by construction instead of by agreement.
+    """
+    if entry.get("type") != "message":
+        return None
+    author = user_id(entry)
+    if author is None:
+        return None
+
+    date = datetime.fromtimestamp(int(entry["date_unixtime"]), tz=UTC)
+    edited = entry.get("edited_unixtime")
+    reply = entry.get("reply_to_message_id")
+
+    voice = None
+    if entry.get("media_type") == "voice_message":
+        # The export ships the audio but not Telegram's file id, and
+        # `aiogram.types.Voice` requires one. The `import:` prefix is the
+        # signal to whatever wires transcription later that this id
+        # cannot be fetched — a placeholder that looks fetchable is worse
+        # than an obvious one.
+        voice = Voice(
+            file_id=f"import:{entry.get('file', '')}",
+            file_unique_id=f"import:{entry['id']}",
+            duration=int(entry.get("duration_seconds") or 0),
+        )
+
+    return Message(
+        message_id=int(entry["id"]),
+        date=date,
+        # The raw int, not a datetime: `message_values` dumps with
+        # mode="json", where a datetime becomes an ISO string and the live
+        # path leaves an int.
+        edit_date=int(edited) if edited else None,
+        chat=TgChat(id=chat_id, type="private"),
+        from_user=User(
+            id=author,
+            is_bot=author == bot_id,
+            first_name=str(entry.get("from") or "?"),
+        ),
+        text=flatten(entry.get("text")) or None,
+        voice=voice,
+        reply_to_message=(
+            _stub_reply(int(reply), chat_id=chat_id, date=date) if reply else None
+        ),
+    )
