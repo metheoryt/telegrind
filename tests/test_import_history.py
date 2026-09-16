@@ -8,9 +8,12 @@ from typing import Any
 import pytest
 
 from telegrind import store
+from telegrind.extract import Report
 from telegrind.import_history import (
+    BATCH,
     Export,
     ExportMismatch,
+    extract_all,
     flatten,
     import_entries,
     message_from,
@@ -348,3 +351,55 @@ async def test_a_dry_run_counts_forwards_too() -> None:
         FakeSession(), CHAT, export, upsert=upsert, dry_run=True
     )
     assert report.forwards == 1
+
+
+def test_the_batch_is_small_enough_for_max_tokens() -> None:
+    """`extract._pass` makes ONE model call for the whole tail and
+    `llm.MAX_TOKENS` is 2048, so an oversized pass is not a slow pass —
+    the reply truncates and the batch fails whole."""
+    from telegrind import llm
+
+    assert BATCH <= 25
+    assert llm.MAX_TOKENS == 2048
+
+
+async def test_it_passes_until_the_tail_is_empty() -> None:
+    reports = [
+        Report(pending=20, extracted=20, facts=25, failed=0, complaints=0),
+        Report(pending=7, extracted=7, facts=9, failed=0, complaints=1),
+        Report(pending=0, extracted=0, facts=0, failed=0, complaints=0),
+    ]
+    seen: list[int] = []
+
+    async def fake_run(
+        session: Any, chat: Any, cfg: Any, *, limit: int, **kw: Any
+    ) -> Report:
+        seen.append(limit)
+        return reports[len(seen) - 1]
+
+    got = await extract_all(FakeSession(), CHAT, run=fake_run)
+    assert seen == [BATCH, BATCH, BATCH]
+    assert [r.extracted for r in got] == [20, 7, 0]
+
+
+async def test_it_stops_at_max_passes() -> None:
+    async def fake_run(
+        session: Any, chat: Any, cfg: Any, *, limit: int, **kw: Any
+    ) -> Report:
+        return Report(pending=20, extracted=20, facts=1, failed=0, complaints=0)
+
+    got = await extract_all(FakeSession(), CHAT, max_passes=3, run=fake_run)
+    assert len(got) == 3
+
+
+async def test_a_failed_pass_stops_the_run() -> None:
+    """A failed pass leaves its tail pending, so continuing would retry
+    the same twenty messages forever."""
+
+    async def fake_run(
+        session: Any, chat: Any, cfg: Any, *, limit: int, **kw: Any
+    ) -> Report:
+        return Report(pending=20, extracted=0, facts=0, failed=20, complaints=0)
+
+    got = await extract_all(FakeSession(), CHAT, run=fake_run)
+    assert len(got) == 1

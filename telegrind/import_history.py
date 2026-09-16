@@ -22,7 +22,8 @@ from aiogram.types import Chat as TgChat
 from aiogram.types import Message, User, Voice
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from telegrind import store
+from telegrind import extract, store
+from telegrind.config import ChatConfig
 from telegrind.models import VERDICT_FACT, VERDICT_QUESTION, VERDICT_SYSTEM, Chat
 
 log = logging.getLogger(__name__)
@@ -304,3 +305,45 @@ async def import_entries(
         forwards=forwards,
         verdicts=verdicts,
     )
+
+
+#: Messages per extraction pass. `extract._pass` makes one model call for
+#: the whole tail and `llm.MAX_TOKENS` is 2048 — roughly forty facts —
+#: so this is a correctness bound, not a throughput knob. The default
+#: limit of 200 would truncate the reply and fail the batch whole.
+BATCH = 20
+
+
+async def extract_all(
+    session: AsyncSession,
+    chat: Chat,
+    *,
+    batch: int = BATCH,
+    max_passes: int | None = None,
+    run: Callable[..., Awaitable[extract.Report]] = extract.run,
+) -> list[extract.Report]:
+    """Drive passes until the tail is empty, one transaction each.
+
+    Stops on the first failed pass rather than retrying: `_pass` leaves a
+    failed tail pending, so a loop that continued would ask the same
+    twenty messages again until the money ran out.
+    """
+    cfg = ChatConfig.of(chat)
+    reports: list[extract.Report] = []
+
+    while max_passes is None or len(reports) < max_passes:
+        async with session.begin():
+            report = await run(session, chat, cfg, limit=batch)
+        reports.append(report)
+        log.info(
+            "pass %s: extracted=%s facts=%s failed=%s complaints=%s",
+            len(reports),
+            report.extracted,
+            report.facts,
+            report.failed,
+            report.complaints,
+        )
+        if report.failed or report.pending == 0:
+            break
+
+    return reports
