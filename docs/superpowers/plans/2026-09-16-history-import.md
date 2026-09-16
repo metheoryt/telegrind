@@ -1053,7 +1053,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--since",
         type=lambda s: datetime.fromisoformat(s).replace(tzinfo=UTC),
         default=None,
-        help="skip entries older than this (the first two days are test junk)",
+        # UTC, not Almaty. The only intended use is cutting the first two
+        # days of `asd`/`111` test junk, which are junk in any timezone; a
+        # cutoff that had to land on a particular local midnight would need
+        # the chat's tz_offset, which is not read here.
+        help="skip entries older than this, UTC (the first two days are test junk)",
     )
     imp.add_argument("--dry-run", action="store_true")
 
@@ -1073,8 +1077,17 @@ async def main(argv: list[str] | None = None) -> None:
     # greenlet on the stack.
     async_session = async_sessionmaker(engine, expire_on_commit=False)
 
+    # A session per phase, not one for the run. In SQLAlchemy 2 a bare read
+    # autobegins, so a session that has read outside an explicit block makes
+    # the next `session.begin()` raise «A transaction is already begun on
+    # this Session» — and this repo's fake sessions yield from `begin()`
+    # unconditionally, so no test here can catch it. A fresh session per
+    # phase removes the question instead of answering it.
     async with async_session() as session:
         chat = await chat_row(session, args.chat_id)
+
+    async with async_session() as session:
+        chat = await session.merge(chat)
         if args.command == "import":
             export = read_export(args.export, chat_id=args.chat_id, since=args.since)
             report = await import_entries(
@@ -1158,9 +1171,15 @@ found a defect the unit suite structurally could not see. Do not skip it.
 - [ ] **Step 1: Bring up the dev database**
 
 ```bash
+./dev-setup.sh          # this worktree has no .env yet; it writes one
 docker compose up -d postgres
 uv run alembic upgrade head
+docker compose exec postgres psql -U postgres -l
 ```
+
+The database is **`postgres`**, not `telegrind` — `compose.yml` points the bot at
+`postgresql+asyncpg://postgres:…@postgres/postgres`, and both prod stacks answer
+on the same name. The `-l` listing is there so nobody discovers this at Step 4.
 
 - [ ] **Step 2: Dry-run the import**
 
@@ -1171,9 +1190,11 @@ uv run python -m telegrind.import_history import \
 ```
 
 Expected, from the 2026-09-16 measurement: `seen=6835`, `stored=0`,
-`skipped=0`, and verdicts totalling 6835 — roughly `fact` 3915,
-`system` 2849 (2766 the bot's + 27 `/start` + 56 dashes), `question` 0.
-A different shape means the export changed; stop and re-measure.
+`skipped=0`, and verdicts totalling exactly 6835 — `fact` 3986 (3915 with
+readable text plus the 71 photos and stickers, which are `fact` and simply
+never reach the tail), `system` 2849 (2766 the bot's + 27 `/start` + 56
+dashes), `question` 0. The two must sum to 6835; if they do not, the export
+changed — stop and re-measure rather than adjusting the expectation.
 
 - [ ] **Step 3: Import for real**
 
@@ -1186,15 +1207,19 @@ uv run python -m telegrind.import_history import \
 - [ ] **Step 4: Check what landed, in SQL**
 
 ```bash
-docker compose exec postgres psql -U postgres -d telegrind \
+docker compose exec postgres psql -U postgres -d postgres \
   -c "select verdict, count(*) from message group by verdict order by 2 desc" \
   -c "select count(*) from message where verdict = 'fact' and extracted_at is null and coalesce(nullif(trim(text), ''), transcript) is not null" \
   -c "select message_id, tg_date, text from message order by tg_date desc limit 5" \
   -c "select count(*) from message where raw->'from_user'->>'is_bot' = 'true'"
 ```
 
-Expected: the verdict counts from Step 2; the pending-tail count ≈ 3900 (the
-`fact` rows minus the handful with no readable text); the last five rows
+Watch for `A transaction is already begun on this Session` in Step 3 and Step 6.
+If it appears, a bare read escaped its `session.begin()` — the fix is a fresh
+session, never a nested `begin()`.
+
+Expected: the verdict counts from Step 2; the pending-tail count 3915 (the 3986
+`fact` rows minus the 71 with nothing readable); the last five rows
 matching the tail of the export (`449 usd apple watch series 12 45mm gold`
 last); and 2766 bot rows.
 
@@ -1208,7 +1233,7 @@ counts, no duplicate-key error. A second copy of every row means
 
 ```bash
 uv run python -m telegrind.import_history extract --chat-id 3260987 --max-passes 3
-docker compose exec postgres psql -U postgres -d telegrind \
+docker compose exec postgres psql -U postgres -d postgres \
   -c "select kind, count(*) from fact where deleted_at is null group by kind order by 2 desc" \
   -c "select f.kind, f.at, f.fields, m.text from fact f join message m on m.id = f.message_pk order by f.id limit 20"
 ```
