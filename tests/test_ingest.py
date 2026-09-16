@@ -875,6 +875,44 @@ async def test_a_talk_row_edited_into_a_fact_gets_the_default_receipt(
     assert existing.receipt_emoji == RECEIPT_EMOJI
 
 
+async def test_an_edit_is_re_classified_whatever_the_row_is_wearing(
+    monkeypatch: Any,
+) -> None:
+    """There is no point of no return, and re-adding one would be a bug.
+
+    👀 used to be exactly that: a row already handed to Claude was still
+    overwritten but never re-classified or re-routed, because rewinding his
+    session meant surgery on a transcript we do not own. He has his own bot
+    now, nothing places the marker, and the gate went with it — so an edit
+    is re-classified no matter what the previous receipt says. Written with
+    a receipt outside `RECEIPT_CYCLE` because that is the shape a
+    re-introduced gate would key on.
+    """
+    called: list[str] = []
+
+    async def loud(*args: Any, **kwargs: Any) -> str:
+        called.append("classified")
+        return VERDICT_FACT
+
+    monkeypatch.setattr(handlers.classify, "verdict_for", loud)
+
+    async def fake_route(*args: Any, **kwargs: Any) -> None:
+        called.append("routed")
+
+    monkeypatch.setattr(handlers, "route", fake_route)
+
+    existing = stored(extracted=False, verdict=VERDICT_TALK)
+    existing.receipt_emoji = "👀"
+
+    await handlers.record_edited(
+        edit(), Chat(id=1, chat_id=7), EditSession(existing), CFG, FakeBot()
+    )
+
+    assert called == ["classified", "routed"]
+    assert existing.verdict == VERDICT_FACT
+    assert existing.text == "5500 такси"
+
+
 async def test_a_row_with_no_receipt_column_still_gets_its_bubble_cleared(
     monkeypatch: Any,
 ) -> None:
