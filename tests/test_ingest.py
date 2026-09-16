@@ -10,7 +10,7 @@ from telegrind.bot.handlers.handlers import (
     RECEIPT_EMOJI,
     next_receipt,
 )
-from telegrind.bot.handlers.receipts import HANDED_OVER, acknowledge
+from telegrind.bot.handlers.receipts import acknowledge
 from telegrind.config import ChatConfig
 from telegrind.models import (
     KIND_TEXT,
@@ -358,12 +358,14 @@ def chain_row(
     )
 
 
-async def test_a_reply_to_claude_is_talk_without_asking_the_classifier(
+async def test_a_reply_into_a_talk_turn_is_talk_without_asking_the_classifier(
     monkeypatch: Any,
 ) -> None:
-    """The chain measured live on 2026-09-13. 1124 was `talk`, 1125 is
-    Claude's reply to it, and 1126 - «а последний коммит какой» - went to
-    the SQL engine because the classifier only ever saw the text."""
+    """The chain measured live on 2026-09-13, when the turn was Claude's.
+    1124 was `talk`, 1125 the reply to it, and 1126 — «а последний коммит
+    какой» — went to the SQL engine because the classifier only ever saw
+    the text. The reply chain is what decides the case the text cannot, and
+    it outlived the layer that made it visible."""
 
     async def explode(*args: Any, **kwargs: Any) -> dict:
         raise AssertionError("a continuation needs no model call")
@@ -644,60 +646,6 @@ async def test_editing_a_message_with_no_prior_row_keeps_the_fact_default(
     assert session.added[0].receipt_emoji == RECEIPT_EMOJI
 
 
-async def test_an_edit_after_the_handover_is_ignored(monkeypatch: Any) -> None:
-    """👀 is the point of no return. The row is still overwritten — nothing
-    written is ever lost — but nothing downstream reacts to it."""
-    called: list[str] = []
-
-    async def loud(*args: Any, **kwargs: Any) -> str:
-        called.append("classified")
-        return VERDICT_FACT
-
-    monkeypatch.setattr(handlers.classify, "verdict_for", loud)
-
-    async def fake_route(*args: Any, **kwargs: Any) -> None:
-        called.append("routed")
-
-    monkeypatch.setattr(handlers, "route", fake_route)
-
-    existing = stored(extracted=False)
-    existing.verdict = VERDICT_TALK
-    existing.receipt_emoji = HANDED_OVER
-
-    await handlers.record_edited(
-        edit(), Chat(id=1, chat_id=7), EditSession(existing), CFG, FakeBot()
-    )
-
-    assert called == []
-    assert existing.text == "5500 такси"
-
-
-async def test_the_handover_receipt_survives_the_edit_that_it_ignores(
-    monkeypatch: Any,
-) -> None:
-    """The marker is the state. Clearing it would make the next edit
-    classifiable again and hand the same message over twice."""
-
-    async def loud(*args: Any, **kwargs: Any) -> str:
-        raise AssertionError("a handed-over message must not be re-classified")
-
-    monkeypatch.setattr(handlers.classify, "verdict_for", loud)
-    monkeypatch.setattr(handlers, "route", _noop_route)
-
-    existing = stored(extracted=False)
-    existing.verdict = VERDICT_TALK
-    existing.receipt_emoji = HANDED_OVER
-    bot = FakeBot()
-
-    await handlers.record_edited(
-        edit(), Chat(id=1, chat_id=7), EditSession(existing), CFG, bot
-    )
-
-    assert existing.receipt_emoji == HANDED_OVER
-    assert existing.verdict == VERDICT_TALK
-    assert bot.reactions == []
-
-
 async def test_an_edit_that_turns_a_fact_into_talk_clears_the_receipt(
     monkeypatch: Any,
 ) -> None:
@@ -927,26 +875,22 @@ async def test_a_talk_row_edited_into_a_fact_gets_the_default_receipt(
     assert existing.receipt_emoji == RECEIPT_EMOJI
 
 
-async def test_a_released_row_edited_into_a_question_loses_the_stale_marker(
+async def test_a_row_with_no_receipt_column_still_gets_its_bubble_cleared(
     monkeypatch: Any,
 ) -> None:
-    """The startup sweep clears the column and cannot touch the bubble.
+    """The column is not proof of what the bubble shows.
 
-    A turn killed mid-flight leaves 👀 on screen and 👀 in the column; the
-    sweep at the next boot takes the column back to NULL so the message is
-    editable again, and there is no API to take a reaction off a message
-    the bot is not currently handling — so the row and the screen disagree
-    until something re-places or clears it. An edit is that something, and
-    two of the three verdicts already cover it: `talk` is handed over again
-    and re-places 👀, `fact` paints 💔 over it.
+    `was_fact` would be the tempting predicate and it is the wrong one: a
+    row whose column is already NULL can still be wearing a reaction. The
+    bubble is a separate API call, and Telegram offers no way to read a
+    message's reactions back — so the row and the screen can disagree and
+    nothing here can tell.
 
-    A question is the third, and it answers itself — `route` says the
-    number and places nothing — so the 👀 would survive with no turn behind
-    it, claiming the message is with Claude while the answer sits under it.
-    The receipt must never claim something that did not happen, so the
-    column going to NULL has to reach the bubble too. `was_fact` cannot see
-    this: a released row's column is already NULL, so nothing about it
-    remembers that a bubble was ever placed.
+    A question is where it bites, because a question answers itself:
+    `route` says the number and places nothing, so a stale bubble would
+    survive under the answer, claiming a delete gesture over facts that do
+    not exist. «Clear it anyway» is the only available answer, and on a
+    message that had no reaction it costs one call that changes nothing.
     """
 
     async def a_question(*args: Any, **kwargs: Any) -> str:
@@ -955,7 +899,8 @@ async def test_a_released_row_edited_into_a_question_loses_the_stale_marker(
     monkeypatch.setattr(handlers.classify, "verdict_for", a_question)
     monkeypatch.setattr(handlers, "route", _noop_route)
 
-    # What the sweep leaves behind: talk, handed over once, marker cleared.
+    # Talk, and the column says no receipt — which is exactly the state a
+    # bubble can outlive, because nothing here can ask whether one is up.
     released = stored(extracted=False, verdict=VERDICT_TALK)
     released.receipt_emoji = None
     bot = FakeBot()

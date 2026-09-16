@@ -27,25 +27,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from telegrind import classify, extract, store
 from telegrind.bot.handlers.receipts import (
-    HANDED_OVER,
+    RECEIPT_CYCLE as RECEIPT_CYCLE,
+)
+from telegrind.bot.handlers.receipts import (
     RECEIPT_EMOJI,
     clear_receipt,
     next_receipt,
 )
-from telegrind.bot.handlers.receipts import (
-    RECEIPT_CYCLE as RECEIPT_CYCLE,
-)
 from telegrind.bot.router import router
-from telegrind.bot.routing import HandOver, route
+from telegrind.bot.routing import route
 from telegrind.config import ChatConfig
 from telegrind.models import VERDICT_FACT, Chat
 
 log = logging.getLogger(__name__)
-
-#: Set by setup_dispatcher() when the meta layer is configured. None means
-#: there is nobody to hand a message to, and routing says so rather than
-#: going silent.
-HAND_OVER: HandOver | None = None
 
 
 async def _continues(
@@ -111,7 +105,7 @@ async def record(
             # column catching up with a verdict that earns no receipt.
             row.receipt_emoji = None
 
-    await route(message, row, chat, config, session, bot, hand_over=HAND_OVER)
+    await route(message, row, chat, config, session, bot)
 
 
 @router.edited_message()
@@ -129,12 +123,12 @@ async def record_edited(
     another, and correcting data or a typo is what edits are actually used
     for. So the verdict is re-derived on the same principle as extracted_at.
 
-    👀 is the point of no return. A message already handed to Claude is
-    still overwritten — nothing written is ever lost — but nothing
-    downstream reacts to it: no re-send, no new turn, and no
-    re-classification either. The correct behaviour would be to rewind the
-    session, which is transcript surgery on a .jsonl we do not own, for a
-    gesture whose workaround is saying the correction out loud.
+    There is no longer a point of no return. 👀 used to be one — a message
+    already handed to Claude was overwritten but never re-routed, because
+    rewinding his session meant transcript surgery on a .jsonl we do not
+    own. Nothing has placed that marker since the meta layer moved out, so
+    the gate guarded rows no live code could produce and it went on
+    2026-09-16. Every edit now re-classifies and re-routes.
 
     The extracted-or-not check has to happen *before* upsert_message, which
     clears extracted_at by design — and inside a transaction of its own, or
@@ -147,32 +141,8 @@ async def record_edited(
     # call must sit between two transactions, never inside one.
     async with session.begin():
         previous = await store.get_message(session, chat.id, edited_message.message_id)
-        # Nothing places 👀 any more — the Claude meta layer moved out to its
-        # own bot on 2026-09-14 — so this only ever matches a row a database
-        # already carried. Kept rather than dropped because dropping it would
-        # re-open those rows to re-routing, which is the one thing the marker
-        # was written to prevent. Read off the row, not off Telegram: a
-        # hand-over that committed but failed to place the reaction still
-        # holds the point of no return.
-        handed_over = previous is not None and previous.receipt_emoji == HANDED_OVER
         was_extracted = previous is not None and previous.extracted_at is not None
         was_fact = previous is not None and previous.verdict == VERDICT_FACT
-        previous_verdict = previous.verdict if previous is not None else VERDICT_FACT
-
-    if handed_over:
-        # Returning here is also what keeps the receipt: upsert_message
-        # never touches receipt_emoji, and the clearing below — which a
-        # non-fact verdict would otherwise trigger — is never reached. 👀
-        # survives its own edit.
-        async with session.begin():
-            await store.upsert_message(
-                session,
-                chat,
-                edited_message,
-                verdict=previous_verdict,
-            )
-        log.info("edit after hand-over on %s, ignored", edited_message.message_id)
-        return
 
     # `text or caption`, the same expression `record` and `route` read: an
     # edited photo caption has no `.text`, and reading only that would hand
@@ -197,23 +167,18 @@ async def record_edited(
             emoji = next_receipt(row.receipt_emoji) if was_fact else RECEIPT_EMOJI
         else:
             emoji = None
-        # This write can clobber a 👀 that `claim` put there microseconds
-        # ago, and nothing prevents it. `record` and `record_edited` run
-        # fire-and-forget on separate sessions, and both go quiet across a
-        # classifier call: an edit arriving while `record` awaits
-        # `classify` reads a row that is not yet handed over — so the gate
-        # above lets it through — and then lands here *after* `route` has
-        # reached `hand_over`. The row ends up with 💔 and a `fact`
-        # verdict while Claude is answering the same message: in the
-        # extraction tail, wearing a heart, and being talked about.
+        # This write races `record`'s own. Both handlers run fire-and-forget
+        # on separate sessions and both go quiet across a classifier call, so
+        # an edit arriving while `record` awaits `classify` can land here
+        # first and then be overwritten by the verdict `record` comes back
+        # with — the row ends up describing the pre-edit text.
         #
         # Same class as the provisional-fact window the ledger accepted at
-        # Task 5, and the same harm ceiling — spurious facts on a live row,
+        # Task 5, and the same harm ceiling: spurious facts on a live row,
         # removable by any reaction, never lost data. It needs a human edit
-        # inside one model call in a single-user bot. Written down because
-        # the marker-clobber half was recorded nowhere: closing it means
-        # one row lock across two handlers, which is a bigger change than
-        # the race is worth.
+        # inside one model call in a single-user bot, and closing it means
+        # one row lock across two handlers — a bigger change than the race
+        # is worth.
         row.receipt_emoji = emoji
 
         if was_extracted and verdict == VERDICT_FACT:
@@ -247,20 +212,16 @@ async def record_edited(
 
     if emoji is None and previous is not None:
         # The receipt promised a delete gesture the message no longer has.
-        # Cleared before `route`, never after: on a fact that became talk
-        # the sequence is 💔 → bare → 👀, and the other order would wipe a
-        # hand-over receipt the meta layer had just placed.
+        # Cleared before `route`, never after, so an arm that re-places
+        # something is not undone by this.
         #
         # On *any* row we have seen before, not just a fact — the column is
-        # not proof of what the bubble shows. The startup sweep clears
-        # `receipt_emoji` on a turn its process was killed mid-flight and
-        # cannot reach the reaction, so a released row carries NULL under a
-        # 👀 that is still on screen. `talk` and `fact` both re-place
-        # something over it; a question answers itself and places nothing,
-        # and the 👀 would outlive every turn behind it. Telegram has no
-        # way to read a message's reactions back, so «clear it anyway» is
-        # the only available answer — and on a message that had none it
-        # costs one call that changes nothing.
+        # not proof of what the bubble shows. The bubble is a separate API
+        # call that can fail while the column says it happened, and the
+        # column can go to NULL on an edit while the bubble stays up.
+        # Telegram has no way to read a message's reactions back, so «clear
+        # it anyway» is the only available answer — and on a message that
+        # had none it costs one call that changes nothing.
         await clear_receipt(bot, chat.chat_id, edited_message.message_id)
 
     await route(
@@ -270,6 +231,5 @@ async def record_edited(
         config,
         session,
         bot,
-        hand_over=HAND_OVER,
         receipt=emoji or RECEIPT_EMOJI,
     )

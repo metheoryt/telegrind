@@ -36,14 +36,12 @@ def setup_dispatcher() -> Dispatcher:
     There is no ChatActionMiddleware any more: it went with the echo, and
     nothing types.
 
-    Nothing sets `handlers.HAND_OVER` any more, so it stays `None` and the
-    `talk` arm stores a message and leaves it bare. That was already a
-    supported state — the container has never had a `claude` binary — and
-    it is now the only one: Claude moved out into its own bot and its own
-    process on the host (`~/my/cladaeb`), because a handler inside this
-    process cannot rebuild the container it is running in. The `hand_over`
-    seam in `routing.py` is deliberately left in place and tested with
-    `None`; it is where a future in-process answerer would attach.
+    Claude is not wired in here and cannot be. He moved out into his own
+    bot and his own process on the host (`~/my/cladaeb`) because a handler
+    inside this process cannot rebuild the container it is running in, and
+    on 2026-09-16 the `hand_over` seam he attached to went too. A `talk`
+    message is now stored and left bare, which is what the container has
+    always done anyway — it has never had a `claude` binary.
     """
     from . import middleware  # noqa: F401, I001
     from .handlers import query as query

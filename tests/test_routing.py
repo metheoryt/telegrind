@@ -58,7 +58,6 @@ class Recorder:
         #: The parse_mode each `say` went out with, kept apart from `said`
         #: so the assertions that do not care about it stay two-tuples.
         self.modes: list[str | Default | None] = []
-        self.handed: list[int] = []
 
     async def acknowledge(
         self, bot: Any, chat_id: int, message_id: int, emoji: str
@@ -177,41 +176,13 @@ async def test_a_captioned_question_is_answered_from_the_caption(
     assert rec.said == [("12 400 ₸.", 10)]
 
 
-async def test_a_refused_question_falls_through_to_the_handler(
+async def test_a_question_the_query_engine_cannot_express_is_refused_in_words(
     monkeypatch: Any,
 ) -> None:
-    rec = Recorder()
-    monkeypatch.setattr(routing, "acknowledge", rec.acknowledge)
-    monkeypatch.setattr(routing, "say", rec.say)
-
-    async def refused(*args: Any, **kwargs: Any) -> None:
-        return None
-
-    monkeypatch.setattr(routing, "answer_for", refused)
-
-    async def hand_over(*args: Any, **kwargs: Any) -> bool:
-        rec.handed.append(10)
-        return True
-
-    await routing.route(
-        msg(),
-        row(VERDICT_QUESTION),
-        Chat(id=1, chat_id=7),
-        CFG,
-        FakeSession(),
-        object(),
-        hand_over=hand_over,
-    )
-
-    assert rec.handed == [10]
-    assert rec.said == []
-
-
-async def test_a_refused_question_still_says_so_when_there_is_nobody_to_ask(
-    monkeypatch: Any,
-) -> None:
-    """Without this arm, folding steps 1 and 3 does not close the hole it
-    was folded to close: the question would get silence."""
+    """`answer_for` returns None, not prose, when `spec_for` cannot express
+    the question. Something has to turn that into a sentence, or the
+    question gets silence — and silence is the one answer a bot whose whole
+    promise is «write it down and ask me» may never give."""
     rec = Recorder()
     monkeypatch.setattr(routing, "acknowledge", rec.acknowledge)
     monkeypatch.setattr(routing, "say", rec.say)
@@ -228,37 +199,6 @@ async def test_a_refused_question_still_says_so_when_there_is_nobody_to_ask(
         CFG,
         FakeSession(),
         object(),
-        hand_over=None,
-    )
-
-    assert rec.said == [(REFUSAL, 10)]
-
-
-async def test_a_question_the_meta_layer_also_declined_still_gets_the_refusal(
-    monkeypatch: Any,
-) -> None:
-    """A hand-off that comes back False is the same as no hand-off at all:
-    the question was asked, so something has to answer it."""
-    rec = Recorder()
-    monkeypatch.setattr(routing, "acknowledge", rec.acknowledge)
-    monkeypatch.setattr(routing, "say", rec.say)
-
-    async def refused(*args: Any, **kwargs: Any) -> None:
-        return None
-
-    monkeypatch.setattr(routing, "answer_for", refused)
-
-    async def declines(*args: Any, **kwargs: Any) -> bool:
-        return False
-
-    await routing.route(
-        msg(),
-        row(VERDICT_QUESTION),
-        Chat(id=1, chat_id=7),
-        CFG,
-        FakeSession(),
-        object(),
-        hand_over=declines,
     )
 
     assert rec.said == [(REFUSAL, 10)]
@@ -290,7 +230,7 @@ async def test_the_pending_notice_precedes_the_answer(monkeypatch: Any) -> None:
     assert rec.said == [("Разбираю 2 сообщений…", None), ("12 400 ₸.", 10)]
 
 
-async def test_talk_with_nobody_to_hand_it_to_stays_bare(monkeypatch: Any) -> None:
+async def test_talk_is_stored_and_left_bare(monkeypatch: Any) -> None:
     """«Nothing yet» is the queue, visible — and here the queue is waiting
     on a runtime that is not configured."""
     rec = Recorder()
@@ -304,37 +244,8 @@ async def test_talk_with_nobody_to_hand_it_to_stays_bare(monkeypatch: Any) -> No
         CFG,
         FakeSession(),
         object(),
-        hand_over=None,
     )
 
-    assert rec.reactions == []
-    assert rec.said == []
-
-
-async def test_talk_is_handed_over_when_there_is_somebody_to_ask(
-    monkeypatch: Any,
-) -> None:
-    """And the receipt is not placed here: the meta layer puts 👀 on when
-    the turn starts, so the bare messages are the ones not yet seen."""
-    rec = Recorder()
-    monkeypatch.setattr(routing, "acknowledge", rec.acknowledge)
-    monkeypatch.setattr(routing, "say", rec.say)
-
-    async def hand_over(*args: Any, **kwargs: Any) -> bool:
-        rec.handed.append(10)
-        return True
-
-    await routing.route(
-        msg(),
-        row(VERDICT_TALK),
-        Chat(id=1, chat_id=7),
-        CFG,
-        FakeSession(),
-        object(),
-        hand_over=hand_over,
-    )
-
-    assert rec.handed == [10]
     assert rec.reactions == []
     assert rec.said == []
 
@@ -346,23 +257,12 @@ async def test_a_system_row_is_stored_and_nothing_else(monkeypatch: Any) -> None
     monkeypatch.setattr(routing, "acknowledge", rec.acknowledge)
     monkeypatch.setattr(routing, "say", rec.say)
 
-    async def hand_over(*args: Any, **kwargs: Any) -> bool:
-        rec.handed.append(10)
-        return True
-
     await routing.route(
-        msg(),
-        row(VERDICT_SYSTEM),
-        Chat(id=1, chat_id=7),
-        CFG,
-        FakeSession(),
-        object(),
-        hand_over=hand_over,
+        msg(), row(VERDICT_SYSTEM), Chat(id=1, chat_id=7), CFG, FakeSession(), object()
     )
 
     assert rec.reactions == []
     assert rec.said == []
-    assert rec.handed == []
 
 
 async def test_the_answer_goes_out_unparsed_and_the_bots_own_words_do_not(
@@ -443,29 +343,6 @@ async def test_a_blown_up_answer_is_said_out_loud_rather_than_swallowed(
     assert rec.reactions == []
 
 
-async def test_a_blown_up_hand_over_is_said_out_loud_too(monkeypatch: Any) -> None:
-    """The talk arm has no `acknowledge` in front of it, so a failure in
-    `hand_over` — its own read, or `claim`'s write — is the same silence."""
-    rec = Recorder()
-    monkeypatch.setattr(routing, "acknowledge", rec.acknowledge)
-    monkeypatch.setattr(routing, "say", rec.say)
-
-    async def blows_up(*args: Any, **kwargs: Any) -> bool:
-        raise RuntimeError("the database went away")
-
-    await routing.route(
-        msg(),
-        row(VERDICT_TALK),
-        Chat(id=1, chat_id=7),
-        CFG,
-        FakeSession(),
-        object(),
-        hand_over=blows_up,
-    )
-
-    assert rec.said == [(routing.BROKEN, 10)]
-
-
 async def test_the_guard_survives_its_own_say_failing(monkeypatch: Any) -> None:
     """Telegram is down, or the database is — the same outage that broke
     the arm can break the apology. A guard that raises is no guard."""
@@ -477,17 +354,18 @@ async def test_the_guard_survives_its_own_say_failing(monkeypatch: Any) -> None:
 
     monkeypatch.setattr(routing, "say", unsendable)
 
-    async def blows_up(*args: Any, **kwargs: Any) -> bool:
-        raise RuntimeError("the database went away")
+    async def overloaded(*args: Any, **kwargs: Any) -> str:
+        raise RuntimeError("anthropic 529 overloaded")
+
+    monkeypatch.setattr(routing, "answer_for", overloaded)
 
     await routing.route(
         msg(),
-        row(VERDICT_TALK),
+        row(VERDICT_QUESTION),
         Chat(id=1, chat_id=7),
         CFG,
         FakeSession(),
         object(),
-        hand_over=blows_up,
     )
 
     assert rec.said == []

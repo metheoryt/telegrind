@@ -26,12 +26,6 @@ RECEIPT_CYCLE = ("💔", "❤‍🔥", "💘")
 #: What a message gets the first time it is stored.
 RECEIPT_EMOJI = RECEIPT_CYCLE[0]
 
-#: What a message handed to Claude gets. Deliberately not a fourth heart:
-#: every emoji in RECEIPT_CYCLE means «tapping this deletes the facts on
-#: this message», and a handed-over message has none. The gesture and the
-#: family of emoji that carries it stay matched.
-HANDED_OVER = "👀"
-
 
 def next_receipt(current: str | None) -> str:
     """The emoji an edit moves the receipt to.

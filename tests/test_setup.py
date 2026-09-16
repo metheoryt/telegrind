@@ -6,9 +6,10 @@ attached». So everything about the *registration* is asserted in a single
 pass.
 
 What used to sit beside it — `attach_meta`, the stranded-turn sweep and
-their tests — went with the Claude meta layer on 2026-09-14. Nothing sets
-`handlers.HAND_OVER` any more; `routing.py` is tested with `hand_over=None`
-in `tests/test_routing.py`, which is now the whole story of that seam.
+their tests — went with the Claude meta layer on 2026-09-14, and the
+`hand_over` seam they attached to went on 2026-09-16. There is nothing left
+to wire Claude into this dispatcher with, which is the point: he runs as
+his own bot, in his own process, on the host.
 """
 
 import sys

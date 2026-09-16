@@ -1,19 +1,20 @@
-"""The verdict decides: a receipt, an answer, or a hand-off.
+"""The verdict decides: a receipt, an answer, or nothing at all.
 
-The one place the three arms meet. `hand_over` is passed in rather than
-imported, which is why removing the Claude meta layer on 2026-09-14 cost one
-argument at the call site and nothing here: it is `None` now, and every arm
-is tested that way. It stays as the seam an in-process answerer would attach
-to; Claude itself moved to its own bot on the host (`~/my/cladaeb`).
+The one place the arms meet. There used to be a third kind of arm — a
+`hand_over` callable that took a `talk` message to Claude Code running as a
+handler in this very process. It went on 2026-09-16 with the last of the
+meta layer: a process cannot rebuild and restart itself, so Claude lives in
+its own bot on the host now (`~/my/cladaeb`) and nothing will ever attach
+here again. The seam was kept for two days on the theory that an in-process
+answerer might come back; it will not, and an untaken seam threaded through
+two signatures and a dozen tests costs more than it reserves.
 
 The receipt is the routing signal. 💔 means «understood as a fact, will
-extract it», and tapping it deletes. 👀 meant «handed to Claude» and was
-placed by the meta layer when a turn started, not here — with `hand_over`
-None nothing places it, and a `talk` message is stored and left bare.
+extract it», and tapping it deletes. Everything that is not a fact is
+stored and left bare.
 """
 
 import logging
-from collections.abc import Awaitable, Callable
 
 from aiogram import Bot
 from aiogram.types import Message
@@ -24,17 +25,9 @@ from telegrind.bot.answering import REFUSAL, answer_for, question_of
 from telegrind.bot.handlers.receipts import RECEIPT_EMOJI, acknowledge
 from telegrind.bot.outbound import say
 from telegrind.config import ChatConfig
-from telegrind.models import (
-    VERDICT_FACT,
-    VERDICT_QUESTION,
-    VERDICT_TALK,
-    Chat,
-    LoggedMessage,
-)
+from telegrind.models import VERDICT_FACT, VERDICT_QUESTION, Chat, LoggedMessage
 
 log = logging.getLogger(__name__)
-
-HandOver = Callable[[Message, LoggedMessage, Chat, AsyncSession, Bot], Awaitable[bool]]
 
 #: What the user is told when an arm blew up. Fixed, markup-free and ours,
 #: so it goes out with the bot-wide HTML default like every other sentence
@@ -59,7 +52,6 @@ async def route(
     session: AsyncSession,
     bot: Bot,
     *,
-    hand_over: HandOver | None = None,
     receipt: str = RECEIPT_EMOJI,
 ) -> None:
     """Act on a verdict, and never let a failure be silent.
@@ -68,34 +60,22 @@ async def route(
     risk here — but *everything else* is. aiogram advances the polling
     offset as it dispatches, so an exception escaping this function is an
     update that is never redelivered: no answer, no reaction, no second
-    chance. `acknowledge` swallows, so the fact arm cannot go quiet; every
-    other step can. `store.unextracted_tail`, both model calls inside
-    `answer_for`, every `say`, and `hand_over`'s own read and write are all
-    one 429 away from it, and a 429 or a 529 from Anthropic is the
-    commonest failure this bot will ever see.
+    chance. `acknowledge` swallows, so the fact arm cannot go quiet; the
+    question arm can. `store.unextracted_tail`, both model calls inside
+    `answer_for` and every `say` are one 429 away from it, and a 429 or a
+    529 from Anthropic is the commonest failure this bot will ever see.
 
     So the arms are guarded, and the failure is said out loud. What the row
     looks like afterwards is deliberate: **nothing is written here**. The
     receipt stays as `record` left it — bare for a question or for talk —
     because no emoji in the vocabulary means «this went wrong», and a bare
-    `receipt_emoji` is exactly what keeps the message recoverable:
-    `record_edited`'s point-of-no-return gate reads `== HANDED_OVER`, which
-    nothing writes any more, so an edit re-classifies and re-routes it, and
-    re-asking always works. The
-    bare bubble on its own would claim «queued» about something that is
-    not; the sentence in the chat is what corrects that claim.
+    `receipt_emoji` is exactly what keeps the message recoverable: an edit
+    re-classifies and re-routes it, and re-asking always works. The bare
+    bubble on its own would claim «queued» about something that is not; the
+    sentence in the chat is what corrects that claim.
     """
     try:
-        await _act(
-            message,
-            row,
-            chat,
-            config,
-            session,
-            bot,
-            hand_over=hand_over,
-            receipt=receipt,
-        )
+        await _act(message, row, chat, config, session, bot, receipt=receipt)
     except Exception:
         # Not BaseException: CancelledError is the shutdown path, and a
         # message apologising for being shut down is noise. The reason is
@@ -118,19 +98,20 @@ async def _act(
     session: AsyncSession,
     bot: Bot,
     *,
-    hand_over: HandOver | None,
     receipt: str,
 ) -> None:
-    """The four arms. Split out only so `route` can be one `try`: a guard
-    per arm would be three copies that drift, and a fifth arm added later
-    would arrive unguarded."""
+    """The arms. Split out only so `route` can be one `try`: a guard per
+    arm would be copies that drift, and an arm added later would arrive
+    unguarded.
+
+    `talk` and `system` share the fall-through, and that is not two verdicts
+    collapsing into one. What `talk` buys is staying out of `unextracted_tail`,
+    which selects on `fact` — it earns no receipt because 💔 promises a delete
+    gesture over facts a talk message has none of, and it earns no reply
+    because there is nobody in this process to write one.
+    """
     if row.verdict == VERDICT_FACT:
         await acknowledge(bot, chat.chat_id, message.message_id, receipt)
-        return
-
-    if row.verdict == VERDICT_TALK:
-        if hand_over is None or not await hand_over(message, row, chat, session, bot):
-            log.info("nobody to hand message %s to", message.message_id)
         return
 
     if row.verdict == VERDICT_QUESTION:
@@ -174,14 +155,12 @@ async def _act(
                 parse_mode=None,
             )
             return
-        # The bot could not express it, so Claude does. A misroute across
-        # the fact/question line then costs a second of latency instead of
-        # an unanswered question — which is what lets the classifier's
-        # boundary be soft.
-        if hand_over is not None and await hand_over(message, row, chat, session, bot):
-            return
+        # `answer.spec_for` could not express it. That used to be the
+        # hand-off to Claude, which is what let the classifier's fact/question
+        # boundary be soft — a misroute cost a second of latency instead of
+        # an unanswered question. With nobody to hand to, the refusal is the
+        # whole of it, and the boundary is that much less forgiving.
         await say(bot, session, chat, REFUSAL, reply_to=message.message_id)
         return
 
-    # VERDICT_SYSTEM: a command that is not /q, or the bot's own message.
-    # Stored, and nothing else.
+    # VERDICT_TALK and VERDICT_SYSTEM: stored, and nothing else.

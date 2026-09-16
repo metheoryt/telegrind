@@ -141,13 +141,11 @@ a question, with or without /q
 ```
 
 `answer_for` returns `None` rather than prose when `spec_for` cannot express
-the question. That `None` used to be a hand-off to Claude; with the meta layer
-gone it becomes `REFUSAL` — the bot says it cannot answer that one.
-
-`routing.py` still takes `hand_over` as an injected parameter, and it is
-always `None` now. The seam is left in deliberately: it is tested on every arm
-with `None`, and it is where an in-process answerer would attach if one ever
-comes back. Nothing sets it, so `talk` is stored and left bare.
+the question. That `None` used to be a hand-off to Claude; it becomes
+`REFUSAL` — the bot says it cannot answer that one. The hand-off was what let
+the classifier's fact/question boundary be soft, because a misroute cost a
+second of latency rather than an unanswered question; with the seam gone
+(2026-09-16) the boundary is that much less forgiving.
 
 So there *is* a reply on ingest now, on one of the four arms. A `fact` gets a
 reaction instead, and that bubble is the delete gesture: 💔 means «understood
@@ -205,10 +203,11 @@ not a dict — degrades to `fact` explicitly; `verdict_for` never raises,
 because the invariant that nothing written is lost must not come to depend on
 a model call returning.
 
-**`telegrind/bot/routing.py`** — the one place the four arms meet.
-`hand_over` is an injected parameter and is always `None` now, which is why
-removing the conversation half cost one argument at the call site and nothing
-here; every arm is tested against `None`. The question arm reads `message.text or message.caption` — the
+**`telegrind/bot/routing.py`** — the one place the four verdicts meet, in
+two arms and a fall-through: `fact` gets the receipt, `question` gets an
+answer, and `talk` and `system` are stored and left bare. What `talk` still
+buys is staying out of `unextracted_tail`, which selects on `fact`.
+The question arm reads `message.text or message.caption` — the
 same expression the classifier read, because whatever decides a verdict and
 whatever answers it must read the same words — and sends the backlog notice in
 a transaction of its own, outside the answering one. **All four arms run
@@ -217,16 +216,18 @@ the polling offset as it dispatches, so an exception escaping `route` is an
 update that is never redelivered — and the message would be left wearing a
 *bare* bubble, which the receipt vocabulary reads as «nothing yet, queued».
 The guard writes nothing to the row on purpose: `receipt_emoji` stays `None`,
-which is what keeps `record_edited`'s point-of-no-return gate open, so an edit
-re-classifies and re-routes the message. The guard's own `say` is guarded too —
+which is what leaves the message recoverable — an edit re-classifies and
+re-routes it. The guard's own `say` is guarded too —
 the outage that broke the arm can break the apology.
 
 **`telegrind/bot/answering.py`** — question → numbers → prose, with no Telegram
 in it, so it tests. Split out of `handlers/query.py` because it registers
 nothing: importing a handler module is what registers its handlers, and
 `routing.py` needs this half. `answer_for` returns `None`, not the refusal
-text, when `answer.spec_for` cannot express the question — only a caller that
-can tell a refusal from an answer can hand it to Claude instead.
+text, when `answer.spec_for` cannot express the question. The distinction was
+load-bearing when a refusal could be handed to Claude instead; it is kept
+because a caller that cannot tell the two apart cannot ever grow that arm
+back, and `REFUSAL` is a sentence, not a signal.
 
 **`telegrind/bot/outbound.py`** — the only way the bot speaks. Every outgoing
 message is sent *and* stored, with `verdict=system` so it never enters the
@@ -427,29 +428,6 @@ comment in `telegrind/bot/handlers/__init__.py`, which explains why that
 package registers nothing. Both are real, they are not the same thing, and a
 report in this very plan got them confused.
 
-**The prompt goes into `claude -p`'s argv after a `--`, and that is a security
-boundary.** A `talk` message is arbitrary user text handed straight to a
-subprocess running `--permission-mode bypassPermissions`. Measured 2026-09-12
-against claude 2.1.269: without the separator, a message of `--version` made
-the CLI print its own version and the prompt never reached the model; with it,
-the same argv parsed as text. It is one list element in `runtime.argv` and it
-looks like noise.
-
-**`CLAUDE_CWD` unset points that subprocess at the checkout you are working
-in.** `MetaConfig.from_env` falls back to `Path.cwd()`, so a bot started the
-documented way — `uv run python main.py` from the repo root — runs full Claude
-Code under `bypassPermissions` in the live tree, uncommitted work and all, on
-the first `talk` message. The spec is emphatic that Claude never edits the live
-tree and says it about *production*; dev is where this runs first, and nothing
-carried the rule across. **Point `CLAUDE_CWD` at a scratch worktree before the
-first talk message** (`git worktree add /tmp/claude-sandbox HEAD`), which is
-what `.env.dist` and the dev walk's step 0.1 both say. There is deliberately no
-guard that refuses to start: the value has a legitimate use and a bot that will
-not boot is a worse failure than one that needs a line of config.
-
-**The allowlist is on `chat_id`, not `from_user.id`.** In a private chat the
-two are the same number, which is why it has never mattered — but an admin id
-that names a *group* puts every member of that group at the `claude -p` prompt.
 
 **Model-authored text is sent with `parse_mode=None`, everything else keeps the
 default.** The bot-wide default is HTML, so an answer carrying a bare `<` — a

@@ -173,8 +173,8 @@ ingestion rewritten the next day. `format_records`, `delete_record`, `_ingest`,
 `TIP_TEXT`, the `sendVideo` intro and the `ChatActionMiddleware` are all gone,
 `/q` is the only registered command, and there is no Sheets projection to be
 "the only way to see a fact". What telegrind actually calls now is
-`setMessageReaction` (💔 / ❤‍🔥 / 💘 as the receipt cycle, 👀 for a message
-handed to Claude, and an empty reaction list to clear one), `sendMessage` for
+`setMessageReaction` (💔 / ❤‍🔥 / 💘 as the receipt cycle, and an empty
+reaction list to clear one), `sendMessage` for
 every answer — a question needs no `/q` since the classifier landed, and
 Claude's replies go out the same way — and long polling over `message` +
 `edited_message` + `message_reaction`. The rest of this file — version state,
