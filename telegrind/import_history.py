@@ -9,8 +9,11 @@ and 3915 model calls would buy nothing here.
 Deleted or frozen once it has run. It is one file for the same reason.
 """
 
+import json
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from aiogram.types import Chat as TgChat
@@ -140,3 +143,47 @@ def message_from(entry: dict, *, chat_id: int, bot_id: int) -> Message | None:
             _stub_reply(int(reply), chat_id=chat_id, date=date) if reply else None
         ),
     )
+
+
+#: The only export type this reads. A group export has many authors and
+#: no per-chat meaning for `chat_id`.
+BOT_CHAT = "bot_chat"
+
+
+class ExportMismatch(Exception):  # noqa: N818 -- name fixed by the task interface
+    """The export is not the one chat this import is for."""
+
+
+@dataclass(frozen=True, slots=True)
+class Export:
+    bot_id: int
+    entries: list[dict]
+
+
+def read_export(path: Path, *, chat_id: int, since: datetime | None = None) -> Export:
+    """The export's message entries, and who the bot is.
+
+    Refuses rather than guesses. A third author means this is not the
+    two-party chat the caller named, and importing it would file someone
+    else's messages under `chat_id`.
+    """
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    if doc.get("type") != BOT_CHAT:
+        raise ExportMismatch(f"not a bot chat export: type={doc.get('type')!r}")
+
+    bot_id = int(doc["id"])
+    entries = [e for e in doc["messages"] if e.get("type") == "message"]
+
+    authors: set[int] = {a for e in entries if (a := user_id(e)) is not None}
+    unexpected = authors - {bot_id, chat_id}
+    if unexpected:
+        raise ExportMismatch(
+            f"unexpected authors {sorted(unexpected)}; expected only "
+            f"{chat_id} and {bot_id}"
+        )
+
+    if since is not None:
+        cutoff = since.timestamp()
+        entries = [e for e in entries if float(e["date_unixtime"]) >= cutoff]
+
+    return Export(bot_id=bot_id, entries=entries)

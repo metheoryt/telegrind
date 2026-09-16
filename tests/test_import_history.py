@@ -1,7 +1,18 @@
+import json
 from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
 
 from telegrind import store
-from telegrind.import_history import flatten, message_from, user_id, verdict_of
+from telegrind.import_history import (
+    ExportMismatch,
+    flatten,
+    message_from,
+    read_export,
+    user_id,
+    verdict_of,
+)
 from telegrind.models import (
     KIND_TEXT,
     KIND_VOICE,
@@ -159,3 +170,55 @@ def test_a_voice_entry_is_a_voice_message_with_a_marked_file_id() -> None:
 
 def test_an_entry_with_no_text_stores_no_text() -> None:
     assert row_for(entry(text="")).text is None
+
+
+def export_file(tmp_path: Path, **overrides: object) -> Path:
+    doc: dict = {
+        "name": "Aicha",
+        "type": "bot_chat",
+        "id": BOT,
+        "messages": [
+            entry(id=1, date_unixtime="1686000000"),
+            entry(id=2, date_unixtime="1758000170", from_id=f"user{BOT}", text="💔"),
+            {"id": 3, "type": "service", "action": "pin_message"},
+        ],
+    }
+    doc.update(overrides)
+    path = tmp_path / "result.json"
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return path
+
+
+def test_the_bot_id_is_the_top_level_id(tmp_path: Path) -> None:
+    """In a private export the top-level id is the PEER's — the bot's —
+    while our own chat_id is the user's. Deriving one from the other is
+    how the whole import lands under the wrong chat."""
+    assert read_export(export_file(tmp_path), chat_id=ME).bot_id == BOT
+
+
+def test_service_entries_are_dropped(tmp_path: Path) -> None:
+    got = read_export(export_file(tmp_path), chat_id=ME)
+    assert [e["id"] for e in got.entries] == [1, 2]
+
+
+def test_a_third_author_refuses_to_run(tmp_path: Path) -> None:
+    path = export_file(
+        tmp_path,
+        messages=[entry(id=1), entry(id=2, from_id="user999", **{"from": "Someone"})],
+    )
+    with pytest.raises(ExportMismatch, match="999"):
+        read_export(path, chat_id=ME)
+
+
+def test_a_group_export_refuses_to_run(tmp_path: Path) -> None:
+    with pytest.raises(ExportMismatch, match="private_supergroup"):
+        read_export(export_file(tmp_path, type="private_supergroup"), chat_id=ME)
+
+
+def test_since_drops_the_earlier_entries(tmp_path: Path) -> None:
+    got = read_export(
+        export_file(tmp_path),
+        chat_id=ME,
+        since=datetime(2024, 1, 1, tzinfo=UTC),
+    )
+    assert [e["id"] for e in got.entries] == [2]
