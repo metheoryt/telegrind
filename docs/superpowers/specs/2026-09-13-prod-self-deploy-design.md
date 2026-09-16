@@ -1,5 +1,56 @@
 # Editing and redeploying telegrind from the chat — production shape
 
+Status: **superseded 2026-09-16.** Kept as the record of what was decided and
+why, because half of it is still the reasoning that matters. Read this block
+before anything below it — the body reads as current and is not.
+
+## What replaced it
+
+The premise of this document is that Claude answers from inside telegrind and
+therefore has to be able to redeploy the process he is running in. He does not
+any more. He is his own bot with his own token and his own process on the host
+(`~/my/cladaeb`), and the reasoning is in that repo's
+`docs/2026-09-14-design.md` §1: a process cannot rebuild and restart itself.
+
+**Dead, and do not carry forward:**
+
+- *"The bot leaves the compose stack."* It does not. Nothing in telegrind's
+  image ever needed a `claude` binary, so telegrind stays an ordinary
+  container and the image stays the rollback unit. Rolling back is «run the
+  previous build», not git plus alembic.
+- *Rule 2 — the deploy must outlive the bot.* A deploy is issued by a
+  different process now. There is no `systemctl restart` that kills its own
+  caller and no oneshot unit needed to dodge it.
+- *Rule 3 — a broken deploy severs the control channel.* It does not. cladaeb
+  polls Telegram with its own token and is untouched by telegrind
+  crash-looping, so the chat survives the outage it is reporting. The
+  deployer's rollback discipline — record the commit and `alembic current`
+  before moving, health-check after — is still worth having, but as ordinary
+  care rather than as the only way back in.
+- *Rule 4 — the deployer reports with its own token.* True by construction now.
+- *The gate — one `chat_id`.* Moved to cladaeb, and corrected there: the
+  allowlist keys on `from_user.id`, never `chat_id`.
+
+**Survives:** rule 1 — nothing edits the checkout it builds from. `src` is the
+build context and is only ever fast-forwarded; Claude edits a separate
+worktree, commits and pushes there.
+
+**Still true and still unaddressed:** prod postgres publishes no port. cladaeb
+runs on the host and reads telegrind's database, so it needs one on loopback —
+the same requirement this document raised, for a different reason.
+
+## What is actually happening instead — decided 2026-09-16
+
+v2 goes up **beside** v1, not over it: a second bot token, a second compose
+project, a second database. Both run; the data moves across unhurried; v1 is
+stopped only once v2 has everything. That removes the risk this document was
+written around — prod is on `2700e0b3a8b6` with only `chat` and `file`, and a
+first deploy in place would run five migrations unattended against the live
+database at container start. Beside it, v2's `alembic upgrade head` runs
+against an empty database, which is the path the test suite already covers.
+
+---
+
 Decided 2026-09-13 in conversation. The meta layer already lets Claude answer
 from the chat; this is what has to be true before it can also *change* the bot
 and put the change live on latitude.

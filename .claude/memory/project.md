@@ -383,6 +383,26 @@ because that code still exists.
   a module that could not be imported cold. Do the walk before trusting it.
   <!-- src: telegrind 5dcec58 | 2026-09-12 -->
 
+## The hand-over seam is gone too (2026-09-16)
+
+- **`hand_over`, `HandOver`, `HAND_OVER`, `HANDED_OVER` and the 👀 receipt are
+  all removed.** The seam was kept for two days after the meta layer left, on
+  the theory that an in-process answerer might come back. It will not — Claude
+  is his own bot — and a seam threaded through two signatures and a dozen tests
+  costs more than it reserves. Consequences worth knowing: `record_edited` has
+  no point-of-no-return any more, so *every* edit re-classifies and re-routes;
+  `_act` is two arms and a fall-through, with `talk` and `system` both doing
+  nothing; and a question `answer.spec_for` cannot express is refused in words
+  with nothing to fall through to, so the classifier's fact/question boundary
+  is less forgiving than it was.
+- **prod runs none of this.** Checked 2026-09-16: latitude's telegrind is on
+  alembic `2700e0b3a8b6` with only `chat` and `file`, and
+  `~/my/vps/homeserver/telegrind/src` is on `main` (`ffce27a`), 143 commits
+  behind `metheoryt/v2`. The plan is to bring v2 up beside v1 — second token,
+  second compose project, second database — rather than migrate in place. See
+  `docs/superpowers/specs/2026-09-13-prod-self-deploy-design.md`, whose status
+  block now carries the decision.
+
 ## The repo's own automation, and the branch it shares
 
 - **Orca's memory-harvest automation shares the `freeform-facts` working tree
