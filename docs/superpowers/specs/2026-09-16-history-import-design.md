@@ -86,7 +86,7 @@ safe and re-importing an edited range re-queues it for extraction.
 |---|---|---|
 | `id` | `message_id` | per-chat, and the same number the bot saw live |
 | `date_unixtime` | `date` | UTC |
-| `edited_unixtime` | `edit_date` | pass a `datetime`; `store.edited_at` tolerates both, live aiogram hands it an int |
+| `edited_unixtime` | `edit_date` | **pass the raw int, not a `datetime`.** `store.edited_at` tolerates both, but `message_values` dumps the object into `raw` with `mode="json"`, where a `datetime` serializes as an ISO string and live ingestion leaves an int. Nothing reads `raw["edit_date"]` today; the point is that the whole argument for going through aiogram is that `raw` is identical to live *by construction*, and a divergence here would make that claim false |
 | `from_id` (`user<N>`) | `from_user.id`, `from_user.is_bot` | `is_bot` is true for the bot's own id — see below |
 | `text` / `text_entities` | `text` | the export gives a string OR a list of fragments; flatten the list by concatenating each fragment's `text` |
 | `reply_to_message_id` | `reply_to_message.message_id` | a stub message is enough — only the id is ever read back |
@@ -237,6 +237,10 @@ which is what makes it testable without a database:
   the importer meant, through the same functions production uses. This is the
   test that would have caught writing rows directly.
 - **A third `from_id` refuses to run.**
+- **An entry with nothing readable** — a sticker, a photo with no caption —
+  stores as `text=None` and stays out of both `unextracted_tail` and
+  `context_before`, because `_has_content()` gates each. That is the live
+  behaviour too, and it is the cheapest test here.
 - **Idempotency**: importing the same entry twice leaves one row, and an entry
   whose text changed clears `extracted_at`.
 
