@@ -150,7 +150,9 @@ def message_from(entry: dict, *, chat_id: int, bot_id: int) -> Message | None:
 BOT_CHAT = "bot_chat"
 
 
-class ExportMismatch(Exception):  # noqa: N818 -- name fixed by the task interface
+# Doesn't end in "Error": ExportMismatch is the name this task's interface,
+# and the tests that import it, require.
+class ExportMismatch(Exception):  # noqa: N818
     """The export is not the one chat this import is for."""
 
 
