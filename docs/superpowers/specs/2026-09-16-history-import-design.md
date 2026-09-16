@@ -31,6 +31,51 @@ Two sources have it, and they carry different halves:
 The export is the source of the log. The workbook is a **labelled set**, joined
 to the export by message id, and it is a measuring stick, not an input.
 
+## The export, measured (2026-09-16)
+
+`ChatExport_2026-09-16/result.json`, 2.9 MB, plus `photos/` and
+`voice_messages/` directories.
+
+- **6837 entries**, 2023-06-05 → 2026-09-16. 4069 his, 2766 the bot's, 2 service.
+- **3915 of his are candidates for `fact`** — everything that is not a command,
+  not a bare `-` and not empty. Median text 17 characters, longest 100.
+- **27 `/start` and nothing else.** No `/q`, no `/link` in the whole history:
+  the verdict table's command arm exists for 27 rows.
+- **56 bare `-` markers**, **71 entries with no readable text** (68 photos, a
+  video, a voice message).
+- **171 forwards, 1414 edits, 350 messages whose `text` is a list** of
+  fragments — the flattening case is 9% of the corpus, not an edge case.
+- **Exactly one voice message**, and the export ships the audio in
+  `voice_messages/`. The lost `file_id` costs one row.
+- **57 of his messages are replies, none of them to the bot.** This is the
+  finding that retires a worry: v2 classifies a reply into a conversation as
+  `talk` (`6c679a1`), and if the history were full of replies to the bot's
+  answers, asserting `fact` for them would have been wrong several thousand
+  times. It is wrong zero times.
+- The first day or two (2023-06-05/06) is test junk — `asd`, `dssad`, `111`.
+  The importer takes `--since` for this; the default imports everything.
+
+**The overlap check the 2026-09-11 spec relies on does not exist here.** It
+assumed the bot already had its own rows for the last few days, so the export's
+`id` could be compared against a `message_id` the bot saw live. v2 is a
+different bot with a different chat and an empty database, so there is nothing
+to overlap with. The workbook join is now the *only* check that the export's
+ids are the ids v1 recorded — which raises its value from a bonus to the one
+piece of evidence.
+
+### Batch size is bounded by `MAX_TOKENS`, not by taste
+
+`extract._pass` makes **one** model call for the whole tail and writes the facts
+for every message in it. `llm.MAX_TOKENS` is 2048. A pass of 200 messages would
+need several times that to emit their facts, and the reply would be truncated —
+which fails the *whole* batch, not its overflow.
+
+So the import drives `extract.run(limit=…)` at roughly **20 messages per pass**,
+not the default 200: ~2000 output tokens is about 40 facts, and 20 messages can
+plausibly yield that many. That is ~200 calls over the corpus on
+`claude-haiku-4-5`, which is what step 4 is for — measure it on dev rather than
+trust this arithmetic.
+
 ## Scope
 
 **Only the owner's own chat.** v2 is a second bot with a second token; the other
