@@ -1,13 +1,18 @@
+import contextlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from telegrind import store
 from telegrind.import_history import (
+    Export,
     ExportMismatch,
     flatten,
+    import_entries,
     message_from,
     read_export,
     user_id,
@@ -19,6 +24,7 @@ from telegrind.models import (
     VERDICT_FACT,
     VERDICT_QUESTION,
     VERDICT_SYSTEM,
+    Chat,
     LoggedMessage,
 )
 
@@ -222,3 +228,97 @@ def test_since_drops_the_earlier_entries(tmp_path: Path) -> None:
         since=datetime(2024, 1, 1, tzinfo=UTC),
     )
     assert [e["id"] for e in got.entries] == [2]
+
+
+class FakeSession:
+    """Enough of a session for a driver that only commits."""
+
+    def __init__(self) -> None:
+        self.commits = 0
+
+    def begin(self) -> Any:
+        @contextlib.asynccontextmanager
+        async def ctx() -> Any:
+            yield None
+            self.commits += 1
+
+        return ctx()
+
+
+def recording_upsert() -> tuple[list[tuple[int, str]], Any]:
+    calls: list[tuple[int, str]] = []
+
+    async def upsert(session: Any, chat: Any, msg: Any, *, verdict: str) -> Any:
+        calls.append((msg.message_id, verdict))
+        return SimpleNamespace(id=len(calls)), True
+
+    return calls, upsert
+
+
+CHAT = Chat(id=1, chat_id=ME, tz_offset=6, currency="KZT")
+
+
+async def test_every_entry_is_stored_with_an_explicit_verdict() -> None:
+    """The default is VERDICT_FACT, and leaning on it here would feed
+    2766 bot replies to the extractor."""
+    calls, upsert = recording_upsert()
+    export = Export(
+        bot_id=BOT,
+        entries=[
+            entry(id=1),
+            entry(id=2, from_id=f"user{BOT}", text="💔"),
+            entry(id=3, text="/start"),
+            entry(id=4, text="/q сколько"),
+            entry(id=5, text="-"),
+        ],
+    )
+    await import_entries(FakeSession(), CHAT, export, upsert=upsert)
+    assert calls == [
+        (1, VERDICT_FACT),
+        (2, VERDICT_SYSTEM),
+        (3, VERDICT_SYSTEM),
+        (4, VERDICT_QUESTION),
+        (5, VERDICT_SYSTEM),
+    ]
+
+
+async def test_the_report_counts_what_happened() -> None:
+    _, upsert = recording_upsert()
+    export = Export(bot_id=BOT, entries=[entry(id=1), entry(id=2, from_id="channel7")])
+    report = await import_entries(FakeSession(), CHAT, export, upsert=upsert)
+    assert report.seen == 2
+    assert report.stored == 1
+    assert report.skipped == 1
+    assert report.verdicts[VERDICT_FACT] == 1
+
+
+async def test_it_commits_once_per_chunk() -> None:
+    _, upsert = recording_upsert()
+    session = FakeSession()
+    export = Export(bot_id=BOT, entries=[entry(id=i) for i in range(1, 6)])
+    await import_entries(session, CHAT, export, upsert=upsert, chunk=2)
+    assert session.commits == 3
+
+
+async def test_a_dry_run_stores_nothing() -> None:
+    calls, upsert = recording_upsert()
+    session = FakeSession()
+    export = Export(bot_id=BOT, entries=[entry(id=1)])
+    report = await import_entries(session, CHAT, export, upsert=upsert, dry_run=True)
+    assert calls == []
+    assert session.commits == 0
+    assert report.seen == 1
+    assert report.stored == 0
+
+
+async def test_the_report_counts_forwards() -> None:
+    """171 entries are forwards. They lose their origin date and reach the
+    extractor as the user's own words, and neither is reconstructable from
+    the export — so the spec asks for a count, which is the whole remedy."""
+    _, upsert = recording_upsert()
+    export = Export(
+        bot_id=BOT,
+        entries=[entry(id=1), entry(id=2, forwarded_from="Someone")],
+    )
+    report = await import_entries(FakeSession(), CHAT, export, upsert=upsert)
+    assert report.forwards == 1

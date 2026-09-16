@@ -11,6 +11,8 @@ Deleted or frozen once it has run. It is one file for the same reason.
 
 import json
 import logging
+from collections import Counter
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,8 +20,10 @@ from typing import Any
 
 from aiogram.types import Chat as TgChat
 from aiogram.types import Message, User, Voice
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from telegrind.models import VERDICT_FACT, VERDICT_QUESTION, VERDICT_SYSTEM
+from telegrind import store
+from telegrind.models import VERDICT_FACT, VERDICT_QUESTION, VERDICT_SYSTEM, Chat
 
 log = logging.getLogger(__name__)
 
@@ -189,3 +193,86 @@ def read_export(path: Path, *, chat_id: int, since: datetime | None = None) -> E
         entries = [e for e in entries if float(e["date_unixtime"]) >= cutoff]
 
     return Export(bot_id=bot_id, entries=entries)
+
+
+#: Rows per transaction. Small enough that a failure costs one chunk,
+#: large enough that 6835 entries are not 6835 commits.
+CHUNK = 500
+
+
+@dataclass(frozen=True, slots=True)
+class ImportReport:
+    seen: int
+    stored: int
+    skipped: int
+    forwards: int
+    verdicts: Counter
+
+
+async def import_entries(
+    session: AsyncSession,
+    chat: Chat,
+    export: Export,
+    *,
+    upsert: Callable[..., Awaitable[Any]] = store.upsert_message,
+    chunk: int = CHUNK,
+    dry_run: bool = False,
+) -> ImportReport:
+    """Store every entry, one transaction per chunk.
+
+    Nothing here routes, reacts or replies. Going through the dispatcher
+    would put a 💔 on three thousand historical messages and answer every
+    question in the log into a live chat.
+
+    Idempotent by construction: `upsert_message` overwrites on
+    `(chat_pk, message_id)` and clears `extracted_at`, so a re-run
+    re-queues exactly what changed.
+
+    `forwards` counts every entry carrying a truthy `forwarded_from`, in
+    both the dry-run and the real path: it is a fact about the export, not
+    about the write. A forward loses its origin date and, because
+    `forward_origin` is never set on the reconstructed `Message`, reaches
+    the extractor's prompt as though the words were the chat's own author's
+    — neither is reconstructable from the export, so counting is the whole
+    remedy.
+    """
+    seen = stored = skipped = forwards = 0
+    verdicts: Counter = Counter()
+
+    for start in range(0, len(export.entries), chunk):
+        batch = export.entries[start : start + chunk]
+        if dry_run:
+            for item in batch:
+                seen += 1
+                if item.get("forwarded_from"):
+                    forwards += 1
+                msg = message_from(item, chat_id=chat.chat_id, bot_id=export.bot_id)
+                if msg is None:
+                    skipped += 1
+                else:
+                    verdicts[verdict_of(item, bot_id=export.bot_id)] += 1
+            continue
+
+        async with session.begin():
+            for item in batch:
+                seen += 1
+                if item.get("forwarded_from"):
+                    forwards += 1
+                msg = message_from(item, chat_id=chat.chat_id, bot_id=export.bot_id)
+                if msg is None:
+                    skipped += 1
+                    continue
+                verdict = verdict_of(item, bot_id=export.bot_id)
+                await upsert(session, chat, msg, verdict=verdict)
+                verdicts[verdict] += 1
+                stored += 1
+
+        log.info("imported %s/%s entries", seen, len(export.entries))
+
+    return ImportReport(
+        seen=seen,
+        stored=stored,
+        skipped=skipped,
+        forwards=forwards,
+        verdicts=verdicts,
+    )
