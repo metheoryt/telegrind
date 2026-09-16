@@ -210,8 +210,8 @@ Import writes messages. Nothing extracts during it.
 
 Afterwards, `extract.run` is driven in batches of 200 over `unextracted_tail`,
 one transaction per batch, until the tail is empty. The batch loop lives in the
-same module behind a second entry point (`--extract`), so importing and
-extracting can be run and re-run independently.
+same module behind a second subcommand (`import` and `extract`), so importing
+and extracting can be run and re-run independently.
 
 **On the dev database first.** The pass costs one model call per window over the
 whole history, and the number is unknown until the export is counted. The dev
