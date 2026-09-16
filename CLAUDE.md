@@ -293,6 +293,20 @@ fail the whole query; one that does not stays text and simply never aggregates.
 `to_instant` resolves a date against the **message's own** timestamp, in the
 chat's timezone.
 
+**`telegrind/import_history.py`** — the one-time v1 import, and the only
+code here that writes messages without a Telegram update behind them. It
+builds a real `aiogram.types.Message` per export entry and goes through
+`store.upsert_message`, because three readers parse the `raw` JSONB
+afterwards and a differently-shaped dump inserts fine before
+misattributing every imported line. `verdict` is asserted from the
+entry's structure — the bot's own messages, the slash commands, the 56
+bare `-` markers — and passed explicitly at every call, never classified:
+3915 model calls would buy a worse answer than the export already
+contains. Extraction is a separate subcommand driving `extract.run` at
+twenty messages a pass, because `_pass` makes one model call for the
+whole tail against a 2048-token reply. Design:
+`docs/superpowers/specs/2026-09-16-history-import-design.md`.
+
 **`telegrind/config.py`** — `ChatConfig`, the timezone offset and default
 currency, read off the `chat` row.
 

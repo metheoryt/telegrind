@@ -17,6 +17,7 @@ from telegrind.import_history import (
     flatten,
     import_entries,
     message_from,
+    parse_args,
     read_export,
     user_id,
     verdict_of,
@@ -403,3 +404,23 @@ async def test_a_failed_pass_stops_the_run() -> None:
 
     got = await extract_all(FakeSession(), CHAT, run=fake_run)
     assert len(got) == 1
+
+
+def test_import_takes_a_path_and_a_chat_id() -> None:
+    args = parse_args(["import", "result.json", "--chat-id", "3260987"])
+    assert args.command == "import"
+    assert args.export == Path("result.json")
+    assert args.chat_id == 3260987
+    assert args.dry_run is False
+    assert args.since is None
+
+
+def test_since_parses_as_a_utc_date() -> None:
+    args = parse_args(["import", "r.json", "--chat-id", "1", "--since", "2023-06-07"])
+    assert args.since == datetime(2023, 6, 7, tzinfo=UTC)
+
+
+def test_extract_takes_no_export() -> None:
+    args = parse_args(["extract", "--chat-id", "3260987", "--batch", "10"])
+    assert args.command == "extract"
+    assert args.batch == 10

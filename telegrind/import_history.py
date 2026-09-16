@@ -9,8 +9,12 @@ and 3915 model calls would buy nothing here.
 Deleted or frozen once it has run. It is one file for the same reason.
 """
 
+import argparse
+import asyncio
 import json
 import logging
+import os
+import sys
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -20,7 +24,9 @@ from typing import Any
 
 from aiogram.types import Chat as TgChat
 from aiogram.types import Message, User, Voice
-from sqlalchemy.ext.asyncio import AsyncSession
+from dotenv import load_dotenv
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from telegrind import extract, store
 from telegrind.config import ChatConfig
@@ -347,3 +353,99 @@ async def extract_all(
             break
 
     return reports
+
+
+async def chat_row(session: AsyncSession, chat_id: int) -> Chat:
+    """The chat, created with the defaults if the import is its first sight.
+
+    `tz_offset` 6 and `currency` KZT come from the column defaults; this
+    import is one person's chat in Almaty and there is nothing else to
+    read them from.
+    """
+    async with session.begin():
+        found = await session.execute(select(Chat).where(Chat.chat_id == chat_id))
+        chat = found.scalar_one_or_none()
+        if chat is None:
+            chat = Chat(chat_id=chat_id)
+            session.add(chat)
+            await session.flush()
+    return chat
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="python -m telegrind.import_history")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    imp = sub.add_parser("import", help="load a Telegram Desktop export")
+    imp.add_argument("export", type=Path)
+    imp.add_argument("--chat-id", type=int, required=True)
+    imp.add_argument(
+        "--since",
+        type=lambda s: datetime.fromisoformat(s).replace(tzinfo=UTC),
+        default=None,
+        # UTC, not Almaty. The only intended use is cutting the first two
+        # days of `asd`/`111` test junk, which are junk in any timezone; a
+        # cutoff that had to land on a particular local midnight would need
+        # the chat's tz_offset, which is not read here.
+        help="skip entries older than this, UTC (the first two days are test junk)",
+    )
+    imp.add_argument("--dry-run", action="store_true")
+
+    ext = sub.add_parser("extract", help="derive facts from what was imported")
+    ext.add_argument("--chat-id", type=int, required=True)
+    ext.add_argument("--batch", type=int, default=BATCH)
+    ext.add_argument("--max-passes", type=int, default=None)
+
+    return parser.parse_args(argv)
+
+
+async def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv if argv is not None else sys.argv[1:])
+    engine = create_async_engine(os.environ["DATABASE_URL"], echo=False)
+    # Same reason as main.py: the Chat row is read after its transaction
+    # commits, and the default would expire it into implicit IO with no
+    # greenlet on the stack.
+    async_session = async_sessionmaker(engine, expire_on_commit=False)
+
+    # One session, with every read inside its own `session.begin()` — the rule
+    # CLAUDE.md states, applied. `chat_row` owns its transaction and commits
+    # it, so nothing is open when the drivers open theirs. The shape this
+    # replaced took a second session and re-attached the chat with
+    # `session.merge`, which is the same bug wearing a fix's clothes: merge on
+    # a detached instance issues a SELECT, that bare read autobegins, and the
+    # next `session.begin()` raises «A transaction is already begun on this
+    # Session». No test here can catch it — this repo's fake sessions yield
+    # from `begin()` unconditionally.
+    async with async_session() as session:
+        chat = await chat_row(session, args.chat_id)
+        if args.command == "import":
+            export = read_export(args.export, chat_id=args.chat_id, since=args.since)
+            report = await import_entries(session, chat, export, dry_run=args.dry_run)
+            log.info(
+                "seen=%s stored=%s skipped=%s forwards=%s verdicts=%s",
+                report.seen,
+                report.stored,
+                report.skipped,
+                report.forwards,
+                dict(report.verdicts),
+            )
+        else:
+            reports = await extract_all(
+                session, chat, batch=args.batch, max_passes=args.max_passes
+            )
+            log.info(
+                "passes=%s facts=%s complaints=%s",
+                len(reports),
+                sum(r.facts for r in reports),
+                sum(r.complaints for r in reports),
+            )
+
+    await engine.dispose()
+
+
+if __name__ == "__main__":
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)-8s %(name)s - %(message)s"
+    )
+    asyncio.run(main())
