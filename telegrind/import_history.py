@@ -7,6 +7,17 @@ classifier exists because a live message arrives without that structure,
 and 3915 model calls would buy nothing here.
 
 Deleted or frozen once it has run. It is one file for the same reason.
+
+Run this against a live bot as: stop the bot, `import`, `extract` until the
+tail is empty, start the bot. The live answering path
+(`telegrind/bot/answering.py`) calls `extract.run` with no `limit`, which
+defaults to 200 — the exact oversized pass `BATCH` here exists to prevent.
+`llm.use_tool` never inspects `response.stop_reason`, and a truncated reply
+still stamps `mark_extracted` on the whole tail: an oversized pass cannot be
+told apart from a successful one, and the facts it skipped are gone with no
+trace. A bot left running during the import can also collide with it on the
+partial unique index `uq_fact_message_pk_seq_live`, since both would be
+writing facts for the same chat at once.
 """
 
 import argparse
@@ -184,8 +195,15 @@ def read_export(path: Path, *, chat_id: int, since: datetime | None = None) -> E
     if doc.get("type") != BOT_CHAT:
         raise ExportMismatch(f"not a bot chat export: type={doc.get('type')!r}")
 
-    bot_id = int(doc["id"])
-    entries = [e for e in doc["messages"] if e.get("type") == "message"]
+    raw_id = doc.get("id")
+    messages = doc.get("messages")
+    if raw_id is None or messages is None:
+        raise ExportMismatch(
+            f"malformed export: missing {'id' if raw_id is None else 'messages'}"
+        )
+
+    bot_id = int(raw_id)
+    entries = [e for e in messages if e.get("type") == "message"]
 
     authors: set[int] = {a for e in entries if (a := user_id(e)) is not None}
     unexpected = authors - {bot_id, chat_id}
@@ -211,6 +229,8 @@ CHUNK = 500
 class ImportReport:
     seen: int
     stored: int
+    created: int
+    updated: int
     skipped: int
     forwards: int
     verdicts: Counter
@@ -256,9 +276,21 @@ async def import_entries(
     would put a 💔 on three thousand historical messages and answer every
     question in the log into a live chat.
 
-    Idempotent by construction: `upsert_message` overwrites on
-    `(chat_pk, message_id)` and clears `extracted_at`, so a re-run
-    re-queues exactly what changed.
+    Row content is idempotent: `upsert_message` overwrites on
+    `(chat_pk, message_id)` rather than duplicating, and `replace_facts`
+    diffs a re-extraction by `seq` so nothing doubles up. It is not cheap to
+    re-run: every upsert — changed or not — clears `existing.extracted_at`,
+    so a re-import after extraction has run re-queues the *whole* touched
+    range for a fresh, paid extraction pass, not just what changed. `--since`
+    is how you narrow a re-run instead of eating that cost.
+
+    `created` and `updated` split `stored` by what `upsert` reports back:
+    on production, where the bot may already hold live rows for the same
+    range, an overwrite silently replaces a live row's text and clears its
+    extraction state, and the two counts are the free detector for that —
+    `created=N updated=0` on a clean first run, `created=0 updated=N` on a
+    re-run. A dry run never calls `upsert`, so it cannot tell created from
+    updated; both stay 0 there.
 
     `forwards` counts every entry carrying a truthy `forwarded_from`, in
     both the dry-run and the real path: it is a fact about the export, not
@@ -268,7 +300,7 @@ async def import_entries(
     — neither is reconstructable from the export, so counting is the whole
     remedy. See `_classify` for the shared seam that keeps this true.
     """
-    seen = stored = skipped = forwards = 0
+    seen = stored = created = updated = skipped = forwards = 0
     verdicts: Counter = Counter()
 
     for start in range(0, len(export.entries), chunk):
@@ -298,7 +330,11 @@ async def import_entries(
                 if msg is None:
                     skipped += 1
                     continue
-                await upsert(session, chat, msg, verdict=verdict)
+                _, row_created = await upsert(session, chat, msg, verdict=verdict)
+                if row_created:
+                    created += 1
+                else:
+                    updated += 1
                 verdicts[verdict] += 1
                 stored += 1
 
@@ -307,6 +343,8 @@ async def import_entries(
     return ImportReport(
         seen=seen,
         stored=stored,
+        created=created,
+        updated=updated,
         skipped=skipped,
         forwards=forwards,
         verdicts=verdicts,
@@ -372,6 +410,21 @@ async def chat_row(session: AsyncSession, chat_id: int) -> Chat:
     return chat
 
 
+def _since(s: str) -> datetime:
+    """`--since`, defaulting a bare date to UTC without discarding an
+    explicit offset.
+
+    A bare `2023-06-07` has no timezone of its own, and UTC is as good a
+    reading as Almaty for cutting the first two days of `asd`/`111` test
+    junk — junk in any timezone. But `datetime.fromisoformat` parses
+    `2023-06-07T00:00+06:00` with a real offset already attached, and
+    `.replace(tzinfo=UTC)` used to overwrite it rather than convert it,
+    silently moving the cutoff by however many hours the caller named.
+    """
+    dt = datetime.fromisoformat(s)
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="python -m telegrind.import_history")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -381,7 +434,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     imp.add_argument("--chat-id", type=int, required=True)
     imp.add_argument(
         "--since",
-        type=lambda s: datetime.fromisoformat(s).replace(tzinfo=UTC),
+        type=_since,
         default=None,
         # UTC, not Almaty. The only intended use is cutting the first two
         # days of `asd`/`111` test junk, which are junk in any timezone; a
@@ -399,48 +452,80 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _sample_line(entry: dict) -> str:
+    """One export entry, rendered for the pre-flight eyeball check."""
+    text = flatten(entry.get("text")).strip().replace("\n", " ")[:80]
+    return (
+        f"id={entry.get('id')} date={entry.get('date')} "
+        f"from={entry.get('from')!r} text={text!r}"
+    )
+
+
 async def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv if argv is not None else sys.argv[1:])
     engine = create_async_engine(os.environ["DATABASE_URL"], echo=False)
-    # Same reason as main.py: the Chat row is read after its transaction
-    # commits, and the default would expire it into implicit IO with no
-    # greenlet on the stack.
-    async_session = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        # Same reason as main.py: the Chat row is read after its transaction
+        # commits, and the default would expire it into implicit IO with no
+        # greenlet on the stack.
+        async_session = async_sessionmaker(engine, expire_on_commit=False)
 
-    # One session, with every read inside its own `session.begin()` — the rule
-    # CLAUDE.md states, applied. `chat_row` owns its transaction and commits
-    # it, so nothing is open when the drivers open theirs. The shape this
-    # replaced took a second session and re-attached the chat with
-    # `session.merge`, which is the same bug wearing a fix's clothes: merge on
-    # a detached instance issues a SELECT, that bare read autobegins, and the
-    # next `session.begin()` raises «A transaction is already begun on this
-    # Session». No test here can catch it — this repo's fake sessions yield
-    # from `begin()` unconditionally.
-    async with async_session() as session:
-        chat = await chat_row(session, args.chat_id)
-        if args.command == "import":
-            export = read_export(args.export, chat_id=args.chat_id, since=args.since)
-            report = await import_entries(session, chat, export, dry_run=args.dry_run)
-            log.info(
-                "seen=%s stored=%s skipped=%s forwards=%s verdicts=%s",
-                report.seen,
-                report.stored,
-                report.skipped,
-                report.forwards,
-                dict(report.verdicts),
-            )
-        else:
-            reports = await extract_all(
-                session, chat, batch=args.batch, max_passes=args.max_passes
-            )
-            log.info(
-                "passes=%s facts=%s complaints=%s",
-                len(reports),
-                sum(r.facts for r in reports),
-                sum(r.complaints for r in reports),
-            )
+        # `chat_row` owns its transaction and commits it, so nothing is open
+        # when the drivers open theirs — the rule CLAUDE.md states, applied.
+        # The shape this replaced took a second session and re-attached the
+        # chat with `session.merge`, which is the same bug wearing a fix's
+        # clothes: merge on a detached instance issues a SELECT, that bare
+        # read autobegins, and the next `session.begin()` raises «A
+        # transaction is already begun on this Session». No test here can
+        # catch it — this repo's fake sessions yield from `begin()`
+        # unconditionally.
+        async with async_session() as session:
+            if args.command == "import":
+                # Nothing writes before this point, including under
+                # `--dry-run`: `read_export` only reads the file, and the
+                # pre-flight log below is the human check that the resolved
+                # ids name the right chat before `chat_row` makes its first
+                # write.
+                export = read_export(
+                    args.export, chat_id=args.chat_id, since=args.since
+                )
+                log.info(
+                    "chat_id=%s bot_id=%s entries=%s",
+                    args.chat_id,
+                    export.bot_id,
+                    len(export.entries),
+                )
+                for item in export.entries[:2]:
+                    log.info("sample: %s", _sample_line(item))
 
-    await engine.dispose()
+                chat = await chat_row(session, args.chat_id)
+                report = await import_entries(
+                    session, chat, export, dry_run=args.dry_run
+                )
+                log.info(
+                    "seen=%s stored=%s created=%s updated=%s skipped=%s "
+                    "forwards=%s verdicts=%s",
+                    report.seen,
+                    report.stored,
+                    report.created,
+                    report.updated,
+                    report.skipped,
+                    report.forwards,
+                    dict(report.verdicts),
+                )
+            else:
+                chat = await chat_row(session, args.chat_id)
+                reports = await extract_all(
+                    session, chat, batch=args.batch, max_passes=args.max_passes
+                )
+                log.info(
+                    "passes=%s facts=%s complaints=%s",
+                    len(reports),
+                    sum(r.facts for r in reports),
+                    sum(r.complaints for r in reports),
+                )
+    finally:
+        await engine.dispose()
 
 
 if __name__ == "__main__":

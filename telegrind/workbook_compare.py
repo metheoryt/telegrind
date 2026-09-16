@@ -92,13 +92,15 @@ async def report(
         facts.setdefault(fact.message_pk, []).append(fact)
 
     for sheet, rows in sheets.items():
-        for key, old in sorted(rows.items()):
+        for key, old in sorted(
+            rows.items(), key=lambda kv: (message_id_of(kv[0]) or 0, kv[0])
+        ):
             message_id = message_id_of(key)
             row = messages.get(message_id) if message_id is not None else None
             if row is None:
                 tally["missing_message"] += 1
                 lines.append(
-                    f"{sheet}\t{key}\tMISSING\t{json.dumps(old, ensure_ascii=False)}"
+                    f"{sheet}\t{key}\tMISSING\t{json.dumps(old, ensure_ascii=False)}\t"
                 )
                 continue
             new = facts.get(row.id, [])
@@ -133,25 +135,28 @@ async def main(argv: list[str] | None = None) -> None:
     # with no greenlet on the stack.
     async_session = async_sessionmaker(engine, expire_on_commit=False)
 
-    sheets: dict[str, dict] = {}
-    for path in args.csv:
-        rows, dropped = read_sheet(path)
-        if dropped:
-            log.info("%s: dropped %s", path.stem, dict(dropped))
-        sheets[path.stem] = rows
+    try:
+        sheets: dict[str, dict] = {}
+        for path in args.csv:
+            rows, dropped = read_sheet(path)
+            if dropped:
+                log.info("%s: dropped %s", path.stem, dict(dropped))
+            sheets[path.stem] = rows
 
-    async with async_session() as session:
-        async with session.begin():
-            chat = (
-                await session.execute(select(Chat).where(Chat.chat_id == args.chat_id))
-            ).scalar_one()
+        async with async_session() as session:
+            async with session.begin():
+                chat = (
+                    await session.execute(
+                        select(Chat).where(Chat.chat_id == args.chat_id)
+                    )
+                ).scalar_one()
 
-        async with session.begin():
-            tally = await report(session, chat.id, sheets, args.out)
+            async with session.begin():
+                tally = await report(session, chat.id, sheets, args.out)
 
-        log.info("tally=%s", dict(tally))
-
-    await engine.dispose()
+            log.info("tally=%s", dict(tally))
+    finally:
+        await engine.dispose()
 
 
 if __name__ == "__main__":

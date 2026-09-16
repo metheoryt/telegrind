@@ -121,9 +121,13 @@ has a different shape passes every insert and then misattributes every imported
 line in the extraction window. Building the aiogram object is how the shape
 stays identical to live ingestion by construction rather than by agreement.
 
-Idempotency comes free from the same call: `upsert_message` overwrites on
-`(chat_pk, message_id)` and clears `extracted_at`, so re-running the import is
-safe and re-importing an edited range re-queues it for extraction.
+Row content is idempotent from the same call: `upsert_message` overwrites on
+`(chat_pk, message_id)` rather than duplicating, and `replace_facts` diffs a
+re-extraction by `seq` so nothing doubles up. **Re-running is not cheap once
+extraction has run.** `upsert_message` clears `existing.extracted_at` on
+every row it touches, changed or not — not only on an edited range — so a
+re-import re-queues the whole touched range for a fresh, paid extraction pass.
+`--since` is how to narrow a re-run instead of assuming it is free.
 
 ### The field mapping, and what is lost
 
@@ -208,10 +212,16 @@ to CSV — one of the 12 with a `sheet_url`.
 
 Import writes messages. Nothing extracts during it.
 
-Afterwards, `extract.run` is driven in batches of 200 over `unextracted_tail`,
-one transaction per batch, until the tail is empty. The batch loop lives in the
+Afterwards, `extract.run` is driven in batches of `BATCH` (twenty messages, per
+§*Batch size is bounded by `MAX_TOKENS`* above) over `unextracted_tail`, one
+transaction per batch, until the tail is empty. The batch loop lives in the
 same module behind a second subcommand (`import` and `extract`), so importing
-and extracting can be run and re-run independently.
+and extracting can be run and re-run independently. **This importer's batch
+size is not `extract.run`'s own default.** Called with no `limit`, as the live
+answering path calls it, `extract.run` defaults to 200 — the exact oversized
+pass this section's own bound exists to prevent — so a live bot must be
+stopped before `import` and `extract` run, and restarted only once the tail is
+empty.
 
 **On the dev database first.** The pass costs one model call per window over the
 whole history, and the number is unknown until the export is counted. The dev

@@ -225,6 +225,23 @@ def test_a_group_export_refuses_to_run(tmp_path: Path) -> None:
         read_export(export_file(tmp_path, type="private_supergroup"), chat_id=ME)
 
 
+def test_a_malformed_export_raises_export_mismatch_not_keyerror(
+    tmp_path: Path,
+) -> None:
+    """`doc["id"]` and `doc["messages"]` traceback with a bare `KeyError` on
+    a malformed export; every other rejection here raises `ExportMismatch`
+    with a sentence, and this should too."""
+    path = tmp_path / "result.json"
+    path.write_text(json.dumps({"type": "bot_chat"}), encoding="utf-8")
+    with pytest.raises(ExportMismatch, match="id"):
+        read_export(path, chat_id=ME)
+
+    path2 = tmp_path / "result2.json"
+    path2.write_text(json.dumps({"type": "bot_chat", "id": BOT}), encoding="utf-8")
+    with pytest.raises(ExportMismatch, match="messages"):
+        read_export(path2, chat_id=ME)
+
+
 def test_since_drops_the_earlier_entries(tmp_path: Path) -> None:
     got = read_export(
         export_file(tmp_path),
@@ -342,6 +359,40 @@ async def test_a_dry_run_counts_the_same_as_a_real_run() -> None:
     assert report.verdicts[VERDICT_FACT] == 1
 
 
+async def test_created_and_updated_are_split_from_stored() -> None:
+    """`created`/`updated` are the free collision detector: on prod, an
+    `updated` count above zero on what should be a first run means the
+    import is overwriting live rows."""
+    seen_ids: set[int] = set()
+
+    async def upsert(session: Any, chat: Any, msg: Any, *, verdict: str) -> Any:
+        created = msg.message_id not in seen_ids
+        seen_ids.add(msg.message_id)
+        return SimpleNamespace(id=msg.message_id), created
+
+    export = Export(
+        bot_id=BOT,
+        entries=[entry(id=1), entry(id=2), entry(id=1)],
+    )
+    report = await import_entries(FakeSession(), CHAT, export, upsert=upsert)
+    assert report.stored == 3
+    assert report.created == 2
+    assert report.updated == 1
+    assert report.stored == report.created + report.updated
+
+
+async def test_a_dry_run_leaves_created_and_updated_at_zero() -> None:
+    """A dry run never calls `upsert`, so it cannot tell created from
+    updated — both stay 0 rather than guessing."""
+    _, upsert = recording_upsert()
+    export = Export(bot_id=BOT, entries=[entry(id=1)])
+    report = await import_entries(
+        FakeSession(), CHAT, export, upsert=upsert, dry_run=True
+    )
+    assert report.created == 0
+    assert report.updated == 0
+
+
 async def test_a_dry_run_counts_forwards_too() -> None:
     _, upsert = recording_upsert()
     export = Export(
@@ -378,9 +429,11 @@ async def test_it_passes_until_the_tail_is_empty() -> None:
         seen.append(limit)
         return reports[len(seen) - 1]
 
-    got = await extract_all(FakeSession(), CHAT, run=fake_run)
+    session = FakeSession()
+    got = await extract_all(session, CHAT, run=fake_run)
     assert seen == [BATCH, BATCH, BATCH]
     assert [r.extracted for r in got] == [20, 7, 0]
+    assert session.commits == 3  # one transaction per pass, per the docstring
 
 
 async def test_it_stops_at_max_passes() -> None:
@@ -420,7 +473,18 @@ def test_since_parses_as_a_utc_date() -> None:
     assert args.since == datetime(2023, 6, 7, tzinfo=UTC)
 
 
+def test_since_keeps_an_explicit_offset() -> None:
+    """`fromisoformat(s).replace(tzinfo=UTC)` used to overwrite a real
+    offset rather than convert it, silently moving the cutoff by however
+    many hours the caller named."""
+    args = parse_args(
+        ["import", "r.json", "--chat-id", "1", "--since", "2023-06-07T00:00+06:00"]
+    )
+    assert args.since == datetime(2023, 6, 6, 18, 0, tzinfo=UTC)
+
+
 def test_extract_takes_no_export() -> None:
     args = parse_args(["extract", "--chat-id", "3260987", "--batch", "10"])
     assert args.command == "extract"
     assert args.batch == 10
+    assert not hasattr(args, "export")

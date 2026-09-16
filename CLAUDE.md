@@ -304,7 +304,19 @@ bare `-` markers — and passed explicitly at every call, never classified:
 3915 model calls would buy a worse answer than the export already
 contains. Extraction is a separate subcommand driving `extract.run` at
 twenty messages a pass, because `_pass` makes one model call for the
-whole tail against a 2048-token reply. Design:
+whole tail against a 2048-token reply. Row content is idempotent, but a
+re-run is not cheap: `upsert_message` clears `extracted_at` on every row it
+touches, changed or not, so re-importing after extraction has run costs a
+full re-extraction of the range — narrow a re-run with `--since` instead of
+assuming it is free. **Run this against a live bot as: stop the bot,
+`import`, `extract` until the tail is empty, start the bot.** The live
+answering path calls `extract.run` with no `limit` (default 200, against
+`llm.MAX_TOKENS = 2048`) and `llm.use_tool` never inspects
+`response.stop_reason`, so a truncated reply still stamps the whole tail as
+extracted — an oversized pass cannot be told apart from a successful one,
+and the skipped facts are gone with no trace. A bot left running during the
+import can also collide with it on the partial unique index
+`uq_fact_message_pk_seq_live`. Design:
 `docs/superpowers/specs/2026-09-16-history-import-design.md`.
 
 **`telegrind/config.py`** — `ChatConfig`, the timezone offset and default
