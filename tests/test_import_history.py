@@ -322,3 +322,29 @@ async def test_the_report_counts_forwards() -> None:
     )
     report = await import_entries(FakeSession(), CHAT, export, upsert=upsert)
     assert report.forwards == 1
+
+
+async def test_a_dry_run_counts_the_same_as_a_real_run() -> None:
+    """seen/skipped/verdicts describe the export, not the write — a dry
+    run over the same entries must count them exactly as a real run does."""
+    _, upsert = recording_upsert()
+    export = Export(bot_id=BOT, entries=[entry(id=1), entry(id=2, from_id="channel7")])
+    report = await import_entries(
+        FakeSession(), CHAT, export, upsert=upsert, dry_run=True
+    )
+    assert report.seen == 2
+    assert report.stored == 0
+    assert report.skipped == 1
+    assert report.verdicts[VERDICT_FACT] == 1
+
+
+async def test_a_dry_run_counts_forwards_too() -> None:
+    _, upsert = recording_upsert()
+    export = Export(
+        bot_id=BOT,
+        entries=[entry(id=1), entry(id=2, forwarded_from="Someone")],
+    )
+    report = await import_entries(
+        FakeSession(), CHAT, export, upsert=upsert, dry_run=True
+    )
+    assert report.forwards == 1

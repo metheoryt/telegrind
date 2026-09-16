@@ -209,6 +209,31 @@ class ImportReport:
     verdicts: Counter
 
 
+def _classify(
+    item: dict, *, chat_id: int, bot_id: int
+) -> tuple[Message | None, str | None, bool]:
+    """One entry's export-level facts: what it becomes, and nothing about
+    the write.
+
+    Returns `(message, verdict, is_forward)`. `message` is `None` exactly
+    when the entry is skipped, and `verdict` is `None` in step with it.
+    `is_forward` reflects a truthy `forwarded_from` regardless of whether
+    the entry is otherwise skipped — R6 counts a forward as a fact about
+    the export, not about the write.
+
+    This is the single seam `import_entries` reads `seen`, `forwards`,
+    `skipped` and `verdicts` from, on both the dry-run and the real path:
+    those four describe the export, never the write, so a dry run and a
+    real run over the same entries must count all four identically. Only
+    whether to call `upsert` — and therefore `stored` — may differ between
+    the two branches below.
+    """
+    is_forward = bool(item.get("forwarded_from"))
+    msg = message_from(item, chat_id=chat_id, bot_id=bot_id)
+    verdict = None if msg is None else verdict_of(item, bot_id=bot_id)
+    return msg, verdict, is_forward
+
+
 async def import_entries(
     session: AsyncSession,
     chat: Chat,
@@ -234,7 +259,7 @@ async def import_entries(
     `forward_origin` is never set on the reconstructed `Message`, reaches
     the extractor's prompt as though the words were the chat's own author's
     — neither is reconstructable from the export, so counting is the whole
-    remedy.
+    remedy. See `_classify` for the shared seam that keeps this true.
     """
     seen = stored = skipped = forwards = 0
     verdicts: Counter = Counter()
@@ -244,25 +269,28 @@ async def import_entries(
         if dry_run:
             for item in batch:
                 seen += 1
-                if item.get("forwarded_from"):
+                msg, verdict, is_forward = _classify(
+                    item, chat_id=chat.chat_id, bot_id=export.bot_id
+                )
+                if is_forward:
                     forwards += 1
-                msg = message_from(item, chat_id=chat.chat_id, bot_id=export.bot_id)
                 if msg is None:
                     skipped += 1
                 else:
-                    verdicts[verdict_of(item, bot_id=export.bot_id)] += 1
+                    verdicts[verdict] += 1
             continue
 
         async with session.begin():
             for item in batch:
                 seen += 1
-                if item.get("forwarded_from"):
+                msg, verdict, is_forward = _classify(
+                    item, chat_id=chat.chat_id, bot_id=export.bot_id
+                )
+                if is_forward:
                     forwards += 1
-                msg = message_from(item, chat_id=chat.chat_id, bot_id=export.bot_id)
                 if msg is None:
                     skipped += 1
                     continue
-                verdict = verdict_of(item, bot_id=export.bot_id)
                 await upsert(session, chat, msg, verdict=verdict)
                 verdicts[verdict] += 1
                 stored += 1
