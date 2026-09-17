@@ -137,6 +137,7 @@ class FakeSession:
         self.answers = answers
         self.statements: list[object] = []
         self.added: list[object] = []
+        self._next_id = 0
 
     async def execute(self, statement: object) -> FakeResult:
         self.statements.append(statement)
@@ -148,7 +149,14 @@ class FakeSession:
         self.added.append(obj)
 
     async def flush(self) -> None:
-        pass
+        # A real flush assigns a primary key to a pending row — the one
+        # behaviour `test_a_first_sighting_writes_the_message_and_its_entry`
+        # depends on to tell "the entry links row.id" from "the entry links
+        # nothing", since both read as `None is None` otherwise.
+        for obj in self.added:
+            if getattr(obj, "id", None) is None:
+                self._next_id += 1
+                obj.id = self._next_id
 
 
 def entry(**overrides: object) -> Entry:
@@ -260,6 +268,7 @@ async def test_a_first_sighting_writes_the_message_and_its_entry() -> None:
     assert ent in session.added
     assert ent.source == SOURCE_TELEGRAM
     assert ent.external_id == "4821"
+    assert row.id is not None
     assert ent.message_pk is row.id
     assert ent.occurred_at == TG_DATE
     assert ent.content == "4500 такси"

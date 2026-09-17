@@ -172,7 +172,20 @@ class EditSession:
         return ctx()
 
     async def execute(self, statement: object) -> SimpleNamespace:
-        row = self.entry if entity_of(statement) is Entry else self.existing
+        if entity_of(statement) is Entry:
+            # Filter by the real bind param, the way `test_reactions.py`'s
+            # `FakeSession` does — answering any `Entry` query with
+            # `self.entry` regardless of the `message_pk` it was asked for
+            # would let `record_edited` pass the wrong pk to
+            # `get_entry_for_message` and every edit test would still pass.
+            wanted = statement.compile().params.get("message_pk_1")
+            row = (
+                self.entry
+                if self.entry is not None and self.entry.message_pk == wanted
+                else None
+            )
+        else:
+            row = self.existing
         return SimpleNamespace(
             scalar_one_or_none=lambda: row,
             scalars=lambda: iter(()),
@@ -1028,8 +1041,17 @@ def test_every_entry_writing_call_site_passes_a_verdict() -> None:
     re-admits everything the old flag excluded, and nothing fails — the rows
     simply get parsed. That is `db9de98`, and it cost a live chat.
 
-    Read as source rather than executed: the four call sites are in three
-    modules and two of them are only reachable through aiogram.
+    `upsert_message` is not the only way to write an `entry` row, and it is
+    not the path this plan exists to open: a side-loaded adapter — a receipt
+    reader, a bank-statement importer — constructs `Entry(...)` directly and
+    never goes near `upsert_message`. `entry.verdict` carries
+    `server_default='fact'`, so an adapter that omits `verdict=` writes rows
+    the classifier never saw straight into the extraction queue, and nothing
+    raises. So the walk also matches a direct `Entry(...)` construction, not
+    only a call to `upsert_message`.
+
+    Read as source rather than executed: the five call sites today are in
+    four modules, three of them only reachable through aiogram.
     """
     import ast
     import pathlib
@@ -1045,14 +1067,16 @@ def test_every_entry_writing_call_site_passes_a_verdict() -> None:
                 name = func.attr
             else:
                 name = getattr(func, "id", "")
-            if name != "upsert_message":
+            if name not in ("upsert_message", "Entry"):
                 continue
             sites += 1
             assert any(kw.arg == "verdict" for kw in node.keywords), (
-                f"{path}: upsert_message without an explicit verdict"
+                f"{path}: {name} call without an explicit verdict"
             )
-    # Four today: handlers.record, handlers.record_edited, query.ask,
-    # outbound.say. The floor is here only so that a broken walk finding
-    # nothing cannot pass as «every call site is fine»; the keyword is what
-    # this test pins, not the census.
-    assert sites >= 4, f"the AST walk found only {sites} call sites"
+    # Five today: the four upsert_message call sites (handlers.record,
+    # handlers.record_edited, query.ask, outbound.say) plus store._entry_for's
+    # own `Entry(...)` construction — the direct-write path a side-loaded
+    # adapter would use instead of upsert_message. The floor is here only so
+    # that a broken walk finding nothing cannot pass as «every call site is
+    # fine»; the keyword is what this test pins, not the census.
+    assert sites >= 5, f"the AST walk found only {sites} call sites"
