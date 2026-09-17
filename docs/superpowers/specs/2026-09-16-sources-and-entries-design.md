@@ -190,8 +190,10 @@ prod, then discarded. It is specified here because the schema above has to be
 right for it, and because the mapping below is the answer to «what does an
 imported entry actually look like».
 
-Source: `Aicha - Expenses.csv`, 3548 rows, 2023-06-07 onward, profiled
-2026-09-16. `source = 'v1-expenses'`, `kind = 'expense'` for every row.
+Source: `/home/me/Загрузки/Aicha - Expenses.csv`, 3548 rows, 2023-06-07
+onward, profiled 2026-09-16. Exported by hand from the v1 Google workbook;
+the sheet is now called `Expenses` and was `Outcome` when the earlier spec was
+written. `source = 'v1-expenses'`, `kind = 'expense'` for every row.
 
 | column | destination | note |
 |---|---|---|
