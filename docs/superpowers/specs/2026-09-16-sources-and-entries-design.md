@@ -1,72 +1,75 @@
 # Many sources, one log — design
 
-Status: **current**, 2026-09-16. Supersedes
-`2026-09-16-history-import-design.md` on the question *where do old facts come
-from* — they come from the v1 workbook, exported to CSV, imported as structured
-data. That document is otherwise still live: the chat importer it specifies is
-built, reviewed and merged on this branch, and this design gives it a new job
-(see *The chat importer's new role*).
+Status: **current**, rewritten 2026-09-17 after the user narrowed the scope:
+*the schema must admit imports; the machinery around them is not built.*
+
+Supersedes `2026-09-16-history-import-design.md` on the question *where do old
+facts come from* — they come from the v1 workbook, exported to CSV. That
+document's importer is parked; see *What happens to the parked modules*.
 
 ## Why this exists
 
 The bot was built on one assumption: a fact is derived from a Telegram message,
 therefore `fact.message_pk` is NOT NULL and the message is the unit of
 re-derivation, the anchor of the delete gesture and the trigger for
-re-extraction. That assumption is now wrong in two directions at once.
+re-extraction. That assumption is wrong in two directions.
 
-- **The v1 workbook is already structured.** Its `Outcome`, `Loan` and `Wish`
-  sheets are facts, not prose. Running 3915 model calls to re-derive what the
-  sheets already state buys a worse answer than the sheets contain, and it
-  cannot coin a kind — `taxonomy.observed` shows the extractor only the kinds
-  already in `fact`, so a kind absent from the first pass never enters the
-  vocabulary. That is why the walkthrough's 6 «хочу …» messages all landed in
-  the catch-all instead of `wish`. Declared kinds have no bootstrap problem.
-- **More sources are coming**: receipt photos and bank statements. Some arrive
-  already structured (a statement line), some arrive raw and need the extractor
-  (a receipt). Both arrive by two routes — through the chat, and from the side.
+- **The v1 workbook is already structured.** Its expense sheet is facts, not
+  prose. Running thousands of model calls to re-derive what the sheet already
+  states buys a worse answer than the sheet contains, and it cannot coin a kind
+  — `taxonomy.observed` shows the extractor only the kinds already in `fact`, so
+  a kind absent from the first pass never enters the vocabulary. Declared data
+  has no bootstrap problem.
+- **More sources are coming**: receipt photos, bank statements. Some arrive
+  already structured (a statement line), some raw and needing the extractor (a
+  receipt). Both arrive by two routes — through the chat, and from the side.
 
-So the log needs a unit that is not a Telegram message.
+So the log needs a unit that is not a Telegram message. That unit is what this
+document specifies, and it is nearly all of what this document specifies.
 
 ## Decisions this design rests on
 
-Settled with the user, 2026-09-16:
+Settled with the user, 2026-09-16 and 2026-09-17:
 
-1. **Sources produce both shapes.** Already-structured (a row IS a fact) and raw
-   (needs extraction). One pipeline must admit both.
+1. **Sources produce both shapes** — already-structured and raw. One pipeline
+   must admit both.
 2. **Sources arrive by both routes**, from the start: through the chat, and
    side-loaded with no message at all.
-3. **No cross-source event identity.** A purchase that arrives both as a
+3. **No cross-source event identity.** A purchase arriving both as a
    photographed receipt and as a statement line will be two facts. Sources are
-   kept from overlapping by agreement, not by the schema. A «these are the same
-   event» link can be added later as its own table without touching anything
-   here; source precedence rules are guesswork until a real statement has been
-   looked at, and are not designed now.
-4. **A mistake in side-loaded data is fixed by re-importing**, and a whole
-   import can be undone by reacting to the summary message the import posts in
-   the chat.
+   kept from overlapping by agreement, not by the schema. A «same event» link
+   can be added later as its own table; source precedence is guesswork until a
+   real statement has been looked at, and is not designed now.
+4. **No import machinery is built.** No import command, no import-run record, no
+   summary message, no rollback gesture. The schema must *allow* imports; the
+   imports themselves are one-off jobs done by hand with Claude, as the need
+   arises. The user's reasoning, which this document adopts: machinery has to be
+   maintained, nothing is asking for it yet, and receipts and statements will be
+   imported as and when they happen.
+5. **Only the v1 expense sheet is imported.** Loans (46 rows) the user enters by
+   hand through the bot; the wish sheet holds stale data and is dropped.
 
 Taken by the author, recorded so they can be overruled:
 
-5. **`source` is a string column, not a table.** A table earns its place when
+6. **`source` is a string column, not a table.** A table earns its place when
    sources acquire configuration (per-bank column mappings). Promoting a string
    to an FK later is a migration, not a redesign.
-6. **`verdict` moves to the entry.** Keeping it on `message` while extraction
+7. **`verdict` moves to the entry.** Keeping it on `message` while extraction
    state lives on the entry would be two flags that can disagree about whether
-   something gets extracted — exactly the `extractable`-vs-`verdict` defect this
-   repo already shipped and documented (`db9de98`). The ingest invariant is
-   unaffected: the first transaction writes two rows instead of one, and still
+   something gets extracted — the `extractable`-vs-`verdict` defect this repo
+   already shipped and documented (`db9de98`). The ingest invariant is
+   unaffected: the first transaction writes two rows instead of one and still
    commits before any model call.
-7. **The entry duplicates the message's text** in its `content` column, so the
-   extraction queue is a single-table indexed read. There is exactly one writer
-   (`upsert_message`, which already updates the text and clears the extraction
-   state together).
-8. **The entry does not duplicate `message.raw`.** Who wrote a message and what
+8. **The entry duplicates the message's text** in `content`, so the extraction
+   queue is a single-table indexed read. There is exactly one writer —
+   `upsert_message`, which already updates the text and clears the extraction
+   state together.
+9. **The entry does not duplicate `message.raw`.** Who wrote a message and what
    it replies to are Telegram facts, read through `entry.message_pk`. A
-   side-loaded entry has no author and no reply edge, and the prompt simply does
-   not state them.
-9. **The table is named `entry`, not `record`.** `handlers.record` is already a
-   function, and the product is a log — a log's units are entries. It avoids a
-   noun/verb collision on the most-read word in the codebase.
+   side-loaded entry has no author and no reply edge, and the prompt does not
+   state them.
+10. **The table is named `entry`, not `record`.** `handlers.record` is already a
+    function, and the product is a log — a log's units are entries.
 
 ## The schema
 
@@ -75,36 +78,31 @@ Taken by the author, recorded so they can be overruled:
 | column | meaning |
 |---|---|
 | `id` | PK |
-| `chat_pk` | FK `chat.id`, the owner. Unchanged in meaning from `message.chat_pk`. |
-| `source` | `telegram`, `v1-sheet`, later `kaspi`, … |
+| `chat_pk` | FK `chat.id`, the owner |
+| `source` | `telegram`, `v1-expenses`, later `kaspi`, … |
 | `external_id` | text; the source's own key. Telegram: `str(message_id)`. A sheet row: its column-A key. A statement: the transaction id. |
 | `message_pk` | FK `message.id`, **nullable** — set only for chat-borne entries |
-| `run_pk` | FK `import_run.id`, **nullable** — set only for imported entries |
 | `occurred_at` | when the thing happened; `tg_date` for a message, the row's own date for an import |
 | `content` | text the extractor reads; NULL for a structured entry |
+| `raw` | JSONB, **nullable** — the source row verbatim, for imported entries. NULL for chat entries, whose verbatim copy is `message.raw`. |
 | `verdict` | moved from `message`; one of `fact`/`question`/`talk`/`system`, never null |
 | `extracted_at`, `extract_model`, `extract_prompt_version`, `extract_error` | moved from `message` |
 | `created_at` | |
 
 Constraints and indexes:
 
-- `UNIQUE (chat_pk, source, external_id)` — **this is what makes re-import
-  safe**: the same file row finds the same entry.
+- `UNIQUE (chat_pk, source, external_id)` — this is what makes a re-import
+  idempotent: the same file row finds the same entry.
 - `UNIQUE (message_pk)` where `message_pk IS NOT NULL` — one entry per message.
 - An index supporting the queue: `(chat_pk, verdict, extracted_at, occurred_at)`.
 
-### `import_run` — one act of importing
+`entry.raw` is deliberately **not** shown to the model: `taxonomy.observed`
+reads `fact.fields` only. It is where a source's columns go when they should be
+preserved but must not enter the extractor's vocabulary.
 
-| column | meaning |
-|---|---|
-| `id` | PK |
-| `chat_pk` | FK `chat.id` |
-| `source` | the same string the entries carry |
-| `label` | what was imported, for the summary line (e.g. the file name) |
-| `started_at`, `finished_at` | |
-| `entries`, `facts` | counters, as written |
-| `anchor_message_pk` | FK `message.id`, nullable — the summary message posted in the chat; reacting to it reverts the run |
-| `reverted_at` | nullable |
+`source` is also the undo. Everything one import wrote is
+`WHERE source = '<that source>'` — one statement, which is what makes decision 4
+safe without a run record.
 
 ### `message` — unchanged except for what leaves
 
@@ -153,17 +151,18 @@ read, classify, write.
 ### The delete gesture
 
 A reaction on a message resolves to its entry and tombstones that entry's facts;
-removing the reaction restores them. One extra hop, identical behaviour.
+removing the reaction restores them. One extra hop, identical behaviour. There
+is no second arm — see decision 4.
 
 ### Side-loaded, raw
 
 An entry with `content`, no `message_pk`, `verdict=fact`. It enters the same
 queue as a chat message and is extracted by the same pass. There is no second
-extraction path — that is the point of the design.
+extraction path; that is the point of the design.
 
 ### Side-loaded, structured
 
-An entry with `content = NULL` whose facts are written at import time.
+An entry with `content = NULL` whose facts are written when it is created.
 `extracted_at` is stamped then, `extract_model` stays NULL: the entry yielded its
 facts and no model was involved. It is excluded from the queue twice over — by
 the empty content and by the stamp — so no «do not extract me» flag exists to
@@ -184,84 +183,63 @@ makes one model call for the whole tail against `llm.MAX_TOKENS = 2048`, and
 `llm.use_tool` never inspects `response.stop_reason`, so a truncated reply still
 stamps the whole tail as extracted.
 
-## The CSV import
+## The one-off v1 expense import
 
-### Entry point
+Not shipped code. A throwaway script, run once against dev and once against
+prod, then discarded. It is specified here because the schema above has to be
+right for it, and because the mapping below is the answer to «what does an
+imported entry actually look like».
 
-A CLI subcommand. The bot is not involved and need not be stopped: no model call
-is made, so the truncated-pass hazard that governs the chat importer's runbook
-does not exist here.
+Source: `Aicha - Expenses.csv`, 3548 rows, 2023-06-07 onward, profiled
+2026-09-16. `source = 'v1-expenses'`, `kind = 'expense'` for every row.
 
-```
-uv run python -m telegrind.import_sheet Outcome.csv Loan.csv Wish.csv \
-    --chat-id 3260987 --source v1-sheet [--dry-run]
-```
+| column | destination | note |
+|---|---|---|
+| `#` | `entry.external_id` | 234…10457, unique, a running counter — **not** a Telegram message id |
+| `Сумма` | `fields.amount` | 631 rows carry a comma decimal separator |
+| `Валюта` | `fields.currency` | upper-cased; one row reads `usd` |
+| `Дата` | `entry.occurred_at`, `fact.at` | `DD.MM.YYYY`, no time; midnight at the chat's offset |
+| `Комментарий` | `fields.comment` | |
+| `Авто категория` | `fields.category` | 2129 rows, 20 categories |
+| `Необходимость` | `fields.necessity` | the same 2129 rows: must / need / nice / waste |
+| `В тенге` | `fields.amount_kzt` | 870 rows are not in KZT and cannot otherwise be summed with the rest |
+| `Категория` | `entry.raw` only | a copy of `Авто категория`; zero disagreements across the 1671 rows carrying both |
+| `Курс`, `дней назад` | `entry.raw` only | derivable from the two amounts; «days ago» is computed from today |
 
-### Mapping
+The whole row is kept verbatim in `entry.raw` regardless, so nothing above is a
+lossy choice.
 
-- **Column A** is the row's `external_id`. v1 wrote either `<message_id>` or
-  `<message_id>_<seq>` (after message 9540232). The seq half is **not
-  discarded**: it becomes `fact.seq`, so two facts on one v1 message stay two
-  facts. Dropping it collides them on `uq_fact_entry_pk_seq_live`.
-- **The sheet name** is the fact's `kind`, through a mapping declared explicitly
-  in the module — `Outcome` → `expense`, `Loan` → `loan`, `Wish` → `wish`. Not
-  inferred from the file name.
-- **The date column** gives both `entry.occurred_at` and `fact.at`. It is an
-  absolute date, so it does **not** go through `coerce.to_instant`, which
-  resolves a date against a message's own timestamp.
-- **Every other column** becomes a key in `fact.fields`, with values passed
-  through `coerce.to_json_value` so that numbers are real JSON numbers and
-  `(fields->>'amount')::numeric` cannot fail a whole query.
-- `fact.prompt_version` is set to the source string (`v1-sheet`), and
-  `fact.model` stays NULL. A fact nobody's model produced must not be findable
-  by a re-extraction pass looking for facts from an older prompt.
+Three rules the mapping obeys, and the reasons, because a future import must
+obey them too:
 
-**The exact column mapping is not in this document**: it is derived from the
-headers of the user's export and confirmed with him before implementation. The
-rules above are what the mapping must satisfy.
+- **Field names are read out of the database, not invented.** The live extractor
+  writes `amount`, `currency`, `comment`, `person` — measured against the dev
+  corpus 2026-09-16. An imported fact naming its amount anything else would not
+  sum together with an extracted one.
+- **Numbers go through `coerce.to_json_value`** so they are real JSON numbers and
+  `(fields->>'amount')::numeric` cannot fail a whole query. Dates do **not** go
+  through `coerce.to_instant`, which resolves a date against a message's own
+  timestamp; a sheet row's date is absolute.
+- **`fact.prompt_version` records the source** (`v1-expenses`) and `fact.model`
+  stays NULL. A fact no model produced must not be findable by a re-extraction
+  pass hunting facts from an older prompt.
 
-### All or nothing
+**The import changes the bot's behaviour, by design.** `taxonomy.render` shows
+the model every field name a kind already uses, so after this import the
+extractor will start filling `category` and `necessity` on new expenses. That is
+wanted — 2129 hand-checked labels are the most valuable thing in the sheet — but
+it arrives silently, which is why it is written down. Dropping those two columns
+into `entry.raw` instead is a one-line change if the user decides otherwise.
 
-One transaction for the whole run. The run **refuses to start** if any row fails
-to map — an unparsable key, an unparsable date, an unknown sheet. An import that
-«mostly worked» cannot later be told from a correct one, and the rows it dropped
-are unfindable. `--dry-run` reads, maps, reports and writes nothing; the real
-run repeats the mapping and commits.
-
-### Idempotency
-
-A re-run finds the same entries by `(chat_pk, source, external_id)` and replaces
-their facts through `store.replace_facts`, which diffs by `seq`: changed facts
-are updated, vanished ones tombstoned, new ones added. Re-importing a corrected
-file is the supported way to fix imported data.
-
-### The summary, and the rollback
-
-At the end of a run the command posts one message into the chat — source, rows,
-facts, totals by kind — stored like everything the bot says, with
-`verdict=system` on its entry so it never enters the queue. Its `message.id` is
-the run's `anchor_message_pk`.
-
-Reacting to that message tombstones every live fact of every entry in the run and
-stamps `reverted_at`; removing the reaction restores them. This is one explicit
-branch in `handlers/reactions.py`: the reacted message is looked up as a run
-anchor first, and only if it is not one does the handler fall back to tombstoning
-that single message's facts. Both arms share `tombstone_facts` /
-`restore_facts`; the anchor arm passes the run's entries instead of one.
-
-`--dry-run` posts nothing. The command needs `BOT_TOKEN` to post the summary at
-all, and a run started without one fails before it writes, rather than importing and
-leaving a run whose only supported undo gesture was never posted.
-
-After a revert the entries remain. Re-importing writes fresh facts; the
-tombstoned ones do not collide, because the uniqueness on `(entry_pk, seq)` is
-partial on `deleted_at IS NULL` — which is why it was made partial.
+No new **kind** is seeded: loans and wishes are not imported, so `wish` remains
+uncoined and «хочу …» keeps landing in the catch-all until some first fact
+creates it.
 
 ## No data migration
 
 v2's database is empty: 0 chats, 0 messages, own volume (`telegrind-v2_pgdata`),
 own compose project, measured on latitude 2026-09-16. v1's database is a
-different database on the same host and is not touched by any of this.
+different database on the same host and is untouched by any of this.
 
 So the schema is created in its final shape. There is no expand/contract, no
 backfill and no two-stage deploy.
@@ -273,75 +251,67 @@ design whose failure is irreversible, and verifying it costs one command.
 the only pointer to the retired workbook.
 
 Mechanically this is **one new alembic revision** on top of the existing seven —
-it creates `entry` and `import_run` and reshapes `message` and `fact` with no
-data preservation. The chain is not collapsed into a fresh initial revision:
-a clean migration history is cosmetic, and rewriting the chain would make every
-existing database unupgradable for no gain.
+it creates `entry` and reshapes `message` and `fact` with no data preservation.
+The chain is not collapsed into a fresh initial revision: a clean migration
+history is cosmetic, and rewriting the chain would make every existing database
+unupgradable for no gain.
 
-## The chat importer's new role
+## What happens to the parked modules
 
-`telegrind/import_history.py` stays. Its job changes from «the source of old
-facts» to **restoring the readable history**: it imports the export's messages
-and their entries, and those entries do **not** yield facts.
+Both are deleted as part of this work, and both are recoverable from git.
 
-The reason is decision 3. A purchase that exists as a `v1-sheet` row and as its
-own chat message would otherwise be counted twice, because they are now two
-entries from two sources. Making the history import fact-free keeps the money
-correct while making the log readable.
+- **`telegrind/import_history.py`** (and its tests) imports the Telegram export
+  as messages. It is built, reviewed and green, and it is unwanted under
+  decision 4: carrying it forward means porting it to `entry` and keeping it
+  green for a job nobody has asked for. The export JSON is still on disk and the
+  code is still in git; if the readable history is ever wanted, it is a one-off
+  job like any other.
+- **`telegrind/workbook_compare.py`** (and its tests) joins workbook rows to
+  messages by message id. The exported sheet's column A is a running counter,
+  not a message id — measured 2026-09-16 — so the join it was built on does not
+  exist. Its premise is gone, not just its priority.
 
-That change is **not in this plan's scope**. It is recorded here so that whoever
-runs the chat importer next knows it must not extract, and `import_history.py`
-carries a pointer to this paragraph.
-
-`telegrind/workbook_compare.py` also changes role: it was built to decide
-whether the old facts should be imported at all, and the user has answered that.
-It becomes the verification tool — after the CSV import, it checks each old
-workbook row against the fact that now exists for it. Its docstring's claim that
-«the workbook cannot be an import source» is true of *messages* and false of
-*facts*, and is corrected when the module is next touched.
+`CLAUDE.md`'s paragraph on `import_history.py` goes with them.
 
 ## Out of scope
 
-Named so the schema can be checked against them, with no tasks in this plan:
+Named so the schema can be checked against them; no tasks:
 
-- **Receipt photos.** A vision call that turns a photo into `entry.content`, or
-  directly into facts. The schema admits it as a raw side-loaded (or chat-borne)
-  entry.
+- **Any import command, import-run record, summary message or rollback
+  gesture** (decision 4).
+- **Receipt photos.** A vision call turning a photo into `entry.content`, or
+  directly into facts. The schema admits it as a raw entry, chat-borne or
+  side-loaded.
 - **Bank statements.** A per-bank adapter producing structured entries. The
-  schema admits it; the `source` string is where the adapter is keyed, and is
-  where a `source` table would first earn its place.
+  `source` string is where such an adapter is keyed, and where a `source` table
+  would first earn its place.
 - **Cross-source event identity** and source precedence (decision 3).
-- **Deleting a fact by asking in words.** A genuinely useful feature, and not
-  part of the import story.
-- **Re-running extraction over the imported history** (see above).
+- **Deleting a fact by asking in words.**
+- **Importing the loan and wish sheets** (decision 5).
 
 ## Testing
 
-Unit tests with no database, as the rest of the suite. Five things must be
+Unit tests with no database, as the rest of the suite. Four things must be
 pinned, and each must be watched failing against deliberately broken code — this
 repo has already shipped three tests that passed against a broken
 implementation:
 
-1. `(chat_pk, source, external_id)` is unique, and a second import of the same
-   row updates rather than inserts.
-2. A structured entry never appears in `unextracted_tail` — assert it against an
+1. `(chat_pk, source, external_id)` is unique, and writing the same source row
+   twice updates rather than inserts.
+2. A structured entry never appears in `unextracted_tail` — asserted against an
    entry with `content=None` **and** an `extracted_at` stamp, and against each
-   alone, so the test does not pass for only one of the two reasons.
-3. Reverting a run tombstones exactly its own run's facts — the assertion needs
-   a second run's facts present and untouched, or it cannot discriminate.
-4. A row that fails to map aborts the whole run and writes nothing.
-5. `verdict` is passed explicitly at every entry-writing call site. A permissive
+   alone, so the test cannot pass for only one of the two reasons.
+3. A reaction tombstones the facts of the reacted message's entry, and
+   removing it restores them — the hop through `entry` is new and is where this
+   can silently break.
+4. `verdict` is passed explicitly at every entry-writing call site. A permissive
    default on the column that selects the queue silently re-admits everything —
-   this is `db9de98` and it is the trap this repo is most likely to repeat.
+   this is `db9de98`, the trap this repo is most likely to repeat.
 
 **The manual walkthrough on the dev stack is required**, not ceremony. The
 repo's hand-written fake sessions yield from `begin()` unconditionally and
 therefore cannot see a transaction misuse; the last plan's autobegin defect was
-caught only by running it. The walk: send a message, edit it, react to delete it,
-import the CSVs, ask for a monthly total and confirm it spans both sources,
-react on the summary to revert, confirm the total drops, remove the reaction,
-confirm it returns, re-import and confirm nothing doubles.
-
-One thing to look at during the walk, with no test attached: after the import,
-`taxonomy.observed` contains `wish` and `loan`. The import seeds the vocabulary,
-which is what fixes the bootstrap problem named at the top of this document.
+caught only by running it. The walk: send a message, edit it, react to delete it
+and react again to restore it, ask a question and get an answer, then run the
+one-off expense import and ask for a monthly total that spans both the imported
+facts and a freshly typed one.
