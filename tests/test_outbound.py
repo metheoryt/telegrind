@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from telegrind.bot import outbound
-from telegrind.models import VERDICT_SYSTEM, Chat
+from telegrind.models import VERDICT_SYSTEM, Chat, Entry, LoggedMessage
 
 
 class FakeBot:
@@ -48,11 +48,15 @@ class FakeSession:
 
 
 async def test_what_the_bot_says_is_stored_as_system() -> None:
+    """`verdict` now lives on the entry, not the message row `say` also
+    writes — the message is the verbatim record, the entry is what the
+    queue reads."""
     session = FakeSession()
     await outbound.say(FakeBot(), session, Chat(id=1, chat_id=7), "Записал.")
-    assert [(r.text, r.verdict) for r in session.added] == [
-        ("Записал.", VERDICT_SYSTEM)
-    ]
+    messages = [r for r in session.added if isinstance(r, LoggedMessage)]
+    entries = [r for r in session.added if isinstance(r, Entry)]
+    assert [m.text for m in messages] == ["Записал."]
+    assert [e.verdict for e in entries] == [VERDICT_SYSTEM]
 
 
 async def test_a_reply_goes_out_with_reply_parameters() -> None:

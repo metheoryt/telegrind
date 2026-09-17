@@ -1,7 +1,9 @@
-"""Message and fact repository.
+"""Message, entry and fact repository.
 
 The log is append-on-first-sight, overwrite-on-edit. Nothing here deletes a
-message row: a Telegram delete removes facts, never the log.
+message row: a Telegram delete removes facts, never the log. An entry is
+written together with its message, in the same transaction, and nothing
+here deletes an entry either.
 """
 
 from datetime import UTC, datetime
@@ -14,8 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from telegrind.models import (
     KIND_TEXT,
     KIND_VOICE,
+    SOURCE_TELEGRAM,
     VERDICT_FACT,
     Chat,
+    Entry,
     Fact,
     LoggedMessage,
 )
@@ -121,19 +125,50 @@ async def turn_root(session: AsyncSession, chat_pk: int, message_id: int) -> int
     return reply_to(parent) or message_id
 
 
+def _entry_for(chat: Chat, row: LoggedMessage, verdict: str) -> Entry:
+    """A fresh entry for a message row that has just been written.
+
+    `content` duplicates what the extractor reads, so the queue is a single
+    indexed read on one table rather than a join that would drop every
+    side-loaded entry. There is exactly one writer of that duplicate — this
+    module — and it is verified: nothing writes `transcript` anywhere yet.
+    **A future transcription path must update `entry.content` and clear
+    `entry.extracted_at` in the same transaction as the transcript**, or a
+    voice entry goes stale and the queue skips it with no trace.
+    """
+    return Entry(
+        chat_pk=chat.id,
+        source=SOURCE_TELEGRAM,
+        external_id=str(row.message_id),
+        message_pk=row.id,
+        occurred_at=row.tg_date,
+        content=row.content or None,
+        verdict=verdict,
+    )
+
+
+async def get_entry_for_message(session: AsyncSession, message_pk: int) -> Entry | None:
+    result = await session.execute(select(Entry).where(Entry.message_pk == message_pk))
+    return result.scalar_one_or_none()
+
+
 async def upsert_message(
     session: AsyncSession,
     chat: Chat,
     msg: Message,
     *,
     verdict: str = VERDICT_FACT,
-) -> tuple[LoggedMessage, bool]:
-    """Append the message, or overwrite it if we have seen this id before.
+) -> tuple[LoggedMessage, Entry, bool]:
+    """Append the message and its entry, or overwrite both on an edit.
 
-    Returns `(row, created)`. An edit overwrites the text, bumps edited_at,
-    and clears the extraction state: the text changed, so whatever was
-    extracted from it no longer describes the message, and clearing
-    extracted_at is what makes the next batch pass pick it up again.
+    Returns `(message, entry, created)`. One transaction writes both rows,
+    which is what keeps the ingest invariant: the row is committed before
+    any model call, and an entry that exists is an entry the queue can see.
+
+    An edit overwrites the text, bumps edited_at, and clears the entry's
+    extraction state: the text changed, so whatever was extracted from it no
+    longer describes it, and clearing extracted_at is what makes the next
+    batch pass pick it up again.
     """
     values = message_values(msg)
     existing = await get_message(session, chat.id, msg.message_id)
@@ -143,43 +178,61 @@ async def upsert_message(
             if key in ("transcript", "transcript_model") and value is None:
                 continue
             setattr(existing, key, value)
-        existing.verdict = verdict
-        existing.extracted_at = None
-        existing.extract_error = None
-        return existing, False
+        entry = await get_entry_for_message(session, existing.id)
+        if entry is None:
+            # A message with no entry cannot happen: every writer here makes
+            # both. Healing beats raising anyway — a NoResultFound inside
+            # `record`'s transaction would roll the message write back and
+            # lose the update, which is the one thing this bot promises not
+            # to do.
+            entry = _entry_for(chat, existing, verdict)
+            session.add(entry)
+            await session.flush()
+            return existing, entry, False
+        entry.occurred_at = existing.tg_date
+        entry.content = existing.content or None
+        entry.verdict = verdict
+        entry.extracted_at = None
+        entry.extract_error = None
+        return existing, entry, False
 
-    row = LoggedMessage(chat_pk=chat.id, verdict=verdict, **values)
+    row = LoggedMessage(chat_pk=chat.id, **values)
     session.add(row)
     await session.flush()
-    return row, True
+    entry = _entry_for(chat, row, verdict)
+    session.add(entry)
+    await session.flush()
+    return row, entry, True
 
 
 def _has_content() -> Any:
-    """SQL for «this message has something the extractor can read».
+    """SQL for «this entry has something the extractor can read».
 
     A photo, a sticker or a location is stored like everything else and
-    simply waits: not yet parsed, which is neither «yielded nothing» nor
-    «failed». When something can read a photo, the rows are still here.
+    simply waits. A structured entry has no content at all and is excluded
+    here as well as by its extraction stamp — two independent reasons, so
+    neither has to be trusted alone.
     """
-    return func.coalesce(
-        func.nullif(func.trim(LoggedMessage.transcript), ""),
-        func.nullif(func.trim(LoggedMessage.text), ""),
-    ).is_not(None)
+    return func.nullif(func.trim(Entry.content), "").is_not(None)
 
 
 async def unextracted_tail(
     session: AsyncSession, chat_pk: int, *, limit: int = 200
-) -> list[LoggedMessage]:
-    """The messages a pass is responsible for, oldest first."""
+) -> list[Entry]:
+    """The entries a pass is responsible for, oldest first.
+
+    `entry` alone, never joined to `message`: a join would drop every
+    side-loaded entry, which is the whole point of the table.
+    """
     result = await session.execute(
-        select(LoggedMessage)
+        select(Entry)
         .where(
-            LoggedMessage.chat_pk == chat_pk,
-            LoggedMessage.verdict == VERDICT_FACT,
-            LoggedMessage.extracted_at.is_(None),
+            Entry.chat_pk == chat_pk,
+            Entry.verdict == VERDICT_FACT,
+            Entry.extracted_at.is_(None),
             _has_content(),
         )
-        .order_by(LoggedMessage.tg_date, LoggedMessage.message_id)
+        .order_by(Entry.occurred_at, Entry.id)
         .limit(limit)
     )
     return list(result.scalars())
@@ -188,63 +241,68 @@ async def unextracted_tail(
 async def context_before(
     session: AsyncSession,
     chat_pk: int,
-    pivot: LoggedMessage,
+    pivot: Entry,
     *,
     limit: int = 10,
-) -> list[LoggedMessage]:
+) -> list[Entry]:
     """Read-only neighbours shown to the model but never re-extracted.
 
-    Ordered by chat time, not by `id`: a forward is dated by its origin,
-    so the two genuinely differ. The comparison is a row comparison so
-    that two messages sharing a second still order deterministically.
+    Ordered by when things happened, not by `id`: a forward is dated by its
+    origin and an imported row by its own date, so the two genuinely differ.
+    The comparison is a row comparison so that two entries sharing a second
+    still order deterministically.
     """
     result = await session.execute(
-        select(LoggedMessage)
+        select(Entry)
         .where(
-            LoggedMessage.chat_pk == chat_pk,
+            Entry.chat_pk == chat_pk,
             _has_content(),
-            tuple_(LoggedMessage.tg_date, LoggedMessage.message_id)
-            < (pivot.tg_date, pivot.message_id),
+            tuple_(Entry.occurred_at, Entry.id) < (pivot.occurred_at, pivot.id),
         )
-        .order_by(LoggedMessage.tg_date.desc(), LoggedMessage.message_id.desc())
+        .order_by(Entry.occurred_at.desc(), Entry.id.desc())
         .limit(limit)
     )
     return list(reversed(list(result.scalars())))
 
 
-async def facts_for_message(session: AsyncSession, message_pk: int) -> list[Fact]:
+async def messages_for(
+    session: AsyncSession, entries: list[Entry]
+) -> dict[int, LoggedMessage]:
+    """The message rows behind whichever entries have one, keyed by entry id.
+
+    One explicit query, never an attribute on a relationship: a lazy load on
+    an AsyncSession raises MissingGreenlet at the attribute access, which
+    mentions neither commits nor transactions, and the fake sessions in this
+    suite cannot see it.
+    """
+    by_message_pk = {e.message_pk: e.id for e in entries if e.message_pk is not None}
+    if not by_message_pk:
+        return {}
     result = await session.execute(
-        select(Fact).where(Fact.message_pk == message_pk).order_by(Fact.seq)
+        select(LoggedMessage).where(LoggedMessage.id.in_(by_message_pk))
     )
-    return list(result.scalars())
+    return {by_message_pk[row.id]: row for row in result.scalars()}
 
 
-async def facts_for_chat(session: AsyncSession, chat_pk: int) -> list[Fact]:
-    result = await session.execute(
-        select(Fact).where(Fact.chat_pk == chat_pk).order_by(Fact.id)
-    )
-    return list(result.scalars())
-
-
-async def live_facts_for_message(session: AsyncSession, message_pk: int) -> list[Fact]:
-    """This message's facts that are not tombstoned."""
+async def live_facts_for_entry(session: AsyncSession, entry_pk: int) -> list[Fact]:
+    """This entry's facts that are not tombstoned."""
     result = await session.execute(
         select(Fact)
-        .where(Fact.message_pk == message_pk, Fact.deleted_at.is_(None))
+        .where(Fact.entry_pk == entry_pk, Fact.deleted_at.is_(None))
         .order_by(Fact.seq)
     )
     return list(result.scalars())
 
 
-async def tombstone_facts(session: AsyncSession, message_pk: int, at: datetime) -> int:
-    """Soft-delete this message's live facts. Returns how many were stamped.
+async def tombstone_facts(session: AsyncSession, entry_pk: int, at: datetime) -> int:
+    """Soft-delete this entry's live facts. Returns how many were stamped.
 
     A tombstone is never lifted by an extraction pass — only restore_facts
     clears it — because facts are re-derivable and a hard delete would be
-    undone by the next re-extraction of the same message.
+    undone by the next re-extraction of the same entry.
     """
     result = await session.execute(
-        select(Fact).where(Fact.message_pk == message_pk, Fact.deleted_at.is_(None))
+        select(Fact).where(Fact.entry_pk == entry_pk, Fact.deleted_at.is_(None))
     )
     rows = list(result.scalars())
     for row in rows:
@@ -252,10 +310,10 @@ async def tombstone_facts(session: AsyncSession, message_pk: int, at: datetime) 
     return len(rows)
 
 
-async def restore_facts(session: AsyncSession, message_pk: int) -> int:
-    """Clear the tombstone on this message's facts. Returns how many."""
+async def restore_facts(session: AsyncSession, entry_pk: int) -> int:
+    """Clear the tombstone on this entry's facts. Returns how many."""
     result = await session.execute(
-        select(Fact).where(Fact.message_pk == message_pk, Fact.deleted_at.is_not(None))
+        select(Fact).where(Fact.entry_pk == entry_pk, Fact.deleted_at.is_not(None))
     )
     rows = list(result.scalars())
     for row in rows:
@@ -264,9 +322,9 @@ async def restore_facts(session: AsyncSession, message_pk: int) -> int:
 
 
 def mark_extracted(
-    rows: list[LoggedMessage], *, model: str, prompt_version: str, at: datetime
+    rows: list[Entry], *, model: str, prompt_version: str, at: datetime
 ) -> None:
-    """A message the pass handled, whether or not it yielded a fact.
+    """An entry the pass handled, whether or not it yielded a fact.
 
     Marking the silent ones is the whole point of the column: without it
     «привет» is indistinguishable from «not yet parsed» and every pass
@@ -279,7 +337,7 @@ def mark_extracted(
         row.extract_error = None
 
 
-def mark_failed(rows: list[LoggedMessage], error: str) -> None:
+def mark_failed(rows: list[Entry], error: str) -> None:
     """The pass could not read these. They stay pending and are retried.
 
     Dropping the echo removed the only channel through which a failure
@@ -292,22 +350,22 @@ def mark_failed(rows: list[LoggedMessage], error: str) -> None:
 async def replace_facts(
     session: AsyncSession,
     chat_pk: int,
-    message_pk: int,
+    entry_pk: int,
     drafts: list[Draft],
     *,
     model: str,
     prompt_version: str,
     now: datetime,
 ) -> int:
-    """Diff this message's facts against what the pass just derived.
+    """Diff this entry's facts against what the pass just derived.
 
     Unchanged rows are left alone, changed ones updated in place, surplus
     ones tombstoned. A tombstone is never lifted here — only the user's
     reaction clears `deleted_at` — which is why inserting over a
-    tombstoned `(message_pk, seq)` has to work, and why the uniqueness on
+    tombstoned `(entry_pk, seq)` has to work, and why the uniqueness on
     it is a partial index.
     """
-    live = {row.seq: row for row in await live_facts_for_message(session, message_pk)}
+    live = {row.seq: row for row in await live_facts_for_entry(session, entry_pk)}
 
     for draft in drafts:
         row = live.pop(draft.seq, None)
@@ -315,7 +373,7 @@ async def replace_facts(
             session.add(
                 Fact(
                     chat_pk=chat_pk,
-                    message_pk=message_pk,
+                    entry_pk=entry_pk,
                     seq=draft.seq,
                     kind=draft.kind,
                     at=draft.at,

@@ -6,11 +6,13 @@ from telegrind.extract import Draft
 from telegrind.models import (
     KIND_TEXT,
     KIND_VOICE,
+    SOURCE_TELEGRAM,
     VERDICT_FACT,
     VERDICT_QUESTION,
     VERDICT_SYSTEM,
     VERDICTS,
     Chat,
+    Entry,
     Fact,
     LoggedMessage,
 )
@@ -121,18 +123,25 @@ class FakeResult:
 
 
 class FakeSession:
-    """Enough of AsyncSession for the tombstone and window helpers.
+    """Enough of AsyncSession for the store helpers.
 
-    They only ever select and mutate attributes. `added` is here for
-    replace_facts, which is the one helper that inserts."""
+    `rows` is the default answer. `answers`, when given, is consumed one
+    `execute` at a time — needed since `upsert_message` selects the message
+    and then its entry.
+    """
 
-    def __init__(self, rows: list[object]) -> None:
+    def __init__(
+        self, rows: list[object], answers: list[list[object]] | None = None
+    ) -> None:
         self.rows = rows
+        self.answers = answers
         self.statements: list[object] = []
         self.added: list[object] = []
 
     async def execute(self, statement: object) -> FakeResult:
         self.statements.append(statement)
+        if self.answers is not None and self.answers:
+            return FakeResult(self.answers.pop(0))
         return FakeResult(self.rows)
 
     def add(self, obj: object) -> None:
@@ -142,10 +151,25 @@ class FakeSession:
         pass
 
 
+def entry(**overrides: object) -> Entry:
+    base = {
+        "id": 11,
+        "chat_pk": 1,
+        "source": SOURCE_TELEGRAM,
+        "external_id": "4821",
+        "message_pk": 7,
+        "occurred_at": TG_DATE,
+        "content": "4500 такси",
+        "verdict": VERDICT_FACT,
+    }
+    base.update(overrides)
+    return Entry(**base)
+
+
 def fact(seq: int, deleted_at: datetime | None = None, kind: str = "expense") -> Fact:
     return Fact(
         chat_pk=1,
-        message_pk=7,
+        entry_pk=7,
         seq=seq,
         kind=kind,
         at=TG_DATE,
@@ -159,7 +183,7 @@ async def test_tombstone_stamps_every_live_fact() -> None:
     session = FakeSession(rows)
     when = datetime(2026, 9, 11, 12, 0, tzinfo=UTC)
 
-    count = await tombstone_facts(session, message_pk=7, at=when)
+    count = await tombstone_facts(session, entry_pk=7, at=when)
 
     assert count == 2
     assert [r.deleted_at for r in rows] == [when, when]
@@ -168,7 +192,7 @@ async def test_tombstone_stamps_every_live_fact() -> None:
 async def test_tombstone_on_a_message_with_no_facts_reports_zero() -> None:
     session = FakeSession([])
     count = await tombstone_facts(
-        session, message_pk=7, at=datetime(2026, 9, 11, tzinfo=UTC)
+        session, entry_pk=7, at=datetime(2026, 9, 11, tzinfo=UTC)
     )
     assert count == 0
 
@@ -176,15 +200,13 @@ async def test_tombstone_on_a_message_with_no_facts_reports_zero() -> None:
 async def test_restore_clears_the_tombstone() -> None:
     when = datetime(2026, 9, 11, 12, 0, tzinfo=UTC)
     rows = [fact(1, deleted_at=when)]
-    count = await restore_facts(FakeSession(rows), message_pk=7)
+    count = await restore_facts(FakeSession(rows), entry_pk=7)
 
     assert count == 1
     assert rows[0].deleted_at is None
 
 
-def logged(
-    message_id: int, *, text: str | None = "x", extracted: bool = False
-) -> LoggedMessage:
+def logged(message_id: int, *, text: str | None = "x") -> LoggedMessage:
     """An unattached message row, enough for the window queries."""
     return LoggedMessage(
         id=message_id,
@@ -192,22 +214,21 @@ def logged(
         message_id=message_id,
         kind=KIND_TEXT,
         text=text,
-        tg_date=datetime(2026, 9, 11, 12, message_id, tzinfo=UTC),
+        tg_date=TG_DATE + timedelta(minutes=message_id),
         raw={},
-        extracted_at=datetime(2026, 9, 11, tzinfo=UTC) if extracted else None,
     )
 
 
 async def test_unextracted_tail_asks_for_content_and_chat_order() -> None:
-    rows = [logged(1), logged(2)]
+    rows = [entry(id=1), entry(id=2)]
     session = FakeSession(rows)
 
     tail = await store.unextracted_tail(session, chat_pk=1, limit=200)
 
     assert tail == rows
     rendered = str(session.statements[-1])
-    assert "extracted_at IS NULL" in rendered
-    assert "verdict" in rendered
+    assert "entry.extracted_at IS NULL" in rendered
+    assert "entry.verdict" in rendered
     assert "trim" in rendered.lower()
     assert "LIMIT" in rendered
 
@@ -215,11 +236,145 @@ async def test_unextracted_tail_asks_for_content_and_chat_order() -> None:
 async def test_context_before_comes_back_oldest_first() -> None:
     # The query walks backwards from the pivot, so the driver hands them
     # back newest-first and the function has to flip them.
-    session = FakeSession([logged(9), logged(8)])
+    session = FakeSession([entry(id=9), entry(id=8)])
 
-    context = await store.context_before(session, chat_pk=1, pivot=logged(10), limit=10)
+    context = await store.context_before(
+        session, chat_pk=1, pivot=entry(id=10), limit=10
+    )
 
-    assert [row.message_id for row in context] == [8, 9]
+    assert [row.id for row in context] == [8, 9]
+
+
+async def test_a_first_sighting_writes_the_message_and_its_entry() -> None:
+    """Both rows, one transaction. The entry is what the queue reads, so a
+    message stored without one is a message that is never extracted."""
+    session = FakeSession([], answers=[[], []])
+    chat = Chat(id=1, chat_id=7)
+
+    row, ent, created = await store.upsert_message(
+        session, chat, text_message(), verdict=VERDICT_FACT
+    )
+
+    assert created is True
+    assert row in session.added
+    assert ent in session.added
+    assert ent.source == SOURCE_TELEGRAM
+    assert ent.external_id == "4821"
+    assert ent.message_pk is row.id
+    assert ent.occurred_at == TG_DATE
+    assert ent.content == "4500 такси"
+    assert ent.verdict == VERDICT_FACT
+
+
+async def test_the_external_id_is_the_telegram_message_id_as_text() -> None:
+    """`(chat_pk, source, external_id)` is what makes a re-import idempotent,
+    and it is text for every source — an int here would be a second spelling."""
+    session = FakeSession([], answers=[[], []])
+    _, ent, _ = await store.upsert_message(
+        session, Chat(id=1, chat_id=7), text_message(message_id=4821)
+    )
+    assert ent.external_id == "4821"
+    assert isinstance(ent.external_id, str)
+
+
+async def test_an_edit_puts_the_entry_back_in_the_queue() -> None:
+    existing = logged(4821)
+    ent = entry(extracted_at=AT, extract_error="boom", content="старый текст")
+    session = FakeSession([], answers=[[existing], [ent]])
+
+    _, got, created = await store.upsert_message(
+        session,
+        Chat(id=1, chat_id=7),
+        text_message(text="4500 такси"),
+        verdict=VERDICT_FACT,
+    )
+
+    assert created is False
+    assert got is ent
+    assert ent.extracted_at is None
+    assert ent.extract_error is None
+    assert ent.content == "4500 такси"
+
+
+async def test_a_question_writes_its_verdict_onto_the_entry_not_the_message() -> None:
+    session = FakeSession([], answers=[[], []])
+    row, ent, _ = await store.upsert_message(
+        session, Chat(id=1, chat_id=7), text_message(), verdict=VERDICT_QUESTION
+    )
+    assert ent.verdict == VERDICT_QUESTION
+    assert not hasattr(row, "verdict")
+
+
+async def test_a_side_loaded_entry_is_in_the_queue() -> None:
+    """The design's central claim: there is no second extraction path.
+
+    An imported raw entry has no message and still gets extracted by the
+    same pass as a typed one."""
+    rows = [entry(id=12, message_pk=None, source="v1-receipts", external_id="r-1")]
+    session = FakeSession(rows)
+
+    tail = await store.unextracted_tail(session, chat_pk=1, limit=200)
+
+    assert tail == rows
+    # The fake returns rows unconditionally, so the return-value assertion
+    # above cannot by itself tell "the query would include this row" from
+    # "the query would silently exclude it and the fake wouldn't know" —
+    # confirmed by deliberately adding `Entry.message_pk.is_not(None)` to
+    # the where clause and watching this test keep passing. Assert on the
+    # rendered statement too, which does discriminate.
+    rendered = str(session.statements[-1])
+    assert "message_pk IS NOT NULL" not in rendered
+
+
+async def test_the_queue_excludes_a_structured_entry_for_both_reasons() -> None:
+    """A substitution, and a deliberate one. The spec asks for each reason to
+    be asserted alone; a fake session returns its rows unfiltered, so no unit
+    test here can tell «excluded by the stamp» from «excluded by the empty
+    content». What it can pin is that both predicates are in the statement.
+    The per-reason check is run against a live database in the walkthrough."""
+    session = FakeSession([])
+    await store.unextracted_tail(session, chat_pk=1)
+    rendered = str(session.statements[-1])
+
+    # the stamp
+    assert "entry.extracted_at IS NULL" in rendered
+    # the empty content, trimmed
+    assert "trim" in rendered.lower()
+    assert "entry.content" in rendered
+    # and the verdict, which is the third gate
+    assert "entry.verdict" in rendered
+    # read off `entry` alone: a join to `message` would drop every
+    # side-loaded entry silently. Checked as "from message"/"join message"
+    # rather than a bare "message" substring, because entry's own
+    # message_pk column legitimately contains that word.
+    assert "from message" not in rendered.lower()
+    assert "join message" not in rendered.lower()
+
+
+async def test_the_queue_orders_by_when_things_happened() -> None:
+    session = FakeSession([])
+    await store.unextracted_tail(session, chat_pk=1)
+    rendered = str(session.statements[-1])
+    assert "ORDER BY entry.occurred_at, entry.id" in rendered
+
+
+async def test_messages_for_loads_them_in_one_query_keyed_by_entry() -> None:
+    """Explicit, never a relationship attribute: a lazy load on an
+    AsyncSession raises MissingGreenlet and no fake session can see it."""
+    msg = logged(4821)
+    session = FakeSession([msg])
+
+    got = await store.messages_for(session, [entry(id=11, message_pk=msg.id)])
+
+    assert got == {11: msg}
+    assert len(session.statements) == 1
+
+
+async def test_messages_for_asks_nothing_when_no_entry_has_a_message() -> None:
+    session = FakeSession([])
+    got = await store.messages_for(session, [entry(id=11, message_pk=None)])
+    assert got == {}
+    assert session.statements == []
 
 
 async def test_replace_facts_updates_in_place_and_tombstones_the_surplus() -> None:
@@ -233,7 +388,7 @@ async def test_replace_facts_updates_in_place_and_tombstones_the_surplus() -> No
     written = await store.replace_facts(
         session,
         chat_pk=1,
-        message_pk=10,
+        entry_pk=10,
         drafts=drafts,
         model="m",
         prompt_version="v",
@@ -254,7 +409,7 @@ async def test_replace_facts_adds_a_row_for_a_new_seq() -> None:
     await store.replace_facts(
         session,
         chat_pk=1,
-        message_pk=10,
+        entry_pk=10,
         drafts=drafts,
         model="m",
         prompt_version="v",
@@ -266,7 +421,7 @@ async def test_replace_facts_adds_a_row_for_a_new_seq() -> None:
 
 
 def test_mark_extracted_clears_a_previous_error() -> None:
-    row = logged(10)
+    row = entry(id=10)
     row.extract_error = "boom"
 
     store.mark_extracted([row], model="m", prompt_version="v", at=AT)
@@ -277,7 +432,7 @@ def test_mark_extracted_clears_a_previous_error() -> None:
 
 
 def test_mark_failed_leaves_the_message_pending() -> None:
-    row = logged(10)
+    row = entry(id=10)
 
     store.mark_failed([row], "boom")
 
@@ -322,17 +477,17 @@ async def test_the_tail_is_filtered_by_the_verdict() -> None:
     session = FakeSession([])
     await store.unextracted_tail(session, chat_pk=1)
     rendered = str(session.statements[0].whereclause)
-    assert "message.verdict" in rendered
+    assert "entry.verdict" in rendered
     assert "message.extractable" not in rendered
 
 
 async def test_upsert_writes_the_verdict_on_a_new_row() -> None:
-    session = FakeSession([None])
-    row, created = await store.upsert_message(
+    session = FakeSession([], answers=[[]])
+    _, ent, created = await store.upsert_message(
         session, Chat(id=1, chat_id=7), _msg(), verdict=VERDICT_QUESTION
     )
     assert created is True
-    assert row.verdict == VERDICT_QUESTION
+    assert ent.verdict == VERDICT_QUESTION
 
 
 async def test_a_stored_q_is_not_a_fact() -> None:
@@ -340,11 +495,11 @@ async def test_a_stored_q_is_not_a_fact() -> None:
     content — so leaving it on the default verdict puts the user's own
     question into the extractor and coins a kind out of it. That is the
     taxonomy poisoning the whole design exists to prevent."""
-    session = FakeSession([None])
-    row, _ = await store.upsert_message(
+    session = FakeSession([], answers=[[]])
+    _, ent, _ = await store.upsert_message(
         session, Chat(id=1, chat_id=7), _msg(), verdict=VERDICT_QUESTION
     )
-    assert row.verdict != VERDICT_FACT
+    assert ent.verdict != VERDICT_FACT
 
 
 async def test_upsert_overwrites_the_verdict_on_an_edit() -> None:
@@ -358,11 +513,11 @@ async def test_upsert_overwrites_the_verdict_on_an_edit() -> None:
         text="4500 такси",
         tg_date=datetime(2026, 9, 11, 3, tzinfo=UTC),
         raw={},
-        verdict=VERDICT_FACT,
     )
-    session = FakeSession([existing])
-    row, created = await store.upsert_message(
+    ent = entry(id=5, message_pk=42, verdict=VERDICT_FACT)
+    session = FakeSession([], answers=[[existing], [ent]])
+    _, got, created = await store.upsert_message(
         session, Chat(id=1, chat_id=7), _msg(), verdict=VERDICT_SYSTEM
     )
     assert created is False
-    assert row.verdict == VERDICT_SYSTEM
+    assert got.verdict == VERDICT_SYSTEM
