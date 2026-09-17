@@ -344,11 +344,15 @@ async def test_the_queue_excludes_a_structured_entry_for_both_reasons() -> None:
     # and the verdict, which is the third gate
     assert "entry.verdict" in rendered
     # read off `entry` alone: a join to `message` would drop every
-    # side-loaded entry silently. Checked as "from message"/"join message"
-    # rather than a bare "message" substring, because entry's own
-    # message_pk column legitimately contains that word.
-    assert "from message" not in rendered.lower()
-    assert "join message" not in rendered.lower()
+    # side-loaded entry silently. Asserted on the statement's resolved FROM
+    # list, not a text substring — a correlated WHERE-join
+    # (`Entry.message_pk == LoggedMessage.id` with no `.join()` call)
+    # compiles to `FROM entry, message`, which contains neither "from
+    # message" nor "join message", and entry's own `message_pk` column
+    # already defeats a bare "message" substring check. The FROM list is
+    # the one thing no join spelling can hide from.
+    froms = {t.name for t in session.statements[-1].get_final_froms()}
+    assert froms == {"entry"}
 
 
 async def test_the_queue_orders_by_when_things_happened() -> None:
