@@ -528,9 +528,11 @@ stamps mismatched versions on facts written during live testing.
   writer that leans on the default instead of passing `verdict` explicitly
   would not fail — it would silently re-admit a row the classifier never saw.
   Every production call site (`handlers/handlers.py`'s `record` and
-  `record_edited`, `handlers/query.py`'s `ask`) passes it explicitly today;
-  `tests/test_store.py` has at least one direct `upsert_message` call that
-  leans on the default instead.
+  `record_edited`, `handlers/query.py`'s `ask`, and `bot/outbound.py`'s `say`
+  — the one call site whose verdict is not about what the user typed:
+  `verdict=system` is what keeps the bot's own outgoing messages out of the
+  extraction tail) passes it explicitly today; `tests/test_store.py` has at
+  least one direct `upsert_message` call that leans on the default instead.
   <!-- conflicts-with: "The slash catch-all first (stored with `extractable=False`, so a command never coins a category)" -->
   <!-- conflicts-with: "`/q <question>` → handlers/query.py # store the question, extractable=False" -->
   <!-- src: telegrind db9de98 | 2026-09-12 -->
