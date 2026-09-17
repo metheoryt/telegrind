@@ -208,13 +208,13 @@ class Fact(Model):
     id: Mapped[int] = mapped_column(primary_key=True)
     chat_pk: Mapped[int] = mapped_column(ForeignKey("chat.id", ondelete="CASCADE"))
     entry_pk: Mapped[int] = mapped_column(ForeignKey("entry.id", ondelete="CASCADE"))
-    #: 1-based position within the message.
+    #: 1-based position within the entry.
     seq: Mapped[int]
     #: Free-form, coined by the model and reused through the observed
     #: taxonomy. There is no registry of permitted values.
     kind: Mapped[str]
     #: When the fact HAPPENED, which is not created_at. Falls back to the
-    #: message's tg_date when the text states no time of its own.
+    #: entry's occurred_at when the text states no time of its own.
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     #: Everything else. Numbers in here are real JSON numbers — see
     #: telegrind/coerce.py, which is the only place that writes them.

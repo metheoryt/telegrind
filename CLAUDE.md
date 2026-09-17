@@ -109,9 +109,9 @@ Telegram message
   → Dispatcher (aiogram)
   → populate_chat_data middleware   # injects: session, chat, config
   ├─ handlers/query.py  ask         # Command("q"), registered first
-  │    store.upsert_message, COMMIT, verdict=question — no classifier call
+  │    store.upsert_message, COMMIT # writes message + entry, verdict=question — no classifier call
   └─ handlers/handlers.py  record   # the filterless catch-all: everything else
-       store.upsert_message, COMMIT
+       store.upsert_message, COMMIT # writes message + entry, in one transaction
        classify.verdict_for         # one cheap call, after the commit
   → bot/routing.py
       fact     → 💔, enters the extraction tail
@@ -236,27 +236,31 @@ the second hop of a session lookup has nothing to read. `ReplyParameters`, not
 the `reply_to_message_id` deprecated at aiogram 3.27.
 
 **`telegrind/bot/handlers/reactions.py`** — *any* user reaction tombstones the
-message's facts; removing it restores them. Registering the observer is what
-subscribes the `message_reaction` update type.
+reacted message's entry's facts; removing it restores them. Registering the
+observer is what subscribes the `message_reaction` update type.
 
-**`telegrind/store.py`** — the message and fact repository. `upsert_message`
-appends on first sight and overwrites on edit, clearing `extracted_at` so the
-next batch pass picks the message up again. A forwarded message is dated by its
-origin, not by the forward. `unextracted_tail` and `context_before` are the
-window a pass reads — and the tail now selects on `verdict`, not on
-`extractable`; `replace_facts` diffs a message's facts by `seq`, so a
-re-extraction updates what changed and tombstones what disappeared.
+**`telegrind/store.py`** — the message, entry and fact repository.
+`upsert_message` writes the message and its entry together, in one
+transaction: appends both on first sight, overwrites both on edit, and clears
+the entry's `extracted_at` so the next batch pass picks it up again. A
+forwarded message is dated by its origin, not by the forward.
+`unextracted_tail` and `context_before` read `entry` alone, never joined to
+`message` — a join would silently drop every side-loaded entry, which is the
+whole point of the table; `replace_facts` diffs an entry's facts by `seq`, so
+a re-extraction updates what changed and tombstones what disappeared.
 
 **`telegrind/taxonomy.py`** — the chat's own `kind`/field vocabulary, read
 back out of `fact`. There is no registry of permitted kinds; showing the
 extractor what already exists is the only thing standing between a free-form
 `kind` and a hundred synonyms for "expense".
 
-**`telegrind/extract.py`** — the batch pass. `build_prompt` states each
-message's local clock, who wrote it, and which message it replies to;
-`drafts_from` coerces what comes back, and anything it cannot place becomes a
-complaint rather than a silent drop. `run` does the tail, `run_for` does one
-edited message — through the same window builder, because a message
+**`telegrind/extract.py`** — the batch pass over a window of entries, not
+messages. `build_prompt` states each entry's local clock, and — for
+whichever entries have a message behind them — who wrote it and which
+message it replies to; a side-loaded entry states neither rather than
+guessing. `drafts_from` coerces what comes back, and anything it cannot place
+becomes a complaint rather than a silent drop. `run` does the tail, `run_for`
+does one edited entry — through the same window builder, because an entry
 re-extracted alone coins a different `kind` than it would in company.
 
 **`telegrind/query.py`** — a closed set of aggregates (`sum`, `count`, `avg`,
@@ -296,13 +300,26 @@ chat's timezone.
 **`telegrind/config.py`** — `ChatConfig`, the timezone offset and default
 currency, read off the `chat` row.
 
-**`telegrind/models.py`** — `Chat`, `File`, `LoggedMessage` (table `message`)
-and `Fact`. `LoggedMessage.verdict` is one of four strings and is never null —
-null would mean «not classified», «the classifier failed» and «not a fact» at
-once, which is undebuggable exactly when it misroutes. A fact is service
-columns plus a JSONB `fields`: only `kind` and
-`at` are promoted out, because every query filters on both. `deleted_at` is a
-tombstone, and the uniqueness on `(message_pk, seq)` is a *partial* index so a
+**`telegrind/models.py`** — `Chat`, `File`, `LoggedMessage` (table `message`),
+`Entry` and `Fact`. `LoggedMessage` is now only what Telegram sent, plus
+`receipt_emoji`: `verdict` and the four extraction columns moved off it.
+
+`Entry` is the unit that yields facts — a Telegram message is one kind of
+entry, and a row imported from a spreadsheet or a bank statement is another.
+`source` is also the undo: everything one import wrote is
+`WHERE source = '<that source>'`, which is why no import-run record exists.
+`raw` carries a source's own columns verbatim but is deliberately never shown
+to the model — `taxonomy.observed` reads `fact.fields` only. The schema
+already admits an imported, side-loaded entry (nullable `message_pk`, its own
+`external_id`) even though no import machinery is built yet — see
+`docs/superpowers/specs/2026-09-16-sources-and-entries-design.md`. `verdict`
+is one of four strings and is never null — null would mean «not classified»,
+«the classifier failed» and «not a fact» at once, which is undebuggable
+exactly when it misroutes.
+
+A fact is service columns plus a JSONB `fields`: only `kind` and `at` are
+promoted out, because every query filters on both. `deleted_at` is a
+tombstone, and the uniqueness on `(entry_pk, seq)` is a *partial* index so a
 tombstoned fact does not collide with the row that replaces it.
 
 **`telegrind/llm.py`** — the client, the model names, the two call helpers
@@ -410,8 +427,8 @@ The suite cannot catch it: this repo's hand-written fake sessions yield from
 
 **Some things are invisible to the suite for structural reasons, not for want
 of a test.** `expire_on_commit=
-False` in `main.py` is load-bearing — `record` commits the row and then hands
-it to `routing.py`, which reads `row.verdict` — and no test can catch its
+False` in `main.py` is load-bearing — `record` commits and then hands the
+entry to `routing.py`, which reads `entry.verdict` — and no test can catch its
 removal, because a fake session has no commit that expires anything; the
 likeliest live traceback is `MissingGreenlet` at an attribute access, which
 mentions neither commits nor transactions. And `--fork-session` carrying memory
@@ -494,15 +511,20 @@ stamps mismatched versions on facts written during live testing.
 
 ## Message routing — the `verdict` column
 
-- **`message.verdict` — not `extractable` — is what selects the extraction
+- **`entry.verdict` — not `message.verdict` — is what selects the extraction
   tail.** It is a never-null string holding one of `fact`, `question`, `talk`
   or `system`; only `fact` enters `unextracted_tail`. `/q` writes `question`,
   every other slash command and everything the bot itself sends writes
-  `system`, and ordinary text and voice write `fact`. `extractable` is still
-  set in step with it and is no longer read by anything — that pairing is the
-  expand half of an expand/contract migration, deliberate, not two flags left
-  to disagree. The reasoning is written out in
-  `docs/superpowers/specs/2026-09-11-claude-meta-layer-design.md`.
+  `system`, and ordinary text and voice write `fact`. `verdict` moved off
+  `message` onto `entry` together with the four extraction columns it drives,
+  so the column the queue selects on and the column holding extraction state
+  live on the same row. The reasoning is written out in
+  `docs/superpowers/specs/2026-09-16-sources-and-entries-design.md`, decision
+  7. `entry.verdict` carries a server-side default of `fact`, so the same
+  trap that made `db9de98` necessary is live again on the new column: a
+  writer that leans on the default instead of passing `verdict` explicitly
+  would not fail — it would silently re-admit a row the classifier never saw.
+  Every entry-writing call site in this codebase passes it explicitly today.
   <!-- conflicts-with: "The slash catch-all first (stored with `extractable=False`, so a command never coins a category)" -->
   <!-- conflicts-with: "`/q <question>` → handlers/query.py # store the question, extractable=False" -->
   <!-- src: telegrind db9de98 | 2026-09-12 -->

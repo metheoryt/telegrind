@@ -165,15 +165,16 @@ One bullet per fact, under a topical heading. No secrets.
 ## Ingest invariants that are easy to break
 
 - **A message with nothing readable is a third state, not a failure.** A
-  caption-less photo, a sticker or a location is stored with both `extracted_at`
-  and `extract_error` null — not yet parsed, which is distinct from both
-  "parsed, yielded nothing" and "failed". It is never sent to the model and
-  never enters the window budget, because `_has_content()` gates the extraction
-  tail and the announced backlog count alike.
+  caption-less photo, a sticker or a location gets an entry with both
+  `extracted_at` and `extract_error` null — not yet parsed, which is distinct
+  from both "parsed, yielded nothing" and "failed". It is never sent to the
+  model and never enters the window budget, because `_has_content()` gates the
+  extraction tail and the announced backlog count alike. Both columns live on
+  `entry` now, not on `message`.
   <!-- src: telegrind 35574a2 | 2026-09-12 -->
 - **A pass-level complaint must not be written into `extract_error`.** That
-  column means "this message's own extraction failed"; smearing a pass-level
-  note (a fact attributed to a message outside the window, say) across every row
+  column means "this entry's own extraction failed"; smearing a pass-level
+  note (a fact attributed to an entry outside the window, say) across every row
   in the tail makes the countable «N сообщений не удалось разобрать» lie. Count
   it in the pass report and surface it in the `/q` reply instead.
   <!-- src: telegrind 35574a2 | 2026-09-12 -->
@@ -192,23 +193,19 @@ One bullet per fact, under a topical heading. No secrets.
 
 ## Routing — where the shipped code and the meta-layer spec part company
 
-- **An edit preserves the row's previous verdict; it does not re-derive one.**
-  The design doc says an edited message is re-classified, and the code
-  deliberately does not do that yet: re-deriving from the `/` prefix on the
-  edit path would flip a stored `/q` row from `question` back to `fact` the
-  first time the user fixed a typo in their own question. A row with no
-  previous sighting falls through to the first-sighting default. Do not read
-  the spec's re-classification paragraph as a description of what runs.
+- **An edit re-classifies and re-routes — this bullet used to say the
+  opposite.** The design doc always said an edited message is re-classified;
+  the code held back from that for a while, to avoid flipping a stored `/q`
+  row from `question` back to `fact` the first time the user fixed a typo in
+  their own question. That gap closed 2026-09-16 along with the hand-over
+  seam — see "The hand-over seam is gone too" below. Do not read this as
+  still describing a difference between the spec and what runs.
   <!-- src: telegrind db9de98 | 2026-09-12 -->
-- **`extractable` is still on `message` on purpose, and dropping it is a hand
-  step.** The verdict migration is the expand half of an expand/contract pair:
-  it adds `verdict` non-null with a server default, backfills it from what the
-  old flag meant (`/q%` → `question`, every other unextractable row →
-  `system`), and leaves `extractable` in place and still written. That is what
-  keeps the downgrade a plain `drop_column` and the spec's rollback reachable.
-  The contract step — dropping the column and its writers — is taken by hand
-  once the verdict has held, and nothing in the migration graph will prompt for
-  it.
+- **`extractable` is gone, not merely vestigial.** It was dropped in
+  `20260914005236`, and `verdict` itself has since moved off `message` onto
+  `entry` entirely — `message` carries no extraction-routing state of its own
+  any more. The expand/contract account this bullet used to give is history,
+  not a live TODO.
   <!-- src: telegrind db9de98 | 2026-09-12 -->
 
 ## Environment and the test harness
@@ -358,12 +355,12 @@ because that code still exists.
   means no turn is ever spawned rather than a turn answering into the void.
   Stated so it can be overruled in one line, not re-derived.
   <!-- src: telegrind 5dcec58 | 2026-09-12 -->
-- **`extractable` is vestigial on purpose, and removing it is a contract step.**
-  The verdict drives the extraction tail; `extractable` is still *written* in
-  step with it and read by nothing. This was the expand half of an
-  expand-contract migration, taken deliberately per the spec's
-  migration-reversibility rule. Dropping the column is a later hand-taken step,
-  not a tidy-up for whoever notices it is dead.
+- **`extractable` was vestigial on purpose, and removing it was a contract
+  step — since taken.** The verdict drove the extraction tail while
+  `extractable` was still *written* in step with it and read by nothing; that
+  was the expand half of an expand-contract migration, taken deliberately per
+  the spec's migration-reversibility rule. The column and its writers are
+  gone (`20260914005236`).
   <!-- src: telegrind 5dcec58 | 2026-09-12 -->
 - **There is a bounded window in which chatter can coin facts, and it was
   chosen.** `record` commits the row as a `fact`, classifies, then writes the
