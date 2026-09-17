@@ -30,6 +30,11 @@ VERDICT_TALK = "talk"
 VERDICT_SYSTEM = "system"
 VERDICTS = (VERDICT_FACT, VERDICT_QUESTION, VERDICT_TALK, VERDICT_SYSTEM)
 
+#: Where an entry came from. A string, not an FK: a table earns its place
+#: when sources acquire configuration (per-bank column mappings), and
+#: promoting a string to an FK later is a migration, not a redesign.
+SOURCE_TELEGRAM = "telegram"
+
 
 class Model(AsyncAttrs, DeclarativeBase):
     pass
@@ -87,25 +92,6 @@ class LoggedMessage(Model):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
-    #: When the batch pass last extracted this message. Null means it has
-    #: not been extracted yet — which is NOT the same as "extracted and
-    #: yielded nothing", and that difference is why this column exists.
-    extracted_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), default=None
-    )
-    extract_model: Mapped[str | None] = mapped_column(default=None)
-    extract_prompt_version: Mapped[str | None] = mapped_column(default=None)
-    #: What routing decided this message is. Derived, like extracted_at,
-    #: and re-derived on an edit. It is what selects the extraction tail:
-    #: only `fact` enters it, so a question or a command is stored like any
-    #: other message — nothing written is ever lost — and never reaches the
-    #: extractor, which would otherwise coin a kind out of it and poison the
-    #: observed taxonomy. It replaced a boolean `extractable`, dropped in
-    #: `4d60c7b65ad2`.
-    verdict: Mapped[str] = mapped_column(default=VERDICT_FACT, server_default="fact")
-    #: The last extraction failure. Without it, dropping the echo would
-    #: make a failed extraction completely silent.
-    extract_error: Mapped[str | None] = mapped_column(default=None)
     #: The reaction the bot last placed on this message. There is no API
     #: to read a message's reactions back, so the receipt has to remember
     #: itself; an edit advances it, which is the only signal that the bot
@@ -118,8 +104,80 @@ class LoggedMessage(Model):
         return self.transcript or self.text or ""
 
 
+class Entry(Model):
+    """The unit that yields facts. A Telegram message is one kind of entry.
+
+    The log was built on the assumption that a fact is derived from a
+    message, and that assumption is wrong in two directions: the v1
+    workbook is already structured, and receipts and bank statements are
+    coming. So the derivation state that used to sit on `message` — the
+    verdict and the four extraction columns — sits here instead, and
+    `message` goes back to being the verbatim record of what Telegram sent.
+
+    `source` is also the undo. Everything one import wrote is
+    `WHERE source = '<that source>'`, which is why no import-run record
+    exists.
+    """
+
+    __tablename__ = "entry"
+    __table_args__ = (
+        UniqueConstraint(
+            "chat_pk", "source", "external_id", name="uq_entry_chat_source_external"
+        ),
+        #: Partial, because most entries have no message: Postgres treats
+        #: NULLs as distinct, so a total unique index would admit any number
+        #: of message-less entries and then mean nothing.
+        Index(
+            "uq_entry_message_pk",
+            "message_pk",
+            unique=True,
+            postgresql_where=text("message_pk IS NOT NULL"),
+        ),
+        Index("ix_entry_queue", "chat_pk", "verdict", "extracted_at", "occurred_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    chat_pk: Mapped[int] = mapped_column(ForeignKey("chat.id", ondelete="CASCADE"))
+    source: Mapped[str]
+    #: The source's own key, as text. Telegram: `str(message_id)`. A sheet
+    #: row: its column-A key. A statement: the transaction id.
+    external_id: Mapped[str]
+    #: Set only for chat-borne entries. Who wrote a message and what it
+    #: replies to are Telegram facts, read through here rather than copied.
+    message_pk: Mapped[int | None] = mapped_column(
+        ForeignKey("message.id", ondelete="CASCADE"), default=None
+    )
+    #: When the thing happened: `tg_date` for a message, the row's own date
+    #: for an import.
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    #: What the extractor reads. NULL for a structured entry, which yielded
+    #: its facts on arrival and needs no model.
+    content: Mapped[str | None] = mapped_column(default=None)
+    #: The source row verbatim, for imported entries; NULL for chat entries,
+    #: whose verbatim copy is `message.raw`. Deliberately never shown to the
+    #: model — `taxonomy.observed` reads `fact.fields` only — so this is
+    #: where a source's columns go when they must be preserved but must not
+    #: enter the extractor's vocabulary.
+    raw: Mapped[dict | None] = mapped_column(JSONB, default=None)
+    #: What routing decided this is, and therefore what happens to it. Never
+    #: null, for the reasons written at VERDICTS. It lives here rather than
+    #: on `message` because the extraction state lives here: two flags that
+    #: can disagree about whether something gets extracted is the defect
+    #: `4d60c7b65ad2` removed.
+    verdict: Mapped[str] = mapped_column(default=VERDICT_FACT, server_default="fact")
+    extracted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    extract_model: Mapped[str | None] = mapped_column(default=None)
+    extract_prompt_version: Mapped[str | None] = mapped_column(default=None)
+    extract_error: Mapped[str | None] = mapped_column(default=None)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class Fact(Model):
-    """A replaceable derivation of a LoggedMessage.
+    """A replaceable derivation of an Entry.
 
     Service columns plus JSONB. Only `kind` and `at` are promoted out of
     `fields`, because every query filters on both. The numeric shape is
@@ -131,8 +189,8 @@ class Fact(Model):
     __tablename__ = "fact"
     __table_args__ = (
         Index(
-            "uq_fact_message_pk_seq_live",
-            "message_pk",
+            "uq_fact_entry_pk_seq_live",
+            "entry_pk",
             "seq",
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
@@ -149,9 +207,7 @@ class Fact(Model):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     chat_pk: Mapped[int] = mapped_column(ForeignKey("chat.id", ondelete="CASCADE"))
-    message_pk: Mapped[int] = mapped_column(
-        ForeignKey("message.id", ondelete="CASCADE")
-    )
+    entry_pk: Mapped[int] = mapped_column(ForeignKey("entry.id", ondelete="CASCADE"))
     #: 1-based position within the message.
     seq: Mapped[int]
     #: Free-form, coined by the model and reused through the observed
