@@ -220,9 +220,13 @@ obey them too:
   `(fields->>'amount')::numeric` cannot fail a whole query. Dates do **not** go
   through `coerce.to_instant`, which resolves a date against a message's own
   timestamp; a sheet row's date is absolute.
-- **`fact.prompt_version` records the source** (`v1-expenses`) and `fact.model`
-  stays NULL. A fact no model produced must not be findable by a re-extraction
-  pass hunting facts from an older prompt.
+- **A fact carries no provenance of its own.** `model` and `prompt_version` stay
+  NULL — no model and no prompt produced it — and the source is *not* copied
+  down onto the fact. It is one hop away on the entry, and a second marker
+  saying the same thing is the shape of bug this repo keeps shipping. (An
+  earlier draft of this document stamped the source into
+  `fact.prompt_version`; that column is written in three places and read in
+  none, so the stamp bought nothing and could disagree.)
 
 **The import changes the bot's behaviour, by design.** `taxonomy.render` shows
 the model every field name a kind already uses, so after this import the
