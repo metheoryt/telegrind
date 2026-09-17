@@ -43,7 +43,7 @@ def to_json_value(raw: object) -> object:
 
 #: Time-of-day words a relative day can carry. `dateparser` cannot combine
 #: the two in Russian — `parse("вчера вечером")` is None, not a wrong date
-#: but no date at all — so the phrase fell through to the message's own
+#: but no date at all — so the phrase fell through to the entry's own
 #: timestamp and «вчера» quietly became today. Stripping the qualifier and
 #: re-parsing keeps the day, which is the part a fact is filed under.
 #: Measured against dateparser 1.2 on 2026-09-11.
@@ -79,12 +79,12 @@ def to_instant(
     *,
     prefer_future: bool = False,
 ) -> datetime:
-    """ISO first, then dateparser, then the message's own timestamp.
+    """ISO first, then dateparser, then the entry's own timestamp.
 
-    This is how a fact gets its `at`. The fallback is the *message's*
-    timestamp, never the moment of extraction: a batch pass can run a day
-    after the message, and «вчера» must still mean the day before the
-    message was written.
+    This is how a fact gets its `at`. The fallback is the *entry's*
+    `occurred_at`, never the moment of extraction: a batch pass can run a day
+    after the entry, and «вчера» must still mean the day before the entry
+    happened.
 
     `prefer_future` is what separates a due date from an event date: an
     ambiguous «во вторник» resolves forward for the first and backward for

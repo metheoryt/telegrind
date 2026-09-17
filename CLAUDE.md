@@ -294,8 +294,11 @@ registration in a single pass.
 **`telegrind/coerce.py`** — the write boundary for a fact field. A value that
 parses becomes a real JSON number, so `(fields->>'amount')::numeric` cannot
 fail the whole query; one that does not stays text and simply never aggregates.
-`to_instant` resolves a date against the **message's own** timestamp, in the
-chat's timezone.
+`to_instant` resolves a date against the **entry's own** `occurred_at`, in the
+chat's timezone — its only production call site,
+`extract.py`'s `to_instant(item.get("when"), cfg, row.occurred_at)`, passes an
+`Entry`, not a message; a side-loaded entry has no message to fall back to at
+all.
 
 **`telegrind/config.py`** — `ChatConfig`, the timezone offset and default
 currency, read off the `chat` row.
@@ -524,7 +527,10 @@ stamps mismatched versions on facts written during live testing.
   trap that made `db9de98` necessary is live again on the new column: a
   writer that leans on the default instead of passing `verdict` explicitly
   would not fail — it would silently re-admit a row the classifier never saw.
-  Every entry-writing call site in this codebase passes it explicitly today.
+  Every production call site (`handlers/handlers.py`'s `record` and
+  `record_edited`, `handlers/query.py`'s `ask`) passes it explicitly today;
+  `tests/test_store.py` has at least one direct `upsert_message` call that
+  leans on the default instead.
   <!-- conflicts-with: "The slash catch-all first (stored with `extractable=False`, so a command never coins a category)" -->
   <!-- conflicts-with: "`/q <question>` → handlers/query.py # store the question, extractable=False" -->
   <!-- src: telegrind db9de98 | 2026-09-12 -->
