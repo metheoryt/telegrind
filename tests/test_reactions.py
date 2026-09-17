@@ -40,15 +40,18 @@ def _entity_of(statement: object) -> type | None:
 
 
 class FakeSession:
-    """Two selects: the message, then its entry — plus a fact query that
-    actually filters by the `entry_pk` it was given.
+    """Two selects: the message, then its entry — and both the entry query
+    and the fact query actually filter by the pk they were given.
 
     A fake that just popped the next canned answer regardless of the
     argument would pass even if the handler queried the wrong pk — measured
-    directly: `toggle_delete` calling `tombstone_facts(session, row.id, ...)`
-    still passed every test here until this filtered on the real bind
-    parameter. So the fact answer is never trusted blind; it is filtered by
-    `Fact.entry_pk`, which is what makes a wrong pk find nothing.
+    directly, twice: `toggle_delete` calling `tombstone_facts(session,
+    row.id, ...)` (the message's pk) still passed until the fact answer
+    filtered on the real `entry_pk` bind parameter, and
+    `get_entry_for_message(session, row.id)` called with the wrong pk still
+    passed until the entry answer filtered on the real `message_pk` bind
+    parameter too — the docstring on the test below calls this exact hop
+    out as the one place a wrong argument could otherwise go unnoticed.
     """
 
     def __init__(self, answers: list[list[object]]) -> None:
@@ -67,7 +70,11 @@ class FakeSession:
     async def execute(self, statement: object) -> object:
         self.statements.append(statement)
         rows = self.answers.pop(0) if self.answers else []
-        if _entity_of(statement) is Fact:
+        entity = _entity_of(statement)
+        if entity is Entry:
+            wanted = statement.compile().params.get("message_pk_1")
+            rows = [row for row in rows if row.message_pk == wanted]
+        elif entity is Fact:
             wanted = statement.compile().params.get("entry_pk_1")
             rows = [row for row in rows if row.entry_pk == wanted]
         return SimpleNamespace(

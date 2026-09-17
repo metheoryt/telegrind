@@ -390,27 +390,42 @@ class ReplySession(NewMessageSession):
         params = statement.compile().params
         if entity_of(statement) is Entry:
             # `store.get_entry_for_message` filters on `Entry.message_pk`,
-            # not `message_id` — the chain rows double as their own entries,
-            # keyed by the same id, so the lookup answers itself.
+            # not `message_id`. Looked up by the chain's *message* id and
+            # answered with only the verdict that chain carries — never the
+            # message object itself — so a caller that reads the verdict
+            # off the wrong side of the hop has no attribute to alias onto.
             message_pk = params.get("message_pk_1")
-            root = next((r for r in self.rows.values() if r.id == message_pk), None)
-            found = Entry(verdict=root.verdict) if root is not None else None
+            chain = next(
+                (c for c in self.rows.values() if c.message.id == message_pk), None
+            )
+            found = Entry(verdict=chain.verdict) if chain is not None else None
             return SimpleNamespace(scalar_one_or_none=lambda: found)
         wanted = params.get("message_id_1")
-        return SimpleNamespace(scalar_one_or_none=lambda: self.rows.get(wanted))
+        chain = self.rows.get(wanted)
+        return SimpleNamespace(
+            scalar_one_or_none=lambda: chain.message if chain is not None else None
+        )
 
 
 def chain_row(
     message_id: int, verdict: str, *, is_bot: bool, parent: int | None
 ) -> Any:
+    """A reply-chain message and the verdict of its entry, kept apart on
+    purpose: the message carries no `.verdict` at all, matching the real
+    `LoggedMessage`. A fixture — or a regression — that reads the verdict
+    off the message instead of going through the entry hop has nothing to
+    alias onto and breaks loudly instead of quietly agreeing.
+    """
     return SimpleNamespace(
-        id=message_id,
-        message_id=message_id,
+        message=SimpleNamespace(
+            id=message_id,
+            message_id=message_id,
+            raw={
+                "from_user": {"is_bot": is_bot},
+                **({"reply_to_message": {"message_id": parent}} if parent else {}),
+            },
+        ),
         verdict=verdict,
-        raw={
-            "from_user": {"is_bot": is_bot},
-            **({"reply_to_message": {"message_id": parent}} if parent else {}),
-        },
     )
 
 
