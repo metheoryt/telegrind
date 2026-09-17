@@ -293,32 +293,6 @@ fail the whole query; one that does not stays text and simply never aggregates.
 `to_instant` resolves a date against the **message's own** timestamp, in the
 chat's timezone.
 
-**`telegrind/import_history.py`** — the one-time v1 import, and the only
-code here that writes messages without a Telegram update behind them. It
-builds a real `aiogram.types.Message` per export entry and goes through
-`store.upsert_message`, because three readers parse the `raw` JSONB
-afterwards and a differently-shaped dump inserts fine before
-misattributing every imported line. `verdict` is asserted from the
-entry's structure — the bot's own messages, the slash commands, the 56
-bare `-` markers — and passed explicitly at every call, never classified:
-3915 model calls would buy a worse answer than the export already
-contains. Extraction is a separate subcommand driving `extract.run` at
-twenty messages a pass, because `_pass` makes one model call for the
-whole tail against a 2048-token reply. Row content is idempotent, but a
-re-run is not cheap: `upsert_message` clears `extracted_at` on every row it
-touches, changed or not, so re-importing after extraction has run costs a
-full re-extraction of the range — narrow a re-run with `--since` instead of
-assuming it is free. **Run this against a live bot as: stop the bot,
-`import`, `extract` until the tail is empty, start the bot.** The live
-answering path calls `extract.run` with no `limit` (default 200, against
-`llm.MAX_TOKENS = 2048`) and `llm.use_tool` never inspects
-`response.stop_reason`, so a truncated reply still stamps the whole tail as
-extracted — an oversized pass cannot be told apart from a successful one,
-and the skipped facts are gone with no trace. A bot left running during the
-import can also collide with it on the partial unique index
-`uq_fact_message_pk_seq_live`. Design:
-`docs/superpowers/specs/2026-09-16-history-import-design.md`.
-
 **`telegrind/config.py`** — `ChatConfig`, the timezone offset and default
 currency, read off the `chat` row.
 
