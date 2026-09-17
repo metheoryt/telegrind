@@ -9,12 +9,13 @@ from telegrind.bot.answering import REFUSAL
 from telegrind.bot.handlers.receipts import RECEIPT_EMOJI
 from telegrind.bot.outbound import BOT_DEFAULT
 from telegrind.models import (
+    SOURCE_TELEGRAM,
     VERDICT_FACT,
     VERDICT_QUESTION,
     VERDICT_SYSTEM,
     VERDICT_TALK,
     Chat,
-    LoggedMessage,
+    Entry,
 )
 
 CFG = SimpleNamespace(tz_offset=6, currency="KZT")
@@ -82,8 +83,15 @@ class Recorder:
         return SimpleNamespace(message_id=901)
 
 
-def row(verdict: str) -> LoggedMessage:
-    return LoggedMessage(id=42, chat_pk=1, message_id=10, verdict=verdict, raw={})
+def row(verdict: str) -> Entry:
+    return Entry(
+        id=42,
+        chat_pk=1,
+        source=SOURCE_TELEGRAM,
+        external_id="10",
+        message_pk=7,
+        verdict=verdict,
+    )
 
 
 def msg() -> SimpleNamespace:

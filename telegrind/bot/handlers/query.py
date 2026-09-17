@@ -41,9 +41,9 @@ async def ask(
     # before this file's own decorator executes, and `ask` would be dead
     # code behind it.
     async with session.begin():
-        row, _ = await store.upsert_message(
+        row, entry, _ = await store.upsert_message(
             session, chat, message, verdict=VERDICT_QUESTION
         )
         row.receipt_emoji = None
 
-    await route(message, row, chat, config, session, bot)
+    await route(message, entry, chat, config, session, bot)

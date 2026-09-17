@@ -61,7 +61,10 @@ async def _continues(
     async with session.begin():
         root_id = await store.turn_root(session, chat_pk, parent.message_id)
         root = await store.get_message(session, chat_pk, root_id)
-        return root.verdict if root is not None else None
+        if root is None:
+            return None
+        entry = await store.get_entry_for_message(session, root.id)
+        return entry.verdict if entry is not None else None
 
 
 @router.message()
@@ -84,7 +87,7 @@ async def record(
     # classifier existed. Committing that is the invariant; everything
     # after it is refinement.
     async with session.begin():
-        row, _ = await store.upsert_message(
+        row, entry, _ = await store.upsert_message(
             session, chat, message, verdict=VERDICT_FACT
         )
         row.receipt_emoji = RECEIPT_EMOJI
@@ -99,13 +102,13 @@ async def record(
     # the pre-classifier behaviour, which is the correct way to degrade.
     if verdict != VERDICT_FACT:
         async with session.begin():
-            row.verdict = verdict
+            entry.verdict = verdict
             # No receipt is placed until `route` runs, so clearing the
             # column here is not a promise being withdrawn — it is the
             # column catching up with a verdict that earns no receipt.
             row.receipt_emoji = None
 
-    await route(message, row, chat, config, session, bot)
+    await route(message, entry, chat, config, session, bot)
 
 
 @router.edited_message()
@@ -141,8 +144,15 @@ async def record_edited(
     # call must sit between two transactions, never inside one.
     async with session.begin():
         previous = await store.get_message(session, chat.id, edited_message.message_id)
-        was_extracted = previous is not None and previous.extracted_at is not None
-        was_fact = previous is not None and previous.verdict == VERDICT_FACT
+        previous_entry = (
+            await store.get_entry_for_message(session, previous.id)
+            if previous is not None
+            else None
+        )
+        was_extracted = (
+            previous_entry is not None and previous_entry.extracted_at is not None
+        )
+        was_fact = previous_entry is not None and previous_entry.verdict == VERDICT_FACT
 
     # `text or caption`, the same expression `record` and `route` read: an
     # edited photo caption has no `.text`, and reading only that would hand
@@ -154,7 +164,7 @@ async def record_edited(
     )
 
     async with session.begin():
-        row, _ = await store.upsert_message(
+        row, entry, _ = await store.upsert_message(
             session,
             chat,
             edited_message,
@@ -182,8 +192,8 @@ async def record_edited(
         row.receipt_emoji = emoji
 
         if was_extracted and verdict == VERDICT_FACT:
-            report = await extract.run_for(session, chat, config, row)
-            log.info("re-extracted message %s: %s fact(s)", row.id, report.facts)
+            report = await extract.run_for(session, chat, config, entry)
+            log.info("re-extracted entry %s: %s fact(s)", entry.id, report.facts)
         elif previous is not None:
             # The facts were derived from text that no longer exists, and
             # the row has just left the extraction tail — `unextracted_tail`
@@ -206,9 +216,9 @@ async def record_edited(
             # never wrong: `tombstone_facts` selects the live facts itself
             # and stamps nothing on a message that has none.
             count = await store.tombstone_facts(
-                session, row.id, row.edited_at or datetime.now(UTC)
+                session, entry.id, row.edited_at or datetime.now(UTC)
             )
-            log.info("tombstoned %s fact(s) of edited message %s", count, row.id)
+            log.info("tombstoned %s fact(s) of edited entry %s", count, entry.id)
 
     if emoji is None and previous is not None:
         # The receipt promised a delete gesture the message no longer has.
@@ -226,7 +236,7 @@ async def record_edited(
 
     await route(
         edited_message,
-        row,
+        entry,
         chat,
         config,
         session,

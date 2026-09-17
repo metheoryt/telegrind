@@ -14,15 +14,38 @@ from telegrind.bot.handlers.receipts import acknowledge
 from telegrind.config import ChatConfig
 from telegrind.models import (
     KIND_TEXT,
+    SOURCE_TELEGRAM,
     VERDICT_FACT,
     VERDICT_QUESTION,
     VERDICT_SYSTEM,
     VERDICT_TALK,
     Chat,
+    Entry,
     LoggedMessage,
 )
 
 CFG = ChatConfig(tz_offset=6, currency="KZT")
+
+
+def entity_of(statement: Any) -> type | None:
+    """Which mapped class a `select(...)` statement targets.
+
+    The fakes below answer a `LoggedMessage` query and an `Entry` query
+    differently, and this is how they tell the two apart without hardcoding
+    the order `store.upsert_message` happens to issue them in.
+    """
+    try:
+        return statement.column_descriptions[0]["entity"]
+    except AttributeError, IndexError, KeyError:
+        return None
+
+
+def added_entries(session: Any) -> list[Entry]:
+    return [obj for obj in session.added if isinstance(obj, Entry)]
+
+
+def added_messages(session: Any) -> list[LoggedMessage]:
+    return [obj for obj in session.added if isinstance(obj, LoggedMessage)]
 
 
 class FakeBot:
@@ -80,13 +103,13 @@ def test_every_emoji_in_the_cycle_is_a_broken_or_burning_heart() -> None:
     places is the only thing telling the user what a tap does. All three
     were checked against setMessageReaction on 2026-09-11.
     """
-    assert RECEIPT_CYCLE == ("💔", "❤\u200d🔥", "💘")
+    assert RECEIPT_CYCLE == ("💔", "❤‍🔥", "💘")
     assert RECEIPT_CYCLE[0] == RECEIPT_EMOJI
 
 
 def test_an_edit_advances_the_cycle() -> None:
-    assert next_receipt("💔") == "❤\u200d🔥"
-    assert next_receipt("❤\u200d🔥") == "💘"
+    assert next_receipt("💔") == "❤‍🔥"
+    assert next_receipt("❤‍🔥") == "💘"
 
 
 def test_the_cycle_wraps() -> None:
@@ -99,7 +122,7 @@ def test_a_message_from_before_the_column_is_assumed_to_carry_the_default() -> N
     They visibly carry 💔, because that is all the old code ever placed,
     so the first edit must move off it rather than re-place it.
     """
-    assert next_receipt(None) == "❤\u200d🔥"
+    assert next_receipt(None) == "❤‍🔥"
 
 
 def test_an_emoji_that_is_no_longer_in_the_cycle_still_changes() -> None:
@@ -108,7 +131,8 @@ def test_an_emoji_that_is_no_longer_in_the_cycle_still_changes() -> None:
 
 
 class EditSession:
-    """Enough session for record_edited: one lookup, reused by the upsert.
+    """Enough session for record_edited: message and entry lookups, reused
+    by the upsert.
 
     It keeps a transaction depth for the same reason `NewMessageSession`
     does — a real session raises «a transaction is already begun» on a
@@ -116,14 +140,21 @@ class EditSession:
     is how that bug ships green. `record_edited` opens three at most and
     never overlaps them, which is the rule the module docstring states.
 
-    `scalars` is here because the tombstone arm reads the message's live
-    facts; an empty iterator keeps it out of the way of whatever each test
-    is actually pinning.
+    `execute` answers a `LoggedMessage` query with `existing` and an
+    `Entry` query with `entry` — `store.upsert_message` now issues both in
+    sequence, so a fake that answered every query the same way (as this one
+    used to) would hand the message back where the entry was asked for.
+    `scalars` is always empty, which is what keeps the tombstone arm's real
+    `store.tombstone_facts` call out of the way of whatever each test is
+    actually pinning.
     """
 
-    def __init__(self, existing: LoggedMessage | None) -> None:
+    def __init__(
+        self, existing: LoggedMessage | None, entry: Entry | None = None
+    ) -> None:
         self.existing = existing
-        self.added: list[LoggedMessage] = []
+        self.entry = entry
+        self.added: list[LoggedMessage | Entry] = []
         self.depth = 0
         self.commits = 0
 
@@ -141,7 +172,7 @@ class EditSession:
         return ctx()
 
     async def execute(self, statement: object) -> SimpleNamespace:
-        row = self.existing
+        row = self.entry if entity_of(statement) is Entry else self.existing
         return SimpleNamespace(
             scalar_one_or_none=lambda: row,
             scalars=lambda: iter(()),
@@ -154,8 +185,13 @@ class EditSession:
         pass
 
 
-def stored(*, extracted: bool, verdict: str = VERDICT_FACT) -> LoggedMessage:
-    return LoggedMessage(
+def stored(
+    *, extracted: bool, verdict: str = VERDICT_FACT
+) -> tuple[LoggedMessage, Entry]:
+    """A previously-ingested message and its entry, as `record_edited`
+    would find them via `store.get_message` and `store.get_entry_for_message`.
+    """
+    row = LoggedMessage(
         id=42,
         chat_pk=1,
         message_id=10,
@@ -164,9 +200,19 @@ def stored(*, extracted: bool, verdict: str = VERDICT_FACT) -> LoggedMessage:
         tg_date=datetime(2026, 9, 11, 3, tzinfo=UTC),
         raw={},
         receipt_emoji=RECEIPT_EMOJI,
-        extracted_at=datetime(2026, 9, 11, 4, tzinfo=UTC) if extracted else None,
-        verdict=verdict,
     )
+    entry = Entry(
+        id=99,
+        chat_pk=1,
+        source=SOURCE_TELEGRAM,
+        external_id="10",
+        message_pk=row.id,
+        occurred_at=row.tg_date,
+        content=row.content,
+        verdict=verdict,
+        extracted_at=datetime(2026, 9, 11, 4, tzinfo=UTC) if extracted else None,
+    )
+    return row, entry
 
 
 def edit() -> SimpleNamespace:
@@ -207,9 +253,9 @@ async def test_an_edit_of_an_extracted_message_re_extracts_it(
     called: list[int] = []
 
     async def fake_run_for(
-        session: object, chat: object, cfg: object, row: Any, **kwargs: object
+        session: object, chat: object, cfg: object, entry: Any, **kwargs: object
     ) -> SimpleNamespace:
-        called.append(row.id)
+        called.append(entry.id)
         return SimpleNamespace(facts=1, failed=0)
 
     monkeypatch.setattr(extract, "run_for", fake_run_for)
@@ -217,12 +263,12 @@ async def test_an_edit_of_an_extracted_message_re_extracts_it(
     await handlers.record_edited(
         edit(),
         Chat(id=1, chat_id=7),
-        EditSession(stored(extracted=True)),
+        EditSession(*stored(extracted=True)),
         CFG,
         FakeBot(),
     )
 
-    assert called == [42]
+    assert called == [99]
 
 
 async def test_an_edit_of_an_unextracted_message_makes_no_call(
@@ -232,9 +278,9 @@ async def test_an_edit_of_an_unextracted_message_makes_no_call(
     called: list[int] = []
 
     async def fake_run_for(
-        session: object, chat: object, cfg: object, row: Any, **kwargs: object
+        session: object, chat: object, cfg: object, entry: Any, **kwargs: object
     ) -> SimpleNamespace:
-        called.append(row.id)
+        called.append(entry.id)
         return SimpleNamespace(facts=0, failed=0)
 
     monkeypatch.setattr(extract, "run_for", fake_run_for)
@@ -242,7 +288,7 @@ async def test_an_edit_of_an_unextracted_message_makes_no_call(
     await handlers.record_edited(
         edit(),
         Chat(id=1, chat_id=7),
-        EditSession(stored(extracted=False)),
+        EditSession(*stored(extracted=False)),
         CFG,
         FakeBot(),
     )
@@ -259,23 +305,23 @@ async def test_editing_a_command_leaves_it_out_of_the_extractor(
     called: list[int] = []
 
     async def fake_run_for(
-        session: object, chat: object, cfg: object, row: Any, **kwargs: object
+        session: object, chat: object, cfg: object, entry: Any, **kwargs: object
     ) -> SimpleNamespace:
-        called.append(row.id)
+        called.append(entry.id)
         return SimpleNamespace(facts=0, failed=0)
 
     monkeypatch.setattr(extract, "run_for", fake_run_for)
 
-    existing = stored(extracted=False)
+    existing, entry = stored(extracted=False)
     existing.text = "/q сколкьо я потратил"
     message = edit()
     message.text = "/q сколько я потратил"
 
     await handlers.record_edited(
-        message, Chat(id=1, chat_id=7), EditSession(existing), CFG, FakeBot()
+        message, Chat(id=1, chat_id=7), EditSession(existing, entry), CFG, FakeBot()
     )
 
-    assert existing.verdict == VERDICT_QUESTION
+    assert entry.verdict == VERDICT_QUESTION
     assert called == []
 
 
@@ -291,7 +337,7 @@ class NewMessageSession:
     """
 
     def __init__(self) -> None:
-        self.added: list[LoggedMessage] = []
+        self.added: list[LoggedMessage | Entry] = []
         self.depth = 0
         self.commits = 0
 
@@ -341,7 +387,16 @@ class ReplySession(NewMessageSession):
         self.rows = rows
 
     async def execute(self, statement: Any) -> SimpleNamespace:
-        wanted = statement.compile().params.get("message_id_1")
+        params = statement.compile().params
+        if entity_of(statement) is Entry:
+            # `store.get_entry_for_message` filters on `Entry.message_pk`,
+            # not `message_id` — the chain rows double as their own entries,
+            # keyed by the same id, so the lookup answers itself.
+            message_pk = params.get("message_pk_1")
+            root = next((r for r in self.rows.values() if r.id == message_pk), None)
+            found = Entry(verdict=root.verdict) if root is not None else None
+            return SimpleNamespace(scalar_one_or_none=lambda: found)
+        wanted = params.get("message_id_1")
         return SimpleNamespace(scalar_one_or_none=lambda: self.rows.get(wanted))
 
 
@@ -349,6 +404,7 @@ def chain_row(
     message_id: int, verdict: str, *, is_bot: bool, parent: int | None
 ) -> Any:
     return SimpleNamespace(
+        id=message_id,
         message_id=message_id,
         verdict=verdict,
         raw={
@@ -393,7 +449,7 @@ async def test_a_reply_into_a_talk_turn_is_talk_without_asking_the_classifier(
 
     await handlers.record(reply, Chat(id=1, chat_id=7), CFG, session, FakeBot())
 
-    assert session.added[0].verdict == VERDICT_TALK
+    assert added_entries(session)[0].verdict == VERDICT_TALK
 
 
 async def test_a_non_q_command_gets_the_system_verdict() -> None:
@@ -408,10 +464,10 @@ async def test_a_non_q_command_gets_the_system_verdict() -> None:
         command_message("/start"), Chat(id=1, chat_id=7), CFG, session, bot
     )
 
-    assert session.added[0].verdict == VERDICT_SYSTEM
+    assert added_entries(session)[0].verdict == VERDICT_SYSTEM
     # No receipt: nothing was recorded as a fact, so there is nothing to
     # promise a tap would delete.
-    assert session.added[0].receipt_emoji is None
+    assert added_messages(session)[0].receipt_emoji is None
     assert bot.reactions == []
 
 
@@ -428,8 +484,8 @@ async def test_a_plain_message_still_gets_the_fact_verdict(monkeypatch: Any) -> 
     bot = FakeBot()
     await handlers.record(message(), Chat(id=1, chat_id=7), CFG, session, bot)
 
-    assert session.added[0].verdict == VERDICT_FACT
-    assert session.added[0].receipt_emoji == RECEIPT_EMOJI
+    assert added_entries(session)[0].verdict == VERDICT_FACT
+    assert added_messages(session)[0].receipt_emoji == RECEIPT_EMOJI
     # Addressed by `chat.chat_id`, the row the middleware resolved from
     # this very update — not by `message.chat.id`. They are the same number
     # in production; the fixture keeps them apart so a swap is visible.
@@ -445,8 +501,8 @@ async def test_the_row_is_committed_before_the_classifier_runs(
     fire-and-forget, so a restart or a hung Anthropic call inside `record`
     loses an update that is never redelivered. The classifier is the only
     part of `record` that can hang, so the row has to be committed before
-    it — and the row it commits has to be a plain `fact`, because that is
-    what the message stays if the process dies right here.
+    it — and the entry it commits has to carry a plain `fact`, because that
+    is what the message stays if the process dies right here.
 
     The `depth == 0` assertion is the other half of the same constraint: a
     write transaction must not be held open across a model call.
@@ -455,18 +511,19 @@ async def test_the_row_is_committed_before_the_classifier_runs(
     session = NewMessageSession()
 
     async def classifier(*args: Any, **kwargs: Any) -> str:
-        row = session.added[0]
-        seen.append((len(session.added), row.verdict, session.depth))
+        entry = added_entries(session)[0]
+        seen.append((len(session.added), entry.verdict, session.depth))
         return VERDICT_TALK
 
     monkeypatch.setattr(handlers.classify, "verdict_for", classifier)
 
     await handlers.record(message(), Chat(id=1, chat_id=7), CFG, session, FakeBot())
 
-    # One row, already a fact, already out of any transaction.
-    assert seen == [(1, VERDICT_FACT, 0)]
+    # The message and its entry, already a fact, already out of any
+    # transaction.
+    assert seen == [(2, VERDICT_FACT, 0)]
     # And only then refined, in a second transaction of its own.
-    assert session.added[0].verdict == VERDICT_TALK
+    assert added_entries(session)[0].verdict == VERDICT_TALK
     assert session.commits == 2
 
 
@@ -504,8 +561,8 @@ async def test_a_question_gets_no_receipt(monkeypatch: Any) -> None:
     await handlers.record(message(), Chat(id=1, chat_id=7), CFG, session, bot)
 
     assert routed == [VERDICT_QUESTION]
-    assert session.added[0].verdict == VERDICT_QUESTION
-    assert session.added[0].receipt_emoji is None
+    assert added_entries(session)[0].verdict == VERDICT_QUESTION
+    assert added_messages(session)[0].receipt_emoji is None
     assert bot.reactions == []
 
 
@@ -524,7 +581,7 @@ async def test_talk_is_stored_and_kept_out_of_the_extraction_tail(
     bot = FakeBot()
     await handlers.record(message(), Chat(id=1, chat_id=7), CFG, session, bot)
 
-    assert session.added[0].verdict == VERDICT_TALK
+    assert added_entries(session)[0].verdict == VERDICT_TALK
     assert bot.reactions == []
 
 
@@ -545,16 +602,16 @@ async def test_editing_a_q_row_does_not_flip_its_verdict(monkeypatch: Any) -> No
 
     monkeypatch.setattr(extract, "run_for", fake_run_for)
 
-    existing = stored(extracted=False, verdict=VERDICT_QUESTION)
+    existing, entry = stored(extracted=False, verdict=VERDICT_QUESTION)
     existing.text = "/q сколкьо я потратил"
     edited = edit()
     edited.text = "/q сколько я потратил"
 
     await handlers.record_edited(
-        edited, Chat(id=1, chat_id=7), EditSession(existing), CFG, FakeBot()
+        edited, Chat(id=1, chat_id=7), EditSession(existing, entry), CFG, FakeBot()
     )
 
-    assert existing.verdict == VERDICT_QUESTION
+    assert entry.verdict == VERDICT_QUESTION
 
 
 async def test_editing_a_question_does_not_paint_a_receipt_on_it(
@@ -584,14 +641,14 @@ async def test_editing_a_question_does_not_paint_a_receipt_on_it(
 
     monkeypatch.setattr(extract, "run_for", fake_run_for)
 
-    existing = stored(extracted=False, verdict=VERDICT_QUESTION)
+    existing, entry = stored(extracted=False, verdict=VERDICT_QUESTION)
     existing.receipt_emoji = None
     edited = edit()
     edited.text = "сколько я потратил на такси"
     bot = FakeBot()
 
     await handlers.record_edited(
-        edited, Chat(id=1, chat_id=7), EditSession(existing), CFG, bot
+        edited, Chat(id=1, chat_id=7), EditSession(existing, entry), CFG, bot
     )
 
     assert bot.reactions == [(7, 10, [])]
@@ -614,11 +671,11 @@ async def test_editing_a_fact_still_advances_its_receipt(monkeypatch: Any) -> No
 
     monkeypatch.setattr(extract, "run_for", fake_run_for)
 
-    existing = stored(extracted=True)
+    existing, entry = stored(extracted=True)
     bot = FakeBot()
 
     await handlers.record_edited(
-        edit(), Chat(id=1, chat_id=7), EditSession(existing), CFG, bot
+        edit(), Chat(id=1, chat_id=7), EditSession(existing, entry), CFG, bot
     )
 
     assert existing.receipt_emoji == next_receipt(RECEIPT_EMOJI)
@@ -640,10 +697,10 @@ async def test_editing_a_message_with_no_prior_row_keeps_the_fact_default(
     session = EditSession(None)
     await handlers.record_edited(edit(), Chat(id=1, chat_id=7), session, CFG, FakeBot())
 
-    assert session.added[0].verdict == VERDICT_FACT
+    assert added_entries(session)[0].verdict == VERDICT_FACT
     # And the default receipt, not the next emoji along: there is no
     # previous sighting to have shown the user a 💔 already.
-    assert session.added[0].receipt_emoji == RECEIPT_EMOJI
+    assert added_messages(session)[0].receipt_emoji == RECEIPT_EMOJI
 
 
 async def test_an_edit_that_turns_a_fact_into_talk_clears_the_receipt(
@@ -655,10 +712,10 @@ async def test_an_edit_that_turns_a_fact_into_talk_clears_the_receipt(
     monkeypatch.setattr(handlers.classify, "verdict_for", talk)
     monkeypatch.setattr(handlers, "route", _noop_route)
 
-    existing = stored(extracted=False)
+    existing, entry = stored(extracted=False)
     bot = FakeBot()
     await handlers.record_edited(
-        edit(), Chat(id=1, chat_id=7), EditSession(existing), CFG, bot
+        edit(), Chat(id=1, chat_id=7), EditSession(existing, entry), CFG, bot
     )
 
     assert bot.reactions == [(7, 10, [])]
@@ -674,9 +731,9 @@ async def test_an_edit_that_stays_a_fact_advances_the_cycle(
     monkeypatch.setattr(handlers.classify, "verdict_for", fact)
     monkeypatch.setattr(handlers, "route", _noop_route)
 
-    existing = stored(extracted=False)
+    existing, entry = stored(extracted=False)
     await handlers.record_edited(
-        edit(), Chat(id=1, chat_id=7), EditSession(existing), CFG, FakeBot()
+        edit(), Chat(id=1, chat_id=7), EditSession(existing, entry), CFG, FakeBot()
     )
     assert existing.receipt_emoji == "❤‍🔥"
 
@@ -699,7 +756,7 @@ async def test_an_edited_question_is_answered_again(monkeypatch: Any) -> None:
     await handlers.record_edited(
         edit(),
         Chat(id=1, chat_id=7),
-        EditSession(stored(extracted=False)),
+        EditSession(*stored(extracted=False)),
         CFG,
         FakeBot(),
     )
@@ -734,7 +791,7 @@ async def test_an_edited_caption_is_classified_from_the_caption(
     await handlers.record_edited(
         edited,
         Chat(id=1, chat_id=7),
-        EditSession(stored(extracted=False)),
+        EditSession(*stored(extracted=False)),
         CFG,
         FakeBot(),
     )
@@ -769,8 +826,8 @@ async def test_an_edit_that_stops_being_a_fact_tombstones_what_it_derived(
 
     tombstoned: list[int] = []
 
-    async def fake_tombstone(session: Any, message_pk: int, at: Any) -> int:
-        tombstoned.append(message_pk)
+    async def fake_tombstone(session: Any, entry_pk: int, at: Any) -> int:
+        tombstoned.append(entry_pk)
         return 1
 
     monkeypatch.setattr(handlers.store, "tombstone_facts", fake_tombstone)
@@ -778,12 +835,12 @@ async def test_an_edit_that_stops_being_a_fact_tombstones_what_it_derived(
     await handlers.record_edited(
         edit(),
         Chat(id=1, chat_id=7),
-        EditSession(stored(extracted=True)),
+        EditSession(*stored(extracted=True)),
         CFG,
         FakeBot(),
     )
 
-    assert tombstoned == [42]
+    assert tombstoned == [99]
 
 
 async def test_an_edit_after_a_failed_re_extraction_still_retires_the_facts(
@@ -808,22 +865,22 @@ async def test_an_edit_after_a_failed_re_extraction_still_retires_the_facts(
 
     tombstoned: list[int] = []
 
-    async def fake_tombstone(session: Any, message_pk: int, at: Any) -> int:
-        tombstoned.append(message_pk)
+    async def fake_tombstone(session: Any, entry_pk: int, at: Any) -> int:
+        tombstoned.append(entry_pk)
         return 1
 
     monkeypatch.setattr(handlers.store, "tombstone_facts", fake_tombstone)
 
     # The state mark_failed leaves behind: pending again, error recorded,
     # and the facts of the last successful pass untouched.
-    existing = stored(extracted=False)
-    existing.extract_error = "APIConnectionError: Connection error."
+    existing, entry = stored(extracted=False)
+    entry.extract_error = "APIConnectionError: Connection error."
 
     await handlers.record_edited(
-        edit(), Chat(id=1, chat_id=7), EditSession(existing), CFG, FakeBot()
+        edit(), Chat(id=1, chat_id=7), EditSession(existing, entry), CFG, FakeBot()
     )
 
-    assert tombstoned == [42]
+    assert tombstoned == [99]
 
 
 async def test_an_edit_of_a_message_we_have_never_stored_tombstones_nothing(
@@ -839,7 +896,7 @@ async def test_an_edit_of_a_message_we_have_never_stored_tombstones_nothing(
     monkeypatch.setattr(handlers.classify, "verdict_for", talk)
     monkeypatch.setattr(handlers, "route", _noop_route)
 
-    async def never(session: Any, message_pk: int, at: Any) -> int:
+    async def never(session: Any, entry_pk: int, at: Any) -> int:
         raise AssertionError("we have never seen this message, so it has no facts")
 
     monkeypatch.setattr(handlers.store, "tombstone_facts", never)
@@ -865,11 +922,11 @@ async def test_a_talk_row_edited_into_a_fact_gets_the_default_receipt(
 
     monkeypatch.setattr(extract, "run_for", never)
 
-    existing = stored(extracted=False, verdict=VERDICT_TALK)
+    existing, entry = stored(extracted=False, verdict=VERDICT_TALK)
     existing.receipt_emoji = None
 
     await handlers.record_edited(
-        edit(), Chat(id=1, chat_id=7), EditSession(existing), CFG, FakeBot()
+        edit(), Chat(id=1, chat_id=7), EditSession(existing, entry), CFG, FakeBot()
     )
 
     assert existing.receipt_emoji == RECEIPT_EMOJI
@@ -901,15 +958,15 @@ async def test_an_edit_is_re_classified_whatever_the_row_is_wearing(
 
     monkeypatch.setattr(handlers, "route", fake_route)
 
-    existing = stored(extracted=False, verdict=VERDICT_TALK)
+    existing, entry = stored(extracted=False, verdict=VERDICT_TALK)
     existing.receipt_emoji = "👀"
 
     await handlers.record_edited(
-        edit(), Chat(id=1, chat_id=7), EditSession(existing), CFG, FakeBot()
+        edit(), Chat(id=1, chat_id=7), EditSession(existing, entry), CFG, FakeBot()
     )
 
     assert called == ["classified", "routed"]
-    assert existing.verdict == VERDICT_FACT
+    assert entry.verdict == VERDICT_FACT
     assert existing.text == "5500 такси"
 
 
@@ -939,13 +996,48 @@ async def test_a_row_with_no_receipt_column_still_gets_its_bubble_cleared(
 
     # Talk, and the column says no receipt — which is exactly the state a
     # bubble can outlive, because nothing here can ask whether one is up.
-    released = stored(extracted=False, verdict=VERDICT_TALK)
+    released, entry = stored(extracted=False, verdict=VERDICT_TALK)
     released.receipt_emoji = None
     bot = FakeBot()
 
     await handlers.record_edited(
-        edit(), Chat(id=1, chat_id=7), EditSession(released), CFG, bot
+        edit(), Chat(id=1, chat_id=7), EditSession(released, entry), CFG, bot
     )
 
     assert bot.reactions == [(7, 10, [])]
     assert released.receipt_emoji is None
+
+
+def test_every_entry_writing_call_site_passes_a_verdict() -> None:
+    """A permissive default on the column that selects the queue silently
+    re-admits everything the old flag excluded, and nothing fails — the rows
+    simply get parsed. That is `db9de98`, and it cost a live chat.
+
+    Read as source rather than executed: the four call sites are in three
+    modules and two of them are only reachable through aiogram.
+    """
+    import ast
+    import pathlib
+
+    sites = 0
+    for path in pathlib.Path("telegrind").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Attribute):
+                name = func.attr
+            else:
+                name = getattr(func, "id", "")
+            if name != "upsert_message":
+                continue
+            sites += 1
+            assert any(kw.arg == "verdict" for kw in node.keywords), (
+                f"{path}: upsert_message without an explicit verdict"
+            )
+    # Four today: handlers.record, handlers.record_edited, query.ask,
+    # outbound.say. The floor is here only so that a broken walk finding
+    # nothing cannot pass as «every call site is fine»; the keyword is what
+    # this test pins, not the census.
+    assert sites >= 4, f"the AST walk found only {sites} call sites"

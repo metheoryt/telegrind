@@ -7,7 +7,7 @@ from telegrind import query
 from telegrind.bot.answering import EMPTY_QUESTION, REFUSAL, answer_for, question_of
 from telegrind.bot.handlers import query as handler
 from telegrind.config import ChatConfig
-from telegrind.models import VERDICT_SYSTEM
+from telegrind.models import VERDICT_SYSTEM, Entry, LoggedMessage
 from telegrind.query import Answer, Row, Spec
 
 CFG = ChatConfig(tz_offset=6, currency="KZT")
@@ -255,14 +255,18 @@ async def test_ask_sends_the_answer_as_a_reply_to_the_question() -> None:
     # deletes the facts on the message — a question has none. The override
     # takes routing's path, so it cannot differ from a plain question.
     assert bot.reactions == []
-    assert session.added[0].receipt_emoji is None
+    # Each upsert_message call now adds a message and its entry — the
+    # verdict lives on the entry, not the message row.
+    messages = [obj for obj in session.added if isinstance(obj, LoggedMessage)]
+    entries = [obj for obj in session.added if isinstance(obj, Entry)]
+    assert messages[0].receipt_emoji is None
     assert bot.sent[0].get("reply_parameters") is None
     assert bot.sent[1]["reply_parameters"].message_id == message.message_id
 
     # Both went through outbound.say, not a bare bot.send_message: the
     # question itself is stored first (verdict=question), then the two
     # outbound sends land as system rows.
-    stored = [(r.text, r.verdict) for r in session.added]
+    stored = [(m.text, e.verdict) for m, e in zip(messages, entries, strict=True)]
     assert stored[1:] == [
         ("Разбираю 1 сообщений…", VERDICT_SYSTEM),
         (EMPTY_QUESTION, VERDICT_SYSTEM),

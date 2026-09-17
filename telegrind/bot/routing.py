@@ -25,7 +25,7 @@ from telegrind.bot.answering import REFUSAL, answer_for, question_of
 from telegrind.bot.handlers.receipts import RECEIPT_EMOJI, acknowledge
 from telegrind.bot.outbound import say
 from telegrind.config import ChatConfig
-from telegrind.models import VERDICT_FACT, VERDICT_QUESTION, Chat, LoggedMessage
+from telegrind.models import VERDICT_FACT, VERDICT_QUESTION, Chat, Entry
 
 log = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ TELEGRAM_LIMIT = 4096
 
 async def route(
     message: Message,
-    row: LoggedMessage,
+    entry: Entry,
     chat: Chat,
     config: ChatConfig,
     session: AsyncSession,
@@ -57,13 +57,15 @@ async def route(
     """Act on a verdict, and never let a failure be silent.
 
     The row is already committed before this runs, so nothing written is at
-    risk here — but *everything else* is. aiogram advances the polling
-    offset as it dispatches, so an exception escaping this function is an
-    update that is never redelivered: no answer, no reaction, no second
-    chance. `acknowledge` swallows, so the fact arm cannot go quiet; the
-    question arm can. `store.unextracted_tail`, both model calls inside
-    `answer_for` and every `say` are one 429 away from it, and a 429 or a
-    529 from Anthropic is the commonest failure this bot will ever see.
+    risk here — the message and its entry both, which is what lets this
+    read a verdict without a second lookup — but *everything else* is.
+    aiogram advances the polling offset as it dispatches, so an exception
+    escaping this function is an update that is never redelivered: no
+    answer, no reaction, no second chance. `acknowledge` swallows, so the
+    fact arm cannot go quiet; the question arm can. `store.unextracted_tail`,
+    both model calls inside `answer_for` and every `say` are one 429 away
+    from it, and a 429 or a 529 from Anthropic is the commonest failure
+    this bot will ever see.
 
     So the arms are guarded, and the failure is said out loud. What the row
     looks like afterwards is deliberate: **nothing is written here**. The
@@ -75,7 +77,7 @@ async def route(
     sentence in the chat is what corrects that claim.
     """
     try:
-        await _act(message, row, chat, config, session, bot, receipt=receipt)
+        await _act(message, entry, chat, config, session, bot, receipt=receipt)
     except Exception:
         # Not BaseException: CancelledError is the shutdown path, and a
         # message apologising for being shut down is noise. The reason is
@@ -92,7 +94,7 @@ async def route(
 
 async def _act(
     message: Message,
-    row: LoggedMessage,
+    entry: Entry,
     chat: Chat,
     config: ChatConfig,
     session: AsyncSession,
@@ -110,11 +112,11 @@ async def _act(
     gesture over facts a talk message has none of, and it earns no reply
     because there is nobody in this process to write one.
     """
-    if row.verdict == VERDICT_FACT:
+    if entry.verdict == VERDICT_FACT:
         await acknowledge(bot, chat.chat_id, message.message_id, receipt)
         return
 
-    if row.verdict == VERDICT_QUESTION:
+    if entry.verdict == VERDICT_QUESTION:
         # Said in a transaction of its own, and outside the answering one:
         # the first question after a quiet week pays for the week, and
         # holding a write transaction open across two model calls to

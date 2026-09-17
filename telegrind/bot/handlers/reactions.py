@@ -44,15 +44,25 @@ async def toggle_delete(
         if row is None:
             log.info("reaction on unknown message %s", message_reaction.message_id)
             return
+        # One hop further than it used to be: facts hang off the entry now.
+        # A missing entry is not a normal state — `upsert_message` writes one
+        # with every message — so it is logged rather than healed here, where
+        # healing would invent an entry with no verdict of its own.
+        entry = await store.get_entry_for_message(session, row.id)
+        if entry is None:
+            log.warning("message %s has no entry", message_reaction.message_id)
+            return
         if wants_delete(message_reaction):
-            count = await store.tombstone_facts(session, row.id, message_reaction.date)
+            count = await store.tombstone_facts(
+                session, entry.id, message_reaction.date
+            )
             log.info(
                 "tombstoned %s fact(s) of message %s",
                 count,
                 message_reaction.message_id,
             )
         else:
-            count = await store.restore_facts(session, row.id)
+            count = await store.restore_facts(session, entry.id)
             log.info(
                 "restored %s fact(s) of message %s", count, message_reaction.message_id
             )
