@@ -9,7 +9,7 @@ import yaml
 from telegrind.config import ChatConfig
 from telegrind.extract import build_prompt, drafts_from
 from telegrind.llm import EXTRACT_SYSTEM, EXTRACT_TOOL, use_tool
-from telegrind.models import KIND_TEXT, LoggedMessage
+from telegrind.models import KIND_TEXT, SOURCE_TELEGRAM, Entry, LoggedMessage
 
 pytestmark = pytest.mark.llm
 
@@ -50,6 +50,22 @@ def rows_for(case: dict) -> list[LoggedMessage]:
     ]
 
 
+def entries_for(rows: list[LoggedMessage]) -> list[Entry]:
+    """The entry each fixture row would get, mirroring `store._entry_for`."""
+    return [
+        Entry(
+            id=row.id,
+            chat_pk=1,
+            source=SOURCE_TELEGRAM,
+            external_id=str(row.message_id),
+            message_pk=row.id,
+            occurred_at=row.tg_date,
+            content=row.text,
+        )
+        for row in rows
+    ]
+
+
 def is_number(value: object) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool)
 
@@ -57,11 +73,13 @@ def is_number(value: object) -> bool:
 @pytest.mark.parametrize("case", CASES, ids=lambda c: " / ".join(texts_of(c)))
 async def test_the_corpus_still_extracts(case: dict) -> None:
     rows = rows_for(case)
-    prompt = build_prompt(rows, [], TAXONOMY, CFG, chat_id=1)
+    entries = entries_for(rows)
+    messages = {row.id: row for row in rows}
+    prompt = build_prompt(entries, [], messages, TAXONOMY, CFG, chat_id=1)
     payload = await use_tool(EXTRACT_SYSTEM, prompt, EXTRACT_TOOL)
 
-    drafts, complaints = drafts_from(payload, rows, CFG)
-    shape = [(d.message.message_id, d.kind, d.fields) for d in drafts]
+    drafts, complaints = drafts_from(payload, entries, CFG)
+    shape = [(messages[d.entry.id].message_id, d.kind, d.fields) for d in drafts]
 
     assert complaints == []
     assert drafts, "the message states a fact and none came back"
@@ -82,5 +100,5 @@ async def test_the_corpus_still_extracts(case: dict) -> None:
 
     if "facts_per_message" in case:
         # Attribution: a fact belongs to the message that states it.
-        got = [sum(1 for d in drafts if d.message is row) for row in rows]
+        got = [sum(1 for d in drafts if d.entry is entry) for entry in entries]
         assert got == case["facts_per_message"], f"{got}: {shape}"

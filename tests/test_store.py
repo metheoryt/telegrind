@@ -384,9 +384,9 @@ async def test_messages_for_asks_nothing_when_no_entry_has_a_message() -> None:
 async def test_replace_facts_updates_in_place_and_tombstones_the_surplus() -> None:
     live = [fact(seq=1, kind="expense"), fact(seq=2, kind="expense")]
     session = FakeSession(live)
-    row = logged(10)
+    row = entry(id=10)
     drafts = [
-        Draft(message=row, seq=1, kind="expense", at=AT, fields={"amount": 500}),
+        Draft(entry=row, seq=1, kind="expense", at=AT, fields={"amount": 500}),
     ]
 
     written = await store.replace_facts(
@@ -407,8 +407,8 @@ async def test_replace_facts_updates_in_place_and_tombstones_the_surplus() -> No
 
 async def test_replace_facts_adds_a_row_for_a_new_seq() -> None:
     session = FakeSession([])
-    row = logged(10)
-    drafts = [Draft(message=row, seq=1, kind="expense", at=AT, fields={})]
+    row = entry(id=10)
+    drafts = [Draft(entry=row, seq=1, kind="expense", at=AT, fields={})]
 
     await store.replace_facts(
         session,

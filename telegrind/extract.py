@@ -1,4 +1,4 @@
-"""The batch pass: a window of messages in, facts out.
+"""The batch pass: a window of entries in, facts out.
 
 Extraction is deferred so that the model sees a message in the company of
 its neighbours: `и молоко 300` is an expense only because `хлеб 500` came
@@ -6,6 +6,9 @@ before it, and one pass over the whole window converges on one `kind`
 where N separate calls coin N synonyms for it. The window explains a
 message; it never moves the message's fact. Two neighbours state two
 facts unless they are mechanically joined — one message, or a reply.
+
+An entry is usually a message; it can also be a row imported from a
+spreadsheet or a statement, and the pass does not know the difference.
 """
 
 import logging
@@ -18,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from telegrind import llm, store, taxonomy
 from telegrind.coerce import to_instant, to_json_value
 from telegrind.config import ChatConfig
-from telegrind.models import Chat, LoggedMessage
+from telegrind.models import Chat, Entry, LoggedMessage
 
 log = logging.getLogger(__name__)
 
@@ -77,32 +80,54 @@ def _reply_to(row: LoggedMessage) -> int | None:
 
 def _line(
     marker: str,
-    row: LoggedMessage,
+    entry: Entry,
+    msg: LoggedMessage | None,
     cfg: ChatConfig,
     chat_id: int,
     markers: dict[int, str],
 ) -> str:
-    stamp = cfg.localized(row.tg_date).strftime("%Y-%m-%d %H:%M")
-    head = f"[{marker}] {stamp} ({author_of(row, chat_id)})"
-    parent = _reply_to(row)
-    if parent is not None:
-        seen = markers.get(parent)
-        head += f" → ответ на [{seen}]" if seen else " → ответ на сообщение вне окна"
-    return f"{head}: {row.content}"
+    """One entry, as the prompt states it.
+
+    The author and the reply edge come off the message, so a side-loaded
+    entry states neither rather than guessing — inventing «я» would tell the
+    model that a bank statement was typed by the user.
+    """
+    stamp = cfg.localized(entry.occurred_at).strftime("%Y-%m-%d %H:%M")
+    head = f"[{marker}] {stamp}"
+    if msg is not None:
+        head += f" ({author_of(msg, chat_id)})"
+        parent = _reply_to(msg)
+        if parent is not None:
+            seen = markers.get(parent)
+            head += (
+                f" → ответ на [{seen}]" if seen else " → ответ на сообщение вне окна"
+            )
+    return f"{head}: {entry.content or ''}"
 
 
 def build_prompt(
-    tail: list[LoggedMessage],
-    context: list[LoggedMessage],
+    tail: list[Entry],
+    context: list[Entry],
+    messages: dict[int, LoggedMessage],
     taxonomy: str,
     cfg: ChatConfig,
     chat_id: int,
 ) -> str:
-    """The user turn: the taxonomy, the read-only context, the tail."""
-    markers: dict[int, str] = {
-        row.message_id: f"C{i}" for i, row in enumerate(context, 1)
-    }
-    markers |= {row.message_id: str(i) for i, row in enumerate(tail, 1)}
+    """The user turn: the taxonomy, the read-only context, the tail.
+
+    `messages` is keyed by entry id and covers the tail and the context
+    together — whichever of them came from Telegram. It is built by one
+    explicit query in `_pass`, never by touching a relationship.
+    """
+    markers: dict[int, str] = {}
+    for index, row in enumerate(context, 1):
+        msg = messages.get(row.id)
+        if msg is not None:
+            markers[msg.message_id] = f"C{index}"
+    for index, row in enumerate(tail, 1):
+        msg = messages.get(row.id)
+        if msg is not None:
+            markers[msg.message_id] = str(index)
 
     blocks = [
         "# Словарь этого чата",
@@ -125,7 +150,7 @@ def build_prompt(
         blocks += [
             "# Контекст (уже разобран, извлекать из него НЕ надо)",
             "\n".join(
-                _line(f"C{i}", row, cfg, chat_id, markers)
+                _line(f"C{i}", row, messages.get(row.id), cfg, chat_id, markers)
                 for i, row in enumerate(context, 1)
             ),
             "",
@@ -137,7 +162,8 @@ def build_prompt(
         "себе связью не является — если сообщения идут подряд, но реплаем "
         "не связаны, у каждого свой факт на своём номере.",
         "\n".join(
-            _line(str(i), row, cfg, chat_id, markers) for i, row in enumerate(tail, 1)
+            _line(str(i), row, messages.get(row.id), cfg, chat_id, markers)
+            for i, row in enumerate(tail, 1)
         ),
     ]
     return "\n".join(blocks)
@@ -147,7 +173,7 @@ def build_prompt(
 class Draft:
     """One fact the model returned, coerced but not yet stored."""
 
-    message: LoggedMessage
+    entry: Entry
     seq: int
     kind: str
     at: datetime
@@ -155,7 +181,7 @@ class Draft:
 
 
 def drafts_from(
-    payload: dict, tail: list[LoggedMessage], cfg: ChatConfig
+    payload: dict, tail: list[Entry], cfg: ChatConfig
 ) -> tuple[list[Draft], list[str]]:
     """Coerce the model's array. Returns (drafts, complaints).
 
@@ -184,12 +210,12 @@ def drafts_from(
             str(key): to_json_value(value) for key, value in (raw_fields or {}).items()
         }
         # The model copies the phrase; the clock arithmetic is ours, against
-        # the message's own timestamp rather than the moment of the pass.
-        at = to_instant(item.get("when"), cfg, row.tg_date)
+        # the entry's own timestamp rather than the moment of the pass.
+        at = to_instant(item.get("when"), cfg, row.occurred_at)
 
         seen[index] = seen.get(index, 0) + 1
         drafts.append(
-            Draft(message=row, seq=seen[index], kind=kind, at=at, fields=fields)
+            Draft(entry=row, seq=seen[index], kind=kind, at=at, fields=fields)
         )
 
     return drafts, complaints
@@ -230,32 +256,35 @@ async def run_for(
     session: AsyncSession,
     chat: Chat,
     cfg: ChatConfig,
-    row: LoggedMessage,
+    entry: Entry,
     *,
     context_size: int = 10,
     call: Callable[..., Awaitable[dict]] = llm.use_tool,
 ) -> Report:
-    """Re-extract one edited message, in the company of its neighbours.
+    """Re-extract one edited entry, in the company of its neighbours.
 
     The same window builder, a tail of one. Isolation is what makes a
     re-extraction coin a synonym for a kind it already had.
     """
-    return await _pass(session, chat, cfg, [row], context_size=context_size, call=call)
+    return await _pass(
+        session, chat, cfg, [entry], context_size=context_size, call=call
+    )
 
 
 async def _pass(
     session: AsyncSession,
     chat: Chat,
     cfg: ChatConfig,
-    tail: list[LoggedMessage],
+    tail: list[Entry],
     *,
     context_size: int,
     call: Callable[..., Awaitable[dict]],
 ) -> Report:
     """Everything `run` does once the tail has been chosen."""
     context = await store.context_before(session, chat.id, tail[0], limit=context_size)
+    messages = await store.messages_for(session, tail + context)
     vocabulary = taxonomy.render(await taxonomy.observed(session, chat.id))
-    prompt = build_prompt(tail, context, vocabulary, cfg, chat.chat_id)
+    prompt = build_prompt(tail, context, messages, vocabulary, cfg, chat.chat_id)
     model = llm.current_model()
 
     try:
@@ -278,8 +307,8 @@ async def _pass(
         written += await store.replace_facts(
             session,
             chat_pk=chat.id,
-            message_pk=row.id,
-            drafts=[d for d in drafts if d.message is row],
+            entry_pk=row.id,
+            drafts=[d for d in drafts if d.entry is row],
             model=model,
             prompt_version=llm.PROMPT_VERSION,
             now=now,
