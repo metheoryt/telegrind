@@ -53,6 +53,21 @@ One bullet per fact, under a topical heading. No secrets.
   subclasses and the `/start` onboarding FSM that `ef80f31` removed. The
   current shape is `llm.extract` → `projection.apply_changes` over
   `store`-owned `Message`/`Fact` rows.
+- **`docs/` does not exist on `main` at all.** Verified 2026-09-17:
+  `git cat-file -e main:docs/telegram-bot-api.md` and both design specs fail. So
+  the root `CLAUDE.md`'s instruction to read `docs/telegram-bot-api.md` before
+  touching the Telegram side, and this file's pointer to it, resolve to nothing
+  in the main checkout — those documents live only on `metheoryt/v2`.
+  <!-- src: telegrind c5a6b01 | 2026-09-17 -->
+- **Of the branches the `CLAUDE.md` scope note names, only `metheoryt/v2`
+  survives.** `metheoryt/dialogue-first` and `metheoryt/claude-meta-1-4` were
+  deleted from origin on 2026-09-14 after `git merge-base --is-ancestor` proved
+  both fully contained in `metheoryt/v2`; origin carries `main` and
+  `metheoryt/v2` and nothing else. Both local refs are still here (2026-09-17)
+  for no better reason than that nobody ran `git branch -d` after their Orca
+  worktrees went away — only `main` and `v2` are checked out now.
+  <!-- conflicts-with: "**Everything below describes the dialogue-first rewrite**, which lives on `metheoryt/dialogue-first` and has never been deployed" -->
+  <!-- src: telegrind c5a6b01 | 2026-09-17 -->
 
 ## The workbook layer is gone (2026-09-11)
 
@@ -130,6 +145,30 @@ One bullet per fact, under a topical heading. No secrets.
   `docker compose -f compose.prod.yml up -d` — **`docker restart` reuses the
   baked-in env and the new key never loads.**
   <!-- src: latitude prod inspection | 2026-09-12 -->
+- **v2 runs in production BESIDE v1, and that is what forbids merging
+  `metheoryt/v2` into `main`.** Since 2026-09-15 latitude carries a second stack
+  at `~/my/vps/homeserver/telegrind-v2/`: compose project `telegrind-v2`, its own
+  network, volume `telegrind-v2_pgdata`, image tag `telegrind-bot:v2` (v1 builds
+  `telegrind-bot:local`), bot `@teamlegrambot`, and a `src` clone that tracks
+  **`metheoryt/v2`, not `main`**. One image tag or one branch shared between them
+  would mean v1's next restart running v2's migrations against v1's live
+  database — `entrypoint.sh` applies `alembic upgrade head` before the bot
+  starts, unattended. So while both bots run, v2 stays off `main`.
+  <!-- src: telegrind c26a7cb | 2026-09-17 -->
+- **Both stacks fail their first container start on a cold boot, by design of
+  the entrypoint rather than by fault.** `alembic upgrade head` runs before
+  postgres finishes starting, the bot exits, and `restart: unless-stopped`
+  brings it back (`RestartCount=1`). It is a healthcheck on postgres plus
+  `depends_on: condition: service_healthy` away from being clean — until then, a
+  single restart in the logs after a reboot is not evidence of a defect.
+  <!-- src: telegrind c26a7cb | 2026-09-17 -->
+- **v1's database never held any history at all, so "migrate the data from v1"
+  is not a database job.** Measured on latitude 2026-09-16: `chat` 62 rows (12
+  with a `sheet_url`), `file` 1 row, and no `message`/`fact` tables — v1 never
+  stored text, it projected into the workbook. The only copies of the real
+  history are the Telegram Desktop export of the chat and the old Google sheet.
+  v2's own volume is not in restic yet.
+  <!-- src: telegrind c26a7cb | 2026-09-17 -->
 
 ## Extraction — what the corpus taught
 
@@ -166,6 +205,41 @@ One bullet per fact, under a topical heading. No secrets.
   model. The quality gate cannot see kind drift at all, so it would pass such a
   model.
   <!-- src: telegrind 35574a2 | 2026-09-12 -->
+- **A truncated extraction reply is indistinguishable from a successful pass, so
+  the pass size is a correctness bound and not a throughput knob.** `extract._pass`
+  makes ONE model call for the whole batch against `llm.MAX_TOKENS = 2048`,
+  `llm.use_tool` never inspects `response.stop_reason`, and `_pass` marks the
+  entire tail extracted on any return that does not raise. An oversized batch
+  therefore skips messages permanently, with no error, no `extract_error` and no
+  trace — which is why a bulk backfill is run in passes of ~20 and why the
+  runbook is stop the bot → import → extract until the tail is empty → start.
+  <!-- src: telegrind 591ed41 | 2026-09-17 -->
+- **A kind absent from the FIRST pass can never be coined later.**
+  `taxonomy.observed()` shows the extractor only the kinds and field names
+  already present in `fact`, so the vocabulary can only ever grow from what a
+  pass already produced. Measured over the whole 3915-message corpus on dev
+  (2026-09-17, 194 passes, 3856 facts, 0 failures): `expense` 3624, `loan` 184,
+  catch-all `facts` 59, `weight` 1 — catch-all 1.5% — and **`wish` was never
+  coined at all**: all six «хочу …» messages landed in the catch-all. ~8s per
+  pass, $1–2 for the corpus on Haiku.
+  <!-- src: telegrind 591ed41 | 2026-09-17 -->
+- **Importing structured rows teaches the live bot, silently.** The same
+  `taxonomy` readback means an import's field names enter the prompt: bringing
+  the v1 sheet's `category` and `necessity` in (2129 labelled rows) makes the
+  extractor start stamping both onto new expenses nobody asked it to. Decide
+  that as behaviour, not as an import detail — and name imported fields exactly
+  as the live extractor already writes them (`amount`, `currency`, `comment`,
+  `person`, `when`, `due`, read out of `fact`), or imported and extracted rows
+  will not sum in one query.
+  <!-- src: telegrind 591ed41 | 2026-09-17 -->
+- **`fact.prompt_version` is a write-only column.** Measured 2026-09-17: it is
+  written in three places (`extract.py:284`, `extract.py:287` via
+  `store.mark_extracted`, `store.py:332`) and read by nothing in `telegrind/`.
+  Whatever a re-extraction pass would need in order to find facts made by an
+  older prompt, it does not get from this column today.
+  <!-- conflicts-with: "`PROMPT_VERSION` is extraction's and is what `fact.prompt_version` records" -->
+  <!-- conflicts-with: "It is stamped on every extracted fact and is what a later re-extraction pass uses to find facts produced by an older prompt" -->
+  <!-- src: telegrind 591ed41 | 2026-09-17 -->
 
 ## Ingest invariants that are easy to break
 
@@ -215,6 +289,25 @@ One bullet per fact, under a topical heading. No secrets.
   once the verdict has held, and nothing in the migration graph will prompt for
   it.
   <!-- src: telegrind db9de98 | 2026-09-12 -->
+- **The reply chain outranks the classifier, and it had to, because an empty
+  ledger answer is indistinguishable from a misroute.** Measured live
+  2026-09-13: «а последний коммит какой», said as a reply to a bot answer, was
+  classified `question`, went to the SQL engine, and came back «По этому вопросу
+  записей нет» — the fallback that hands a REFUSED question onward never fired,
+  because nothing had refused. `store.turn_root` now resolves which turn a reply
+  continues (one hop through the bot's own row, since Telegram does not nest
+  replies) and passes that verdict to the classifier as a REQUIRED argument.
+  Two deliberate limits: a command still outranks the chain (`/q` as a reply
+  still asks the ledger), and only `talk` is contagious.
+  <!-- src: telegrind 6c679a1 | 2026-09-17 -->
+- **An edit now re-classifies and re-routes, and a question the spec engine
+  cannot express is simply refused.** Cutting the hand-over seam (`944dab3`)
+  removed the `HANDED_OVER` gate that used to stop an edited row from being
+  re-routed, and removed the arm that let a refused question fall through to
+  Claude. The fact/question boundary used to be soft — a misclassification cost
+  a second of latency; now it costs the answer.
+  <!-- conflicts-with: "An edit preserves the row's previous verdict; it does not re-derive one." -->
+  <!-- src: telegrind 944dab3 | 2026-09-17 -->
 
 ## Environment and the test harness
 
@@ -274,8 +367,21 @@ One bullet per fact, under a topical heading. No secrets.
   outbound reply must target the message that triggered *that* turn, never a
   fixed anchor.
   <!-- src: telegrind db9de98 | 2026-09-12 -->
+- **The meta layer is OUT of telegrind as of 2026-09-14 — it is not merging, and
+  the hazards below now describe another repository's problem.** The forcing
+  fact is that a process cannot rebuild and restart itself: `docker compose up -d
+  --build` destroys the container the turn is running in, and aiogram has already
+  advanced the polling offset, so the deploy request dies as silence rather than
+  as an error. The control bot is `~/my/cladaeb`, a host-side process with its own
+  token, deliberately given root on latitude, gated by a `from_user.id` allowlist
+  (never `chat_id` — an id naming a group hands root to every member). A second
+  new repo, `~/my/aiogram-blackbox`, records what a bot saw and said to JSONL;
+  the dependency direction is **apps → recorder**, and nothing about Claude may
+  live in it.
+  <!-- conflicts-with: "## The Claude meta layer — hazards to carry into the merge" -->
+  <!-- src: telegrind 944dab3 | 2026-09-17 -->
 
-<!-- KB refreshed against db9de98 on 2026-09-12 -->
+<!-- KB refreshed against c5a6b01 on 2026-09-17 -->
 
 ## Vendor-API facts routed here from the 2026-09-12 shared proposals
 
@@ -333,3 +439,67 @@ because that code still exists.
   reply resolves to F1, and `uuid5(F1)` was never created. **Forking each turn into
   its own derived id is what makes the scheme self-consistent**, and it is one extra
   flag. (The general `claude -p` session-control facts went to `global.md`.)
+
+## New sources — the `entry` cut (design of record from 2026-09-17)
+
+- **Facts hang off an `entry`, not off a message, and that is a defence of the
+  ingest path rather than a tidy-up.** A telegram update lost mid-handler is
+  never redelivered, so `message` is the one table where a schema mistake is
+  unrecoverable; every future source (a receipt, a bank statement, the v1 sheet)
+  therefore adds rows to `entry` instead of columns to `message`. `entry` carries
+  `(chat_pk, source, external_id)` unique — which is what makes a re-import
+  update rather than duplicate — plus `verdict` and the four extraction-state
+  columns, which move off `message` with it. Rejected alternatives, both
+  measured: widening `message` itself (13 files, 43 references) and making
+  `fact.message_pk` nullable (two classes of fact that `replace_facts`,
+  `tombstone_facts`, `restore_facts` and the reaction handler would each have to
+  learn).
+  <!-- src: telegrind c26a7cb | 2026-09-17 -->
+- **A fact carries no provenance of its own — `entry.source` is both the origin
+  and the undo.** Everything one import wrote is `WHERE source = '<that source>'`,
+  one statement, which is why no import-run table was needed when the import
+  machinery was cut back to the schema alone. Stamping the source onto the fact
+  as well was written into the spec and then removed: it is the second marker
+  saying what the first already says, and this repo has now been burned twice by
+  exactly that pair.
+  <!-- src: telegrind c26a7cb | 2026-09-17 -->
+- **The v1 workbook cannot be joined to the chat history.** Its column `#` is a
+  running row counter (234…10457, no collision between sheets), not a Telegram
+  `message_id` — v1's were seven digits. That premise was the whole foundation of
+  `workbook_compare.py`, and `import_history.py` with it, so both were retired
+  (`591ed41`); the chat export stays on disk and the code stays in git history.
+  <!-- src: telegrind 591ed41 | 2026-09-17 -->
+- **Two traps in a Telegram Desktop export, both silent.** In a private chat the
+  top-level `id` is the INTERLOCUTOR — the bot — not your own `chat_id`, so
+  deriving the chat from the file is how a whole history lands under the wrong
+  chat; pass the id explicitly and refuse an export carrying a third `from_id`.
+  And `edit_date` must be handed in as a raw int: `store.message_values` dumps
+  with `mode="json"`, so a `datetime` lands in `raw` as a string where live
+  ingest puts a number, and the entire "we go through aiogram so `raw` matches
+  live by construction" argument quietly stops holding.
+  <!-- src: telegrind 591ed41 | 2026-09-17 -->
+
+## Worktrees, the dev stack, and the main checkout
+
+- **Every worktree of this repo shares one dev postgres and one `.git`.** A
+  migration run in one worktree moves the schema under every other checkout: when
+  `extractable` was dropped it was verified up AND down against the live dev
+  database (after `downgrade -1` the restored column disagreed with
+  `verdict = 'fact'` on 0 of 41 rows) and the dev DB was then deliberately left at
+  `97b074369b9a`, because the main checkout still wrote that column. For the same
+  reason a bare `git stash` in a worktree reaches into a stack other sessions
+  share.
+  <!-- src: telegrind 895a615 | 2026-09-17 -->
+- **A fresh worktree has no `.env` and no `.venv`, so alembic and pytest do not
+  start there.** Copy or load the main checkout's `.env` — in-process with an
+  explicit path, never `source` (the CRLF rule above), and `uv sync
+  -p /usr/bin/python3.14`, never bare.
+  <!-- src: telegrind 895a615 | 2026-09-17 -->
+- **`/home/me/my/telegrind` is an archaeological copy, not a workspace.** It sits
+  on `main`, which is the 2026-08 build prod v1 runs; all work happens in the
+  Orca worktrees under `~/orca/workspaces/telegrind/`. `CLAUDE.md` and
+  `.claude/memory/project.md` were carried onto `main` deliberately (`c5a6b01`)
+  so the design of record and these facts travel with the repository rather than
+  with one branch — telegrind tracks `project.md` on purpose, and dotfiles tracks
+  no `project.md` at all.
+  <!-- src: telegrind c5a6b01 | 2026-09-17 -->

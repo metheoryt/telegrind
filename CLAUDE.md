@@ -79,6 +79,15 @@ and no port of the engine. Every deploy today is manual, on latitude:
 
 Full runbook: `vps/homeserver/DEPLOYING-A-REPO.md`.
 
+- **Since 2026-09-15 there are TWO prod stacks on latitude.** v1 is the compose
+  project `telegrind` described above; v2 is `telegrind-v2` in
+  `~/my/vps/homeserver/telegrind-v2/`, with its own volume
+  (`telegrind-v2_pgdata`), its own image tag (`telegrind-bot:v2`), its own token
+  (`@teamlegrambot`) and a `src` clone tracking `metheoryt/v2`. **Do not merge
+  `metheoryt/v2` into `main` while v1 runs** — v1 deploys from `main`, and its
+  next restart would run v2's migrations against v1's live database.
+  <!-- src: telegrind c26a7cb | 2026-09-17 -->
+
 ## Telegram Bot API
 
 `docs/telegram-bot-api.md` is the curated Bot API surface for this bot: what
@@ -87,6 +96,11 @@ needs a bump, and what is ruled out and why. **Read it before proposing or
 building anything that touches the Telegram side** — it is verified against
 the installed `aiogram` tree, not against the changelog, so it says what can
 actually be called here.
+
+- **That file is not in this checkout.** `docs/` does not exist on `main` at all
+  (verified 2026-09-17); `docs/telegram-bot-api.md` and every spec referenced
+  here live on `metheoryt/v2`. Read them from a worktree on that branch.
+  <!-- src: telegrind c5a6b01 | 2026-09-17 -->
 
 ## Architecture
 
