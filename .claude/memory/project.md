@@ -191,21 +191,18 @@ One bullet per fact, under a topical heading. No secrets.
   sums when they carry no number, confusing to an announced backlog count.
   <!-- src: telegrind 35574a2 | 2026-09-12 -->
 
-## Routing — where the shipped code and the meta-layer spec part company
+## Routing — verdict and extraction state
 
-- **An edit re-classifies and re-routes — this bullet used to say the
-  opposite.** The design doc always said an edited message is re-classified;
-  the code held back from that for a while, to avoid flipping a stored `/q`
-  row from `question` back to `fact` the first time the user fixed a typo in
-  their own question. That gap closed 2026-09-16 along with the hand-over
-  seam — see "The hand-over seam is gone too" below. Do not read this as
-  still describing a difference between the spec and what runs.
+- **An edit re-classifies and re-routes, unconditionally.** `record_edited`
+  calls `classify.verdict_for` and passes the result to `upsert_message` on
+  every edit. It held back from that for a while, to avoid flipping a stored
+  `/q` row from `question` back to `fact` the first time the user fixed a typo
+  in their own question — that gap closed 2026-09-16 along with the hand-over
+  seam; see "The hand-over seam is gone too" below.
   <!-- src: telegrind db9de98 | 2026-09-12 -->
-- **`extractable` is gone, not merely vestigial.** It was dropped in
-  `20260914005236`, and `verdict` itself has since moved off `message` onto
-  `entry` entirely — `message` carries no extraction-routing state of its own
-  any more. The expand/contract account this bullet used to give is history,
-  not a live TODO.
+- **`extractable` is gone.** It was dropped in `20260914005236`, and `verdict`
+  itself has since moved off `message` onto `entry` entirely — `message`
+  carries no extraction-routing state of its own any more.
   <!-- src: telegrind db9de98 | 2026-09-12 -->
 
 ## Environment and the test harness
