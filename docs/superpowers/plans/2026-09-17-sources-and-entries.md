@@ -311,7 +311,12 @@ def test_the_queue_has_an_index() -> None:
 
 
 def test_a_new_entry_is_unextracted() -> None:
-    row = Entry(chat_pk=1, source=SOURCE_TELEGRAM, external_id="2", occurred_at=None)
+    row = Entry(
+        chat_pk=1,
+        source=SOURCE_TELEGRAM,
+        external_id="2",
+        occurred_at=datetime(2026, 9, 17, 12, 0, tzinfo=UTC),
+    )
     assert row.extracted_at is None
     assert row.extract_error is None
     assert row.verdict == "fact"
@@ -616,9 +621,12 @@ The imports at the top of the file are
 `from alembic import op`, `from collections.abc import Sequence` — match the
 style of `alembic/versions/20260911071828_dialogue_first.py`.
 
-**Check the real FK constraint name before trusting `fact_message_pk_fkey`.**
-Postgres auto-names it, and the revision that created it used
-`sa.ForeignKeyConstraint` with no name, so the default applies — but verify:
+**`fact_message_pk_fkey` is a guess and must not be used until it is
+confirmed.** Postgres auto-names the constraint, and the revision that created
+it passed `sa.ForeignKeyConstraint` with no name, so the default *should*
+apply — but a wrong name here fails the migration halfway through, after the
+message columns are already dropped. Run this first, and **if it returns a
+different name, use that one; do not proceed on the guess**:
 
 ```bash
 docker compose up -d postgres
@@ -840,6 +848,11 @@ async def test_a_side_loaded_entry_is_in_the_queue() -> None:
 
 
 async def test_the_queue_excludes_a_structured_entry_for_both_reasons() -> None:
+    """A substitution, and a deliberate one. The spec asks for each reason to
+    be asserted alone; a fake session returns its rows unfiltered, so no unit
+    test here can tell «excluded by the stamp» from «excluded by the empty
+    content». What it can pin is that both predicates are in the statement.
+    The per-reason check is run against a live database in the walkthrough."""
     session = FakeSession([])
     await store.unextracted_tail(session, chat_pk=1)
     rendered = str(session.statements[-1])
@@ -1225,7 +1238,11 @@ def test_every_entry_writing_call_site_passes_a_verdict() -> None:
             assert any(kw.arg == "verdict" for kw in node.keywords), (
                 f"{path}: upsert_message without an explicit verdict"
             )
-    assert sites == 3, f"expected 3 call sites, found {sites}"
+    # Four today: handlers.record, handlers.record_edited, query.ask,
+    # outbound.say. The floor is here only so that a broken walk finding
+    # nothing cannot pass as «every call site is fine»; the keyword is what
+    # this test pins, not the census.
+    assert sites >= 4, f"the AST walk found only {sites} call sites"
 ```
 
 Then update the existing fakes: every `test_ingest.py` /
@@ -1860,8 +1877,9 @@ uv run python <scratchpad>/import_v1_expenses.py --dry-run
 
 Expected: it reports 3548 rows parsed, 0 unparseable amounts, 0 unparseable
 dates, and the currency histogram KZT 2678 / USD 654 / THB 99 / IDR 61 /
-VND 49 / RUB 3 / BTC 1 / USD 1 (the lower-case one, upper-cased) / EUR 1 /
-CUP 1. A different total is a finding — stop and report it.
+VND 49 / RUB 3 / BTC 1 / EUR 1 / CUP 1 — **counted after upper-casing**, so
+the one row reading `usd` is inside the 654 and the USD figure the dry-run
+prints is **655**. A different total is a finding — stop and report it.
 
 - [ ] **Step 4: Import, then import again**
 
@@ -1922,7 +1940,36 @@ In order, against the dev bot:
 
 Record the result of each step. A step that cannot be run is a finding.
 
-- [ ] **Step 7: Check the taxonomy actually changed**
+- [ ] **Step 7: The per-reason exclusion, against a real database**
+
+The unit test in Task 3 can only assert that both predicates are in the
+statement. Postgres can answer the question the spec actually asked — that a
+structured entry is excluded by the stamp alone, and by the empty content
+alone:
+
+```bash
+docker compose exec -T postgres psql -U telegrind -d telegrind -c "
+  with q as (
+    select id, extracted_at is null as unstamped,
+           nullif(trim(content), '') is not null as readable
+    from entry where source = 'v1-expenses' limit 5
+  ) select * from q;"
+```
+
+Expected: every imported row has `unstamped = f` **and** `readable = f` — each
+of the two alone would keep it out of the queue, which is the point. Then
+confirm the queue is in fact empty of them:
+
+```bash
+docker compose exec -T postgres psql -U telegrind -d telegrind -c \
+  "select count(*) from entry where source = 'v1-expenses'
+     and verdict = 'fact' and extracted_at is null
+     and nullif(trim(content), '') is not null"
+```
+
+Expected: 0.
+
+- [ ] **Step 8: Check the taxonomy actually changed**
 
 ```bash
 docker compose exec -T postgres psql -U telegrind -d telegrind -c \
@@ -1935,7 +1982,7 @@ this import the extractor will start filling those two on new expenses. It is
 wanted; it arrives silently; confirm it arrived. No new **kind** is seeded:
 loans and wishes are not imported, so `wish` stays uncoined.
 
-- [ ] **Step 8: The pre-deploy precondition — before prod, not before dev**
+- [ ] **Step 9: The pre-deploy precondition — before prod, not before dev**
 
 «There is nothing to lose» is the only claim in the design whose failure is
 irreversible. Immediately before deploying to latitude, and not earlier:
@@ -1951,7 +1998,7 @@ pointer to the retired workbook — **write its value down before the deploy**.
 If either count is not 0, **stop**: the migration drops columns with no
 backfill, and this plan assumed an empty database.
 
-- [ ] **Step 9: Report, and do not commit the script**
+- [ ] **Step 10: Report, and do not commit the script**
 
 Confirm `git status` is clean. The script stays in the scratchpad; the spec
 calls it throwaway and a second copy in git is a second thing to maintain.
@@ -1965,10 +2012,11 @@ gesture, side-loaded raw, side-loaded structured) → Tasks 3 and 4, with the
 side-loaded arms pinned by tests in Tasks 3 and 5. §The extraction queue →
 Tasks 3 and 5; the `BATCH = 20` sentence is ruled on above. §The one-off v1
 expense import → Task 7. §No data migration → Task 2 (one revision, no
-backfill) and Task 7 step 8 (the precondition). §What happens to the parked
+backfill) and Task 7 step 9 (the precondition). §What happens to the parked
 modules → Task 1. §Testing, all four pinned items → 1 uniqueness: Task 2
 step 1 and Task 7 step 4; 2 structured entry excluded for both reasons: Task 3
-step 1; 3 the reaction hop: Task 4 step 1; 4 verdict explicit at every call
+step 1 pins both predicates and Task 7 step 7 checks each reason alone against
+a real database, because a fake session cannot filter; 3 the reaction hop: Task 4 step 1; 4 verdict explicit at every call
 site: Task 4 step 1. The manual walkthrough: Task 7 step 6. §Out of scope
 carries no tasks, as it says.
 
