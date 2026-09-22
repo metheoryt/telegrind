@@ -1,26 +1,14 @@
 {
   "last_refresh": {
-    "commit": "c5a6b01",
-    "date": "2026-09-17",
-    "sessions_processed": [
-      "0175a3d5-62d2-4b9c-8dc3-536b1ab5e959",
-      "07703f9d-c888-4197-85d3-2f6634a26422",
-      "14928ea5-7776-42b4-a690-bb3c99bbaf2b",
-      "3d8c0f9f-87aa-4a37-9e1a-fea83dbef6d6",
-      "55017127-fe8f-4f80-90db-112f893298ff",
-      "66a22735-fd62-5713-a5f7-939ce777dee8",
-      "72bed015-9d07-426c-adcf-8d75ace91f79",
-      "75d2af40-13ed-457f-a347-fbb1144aabe4",
-      "76002530-146a-4ddc-8a01-5597be6c778a",
-      "808ef927-e3ee-4288-a8d2-1e268fadadf8",
-      "a847b5d2-9a19-5c44-9d9e-11324f459ad3",
-      "c4185692-a9db-4208-a6d5-6d0bd33d1593",
-      "e03cc61f-c9c4-4727-a842-384c32ff5a0e",
-      "e6adf2e5-26a1-52b8-b3c0-dc9e34b3e02f"
-    ],
+    "commit": "1df00df",
+    "date": "2026-09-23",
     "tiers_touched": [
       "project",
       "claude-md"
+    ],
+    "sessions_processed": [
+      "0175a3d5-62d2-4b9c-8dc3-536b1ab5e959",
+      "53ef4f88-6f25-4c04-b804-8c435da7f085"
     ]
   },
   "sessions": {
@@ -28,8 +16,8 @@
       "cwd": "/home/me/orca/workspaces/telegrind/v2",
       "host": "g513ie",
       "id_hash": "4ad49665eedd4a2494051703f8f7a502d297da0e",
-      "last_line": 2631,
-      "last_ts": "2026-09-17T16:47:20.923Z"
+      "last_line": 3229,
+      "last_ts": "2026-09-17T18:54:32.686Z"
     },
     "07703f9d-c888-4197-85d3-2f6634a26422": {
       "cwd": "/tmp/claude-1000/-home-me-my-telegrind/c4185692-a9db-4208-a6d5-6d0bd33d1593/scratchpad",
@@ -135,6 +123,13 @@
       "id_hash": "7b215538334600c76ad1e51c5631d77a80f2ae02",
       "last_line": 50,
       "last_ts": "2026-09-11T18:59:55.954Z"
+    },
+    "53ef4f88-6f25-4c04-b804-8c435da7f085": {
+      "cwd": "/home/me/orca/workspaces/telegrind/telegrind-spendings-analytics",
+      "host": "g16-wsl",
+      "id_hash": "7c62ed02436f41882f2c1c656147d521ad9ba513",
+      "last_line": 607,
+      "last_ts": "2026-08-24T09:32:04.194Z"
     }
   }
 }

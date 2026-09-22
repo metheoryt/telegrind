@@ -315,6 +315,35 @@ stamps mismatched versions on facts written during live testing.
   The same mechanic is why an unguarded exception anywhere on the reply path
   swallows the user's message rather than surfacing an error.
   <!-- src: telegrind db9de98 | 2026-09-12 -->
+- **Every writer of an `entry` passes `verdict=` explicitly — the `upsert_message` lesson
+  above, moved to the new column.**
+  `entry.verdict` has `server_default='fact'`, so an adapter that omits it puts
+  rows the classifier never saw into the extraction queue and nothing fails. An
+  AST test in `tests/test_ingest.py` walks both `upsert_message(...)` and direct
+  `Entry(...)` calls; a new side-load adapter has to satisfy it.
+  <!-- src: telegrind 1df00df | 2026-09-23 -->
+- **Fake sessions must answer from the statement's real bind params, never in
+  call order.** `FakeSession`, `EditSession` and `ReplySession` filter on e.g.
+  `statement.compile().params.get("message_pk_1")` / `"entry_pk_1"`; fakes that
+  answered by order let tests pass against deliberately broken code more than
+  once. `FakeSession.flush()` is a no-op unless it assigns ids, which silently
+  turns `x is row.id` into `None is None`.
+  <!-- src: telegrind 1df00df | 2026-09-23 -->
+- **Gate specifics.** The full set is `uv run pytest`, `uv run ruff check`,
+  `uv run ruff format --check` and `uv run ty check`; check the `llm` suite
+  without spending tokens with `uv run pytest -m llm --collect-only`. Read
+  ruff's whole output — a malformed-`# noqa` warning can sit above "All checks
+  passed!". The dev database is
+  `docker compose exec -T postgres psql -U postgres -d postgres` — user and
+  database are `postgres`, not `telegrind`.
+  <!-- src: telegrind 1df00df | 2026-09-23 -->
+- **On `metheoryt/v2`, `coerce.to_instant` falls back to the ENTRY's
+  `occurred_at`, not to a message timestamp** (`to_instant(item.get("when"),
+  cfg, row.occurred_at)` in `extract.py`), so «вчера» resolves against when the
+  entry happened, in the chat's `tz_offset` — which is what makes it work for a
+  side-loaded entry that has no message at all.
+  <!-- conflicts-with: "`to_instant` resolves a date against the **message's own** timestamp, in the chat's timezone." -->
+  <!-- src: telegrind 1df00df | 2026-09-23 -->
 
 ## Message routing — the `verdict` column
 

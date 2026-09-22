@@ -169,6 +169,13 @@ One bullet per fact, under a topical heading. No secrets.
   history are the Telegram Desktop export of the chat and the old Google sheet.
   v2's own volume is not in restic yet.
   <!-- src: telegrind c26a7cb | 2026-09-17 -->
+- **The entries migration moves no data, so prod must be empty when it lands.**
+  Alembic revision `60ddbcfebb5e` drops the verdict and extraction columns from
+  `message` and adds a NOT NULL `fact.entry_pk` without migrating any rows.
+  Verify the target database has no `fact` rows immediately before deploying it
+  (v2 prod was empty as of 2026-09-16); a non-empty dev database needs
+  `TRUNCATE fact` first.
+  <!-- src: telegrind 1df00df | 2026-09-23 -->
 
 ## Extraction — what the corpus taught
 
@@ -342,6 +349,11 @@ One bullet per fact, under a topical heading. No secrets.
   observer order and the resolved update types. Reordering the imports in
   `setup_dispatcher()` changes which handler claims a message.
   <!-- src: telegrind db9de98 | 2026-09-12 -->
+- **A 12-hex id in a code comment here is an alembic revision, not a git SHA.**
+  Ids like `4d60c7b65ad2` are the `revision: str = ...` of a file under
+  `alembic/versions/`; `git cat-file` will always reject them. Look them up in
+  the migration files.
+  <!-- src: telegrind 1df00df | 2026-09-23 -->
 
 ## The Claude meta layer — hazards to carry into the merge
 
@@ -381,7 +393,7 @@ One bullet per fact, under a topical heading. No secrets.
   <!-- conflicts-with: "## The Claude meta layer — hazards to carry into the merge" -->
   <!-- src: telegrind 944dab3 | 2026-09-17 -->
 
-<!-- KB refreshed against c5a6b01 on 2026-09-17 -->
+<!-- KB refreshed against 1df00df on 2026-09-23 -->
 
 ## Vendor-API facts routed here from the 2026-09-12 shared proposals
 
@@ -478,6 +490,73 @@ because that code still exists.
   ingest puts a number, and the entire "we go through aiogram so `raw` matches
   live by construction" argument quietly stops holding.
   <!-- src: telegrind 591ed41 | 2026-09-17 -->
+- **The `entry` cut as built, on `metheoryt/v2`.** `fact.entry_pk` is an FK to
+  `entry.id` with `ON DELETE CASCADE`; `entry` holds `verdict`, `extracted_at`,
+  `extract_model`, `extract_prompt_version` and `extract_error`, and
+  `message` (`LoggedMessage`) keeps only what Telegram sent. Idempotency is
+  `uq_entry_chat_source_external UNIQUE (chat_pk, source, external_id)`; a
+  Telegram entry's `external_id` is `str(message_id)`, and
+  `uq_entry_message_pk` is a *partial* unique index on `message_pk WHERE
+  message_pk IS NOT NULL`, because a side-loaded entry has `message_pk IS NULL`.
+  An importer looks up by `(chat_pk, source, external_id)` and updates, so a
+  re-run creates nothing; `delete from entry where source='<source>'` undoes a
+  whole import and cascades to its facts.
+  <!-- src: telegrind 1df00df | 2026-09-23 -->
+- **`Entry` declares no `relationship()` on purpose — only `mapped_column`.**
+  There is no `entry.message` attribute, so an async lazy load (the
+  `MissingGreenlet` class of bug) cannot happen by construction;
+  `store.messages_for` (keyed by entry id, one query) is the only explicit
+  message loader. Do not add a relationship to "simplify" a call site.
+  <!-- src: telegrind 1df00df | 2026-09-23 -->
+- **The extraction queue reads `entry` alone, and imported rows stay out of it
+  twice over.** `unextracted_tail` / `context_before` select
+  `verdict='fact' AND extracted_at IS NULL AND nullif(trim(content),'') IS NOT
+  NULL`, ordered by `occurred_at, id`. A structured import is stamped
+  `extracted_at` AND carries `content` NULL, so neither condition alone is what
+  keeps it out. `extract._line` renders the author «(я)» and the «→ ответ на»
+  reply edge only when the entry has a message.
+  <!-- src: telegrind 1df00df | 2026-09-23 -->
+- **A pre-entry `message` row with no `entry` is inert, with two side effects.**
+  It never enters the queue or the prompt window, but a reaction on it logs
+  "message has no entry", and an EDIT of it goes through `upsert_message`'s
+  healing path, which creates a fresh entry with `extracted_at=None` dated at
+  the original `occurred_at` — so it sorts to the front of the tail and drags
+  roughly ten neighbours of context into the next pass with it.
+  <!-- src: telegrind 1df00df | 2026-09-23 -->
+- **An importer leaves a field out when its value is unknown; it never stores
+  junk, and it is wary of numbers the bot cannot produce itself.**
+  `coerce.to_json_value` keeps an unparseable value as text and every numeric
+  cast in `query.py` is guarded by `jsonb_typeof(...) = 'number'`, so junk
+  silently drops out of sums rather than failing — the v1 «В тенге» column holds
+  the spreadsheet error `#N/A` on some USD rows, and the decision is to omit
+  `amount_kzt` there. The subtler risk is the other direction:
+  `taxonomy.observed` shows the extractor every field key ever seen per kind,
+  with no frequency threshold, so one imported `amount_kzt` teaches the live
+  model to emit it — and a number the model invents passes the `jsonb_typeof`
+  guard and gets summed. The bot has no exchange-rate source, which is why
+  whether `amount_kzt` belongs in `fields` or in `entry.raw` beside `Курс` was
+  left open.
+  <!-- src: telegrind 1df00df | 2026-09-23 -->
+- **The v1 workbook's shape, for whoever writes its importer.** Worksheets:
+  `Expenses`, `_config`, `Enums`, `Loans`, `Commodities`, `Crypto` — `Loans` is
+  separate from `Expenses`, so a spending total over `Expenses` alone omits
+  money lent and repaid. `Expenses` columns, 0-indexed: 0 `#` (row counter),
+  1 amount in the original currency, 2 currency code, 3 date, 4 comment,
+  5 rate (`Курс`), 6 «В тенге» (KZT at the rate on the day the row was written —
+  use it rather than re-deriving rates), 7 category, 8 auto-category,
+  9 need/want. Short rows come back right-trimmed, so pad before indexing.
+  Values are locale-formatted strings: space or NBSP thousands separator, comma
+  decimal point, and dates in three formats (`%d.%m.%Y`, `%d.%m.%y %H:%M`,
+  `%d.%m.%y`). The auto-category column appears to stop being filled around
+  January 2026 (inferred from a 2026-08 analysis, not re-measured).
+  <!-- src: telegrind 1df00df | 2026-09-23 -->
+- **Reading the live v1 sheet outside the bot** uses the bot's own Google
+  service-account key under `~/my/telegrind/local/` (a `telegrind-*.json`;
+  `.env.dist` names the settings), gspread + google-auth with read-only
+  spreadsheets and drive scopes, and `open_by_key`. gspread is not in the system
+  python, so run ad-hoc scripts as
+  `uv run --with gspread --with google-auth python …`.
+  <!-- src: telegrind 1df00df | 2026-09-23 -->
 
 ## Worktrees, the dev stack, and the main checkout
 
