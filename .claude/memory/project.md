@@ -6,12 +6,10 @@ One bullet per fact, under a topical heading. No secrets.
 ## Product invariants
 
 - **"Ничего из написанного не теряется"** is the product claim, not a slogan:
-  every handler writes the message row to Postgres *unconditionally*, and only
-  then projects to Sheets if a workbook is linked. Declining to extract
-  (unknown command, voice, `??`) is never licence to drop the message.
-- **The workbook is an optional projection**, not the store — since
-  `ef80f31` (2026-09). There is no onboarding gate and no FSM; `/link` is a
-  command the user reaches for, not a wall they pass.
+  every handler writes the message row to Postgres *unconditionally*, and that
+  is where it stops — there is no projection layer any more (see *The workbook
+  layer is gone*, 2026-09-11). Declining to extract (unknown command, voice,
+  `??`) is never licence to drop the message.
 
 ## Telegram Bot API — decisions already made (see `docs/telegram-bot-api.md`)
 
@@ -48,11 +46,6 @@ One bullet per fact, under a topical heading. No secrets.
 
 ## Known drift
 
-- The `## Architecture` section of the root `CLAUDE.md` is stale as of
-  2026-09-10: it still describes the `Outcome`/`Loan`/`Wish` `Sheet`
-  subclasses and the `/start` onboarding FSM that `ef80f31` removed. The
-  current shape is `llm.extract` → `projection.apply_changes` over
-  `store`-owned `Message`/`Fact` rows.
 - **`docs/` does not exist on `main` at all.** Verified 2026-09-17:
   `git cat-file -e main:docs/telegram-bot-api.md` and both design specs fail. So
   the root `CLAUDE.md`'s instruction to read `docs/telegram-bot-api.md` before
@@ -66,7 +59,6 @@ One bullet per fact, under a topical heading. No secrets.
   `metheoryt/v2` and nothing else. Both local refs are still here (2026-09-17)
   for no better reason than that nobody ran `git branch -d` after their Orca
   worktrees went away — only `main` and `v2` are checked out now.
-  <!-- conflicts-with: "**Everything below describes the dialogue-first rewrite**, which lives on `metheoryt/dialogue-first` and has never been deployed" -->
   <!-- src: telegrind c5a6b01 | 2026-09-17 -->
 
 ## The workbook layer is gone (2026-09-11)
@@ -79,8 +71,6 @@ One bullet per fact, under a topical heading. No secrets.
   deletion, the projection did not. Anything written about registries, header
   ranges, `origin="imported"` facts or `sheet_key` describes a shape that no
   longer exists.
-  <!-- conflicts-with: "every handler writes the message row to Postgres *unconditionally*, and only then projects to Sheets if a workbook is linked" -->
-  <!-- conflicts-with: "**The workbook is an optional projection**, not the store — since `ef80f31` (2026-09). There is no onboarding gate and no FSM; `/link` is a command the user reaches for, not a wall they pass." -->
   <!-- src: telegrind 35574a2 | 2026-09-12 -->
 - **`Chat.sheet_url` outlived the layer that used it, on purpose.** The
   `dialogue_first` migration recreated `fact` without its spreadsheet
@@ -95,7 +85,6 @@ One bullet per fact, under a topical heading. No secrets.
   `query` → `answer` → `receipts` → `coerce` → `config` → `models` → `llm`.
   There is no `llm.extract` and no `projection.apply_changes` anywhere in the
   tree.
-  <!-- conflicts-with: "The `## Architecture` section of the root `CLAUDE.md` is stale as of 2026-09-10: it still describes the `Outcome`/`Loan`/`Wish` `Sheet` subclasses and the `/start` onboarding FSM that `ef80f31` removed. The current shape is `llm.extract` → `projection.apply_changes` over `store`-owned `Message`/`Fact` rows." -->
   <!-- src: telegrind 35574a2 | 2026-09-12 -->
 
 ## Deployment and the two bots
@@ -244,8 +233,6 @@ One bullet per fact, under a topical heading. No secrets.
   `store.mark_extracted`, `store.py:332`) and read by nothing in `telegrind/`.
   Whatever a re-extraction pass would need in order to find facts made by an
   older prompt, it does not get from this column today.
-  <!-- conflicts-with: "`PROMPT_VERSION` is extraction's and is what `fact.prompt_version` records" -->
-  <!-- conflicts-with: "It is stamped on every extracted fact and is what a later re-extraction pass uses to find facts produced by an older prompt" -->
   <!-- src: telegrind 591ed41 | 2026-09-17 -->
 
 ## Ingest invariants that are easy to break
@@ -278,13 +265,19 @@ One bullet per fact, under a topical heading. No secrets.
 
 ## Routing — where the shipped code and the meta-layer spec part company
 
-- **An edit preserves the row's previous verdict; it does not re-derive one.**
-  The design doc says an edited message is re-classified, and the code
-  deliberately does not do that yet: re-deriving from the `/` prefix on the
-  edit path would flip a stored `/q` row from `question` back to `fact` the
-  first time the user fixed a typo in their own question. A row with no
-  previous sighting falls through to the first-sighting default. Do not read
-  the spec's re-classification paragraph as a description of what runs.
+- **An edit re-classifies and re-routes (`944dab3`, 2026-09-16), and the `/`-prefix
+  flip is now an accepted cost rather than a prevented one.** `record_edited`
+  re-derives through `classify.verdict_for(text or caption, continues=…)`; the
+  docstring's reason is that «взял 3000» corrected to «потратил 3000 на такси» is
+  exactly the case where a fact moves kind. What the old gate bought is what is now
+  exposed: re-deriving from the `/` prefix on the edit path flips a stored `/q` row
+  from `question` back to `fact` the first time the user drops the prefix while
+  fixing a typo in their own question. The reply chain is the only thing pinning it
+  — `_continues` passes the turn's verdict into the classifier. A row with no
+  previous sighting still falls through to the first-sighting default. There is no
+  point of no return any more: the `HANDED_OVER` 👀 gate went with the hand-over
+  seam, so nothing can mark a message as beyond reach, and the fact/question
+  boundary that used to cost a second of latency now costs the answer.
   <!-- src: telegrind db9de98 | 2026-09-12 -->
 - **`extractable` is still on `message` on purpose, and dropping it is a hand
   step.** The verdict migration is the expand half of an expand/contract pair:
@@ -313,7 +306,6 @@ One bullet per fact, under a topical heading. No secrets.
   re-routed, and removed the arm that let a refused question fall through to
   Claude. The fact/question boundary used to be soft — a misclassification cost
   a second of latency; now it costs the answer.
-  <!-- conflicts-with: "An edit preserves the row's previous verdict; it does not re-derive one." -->
   <!-- src: telegrind 944dab3 | 2026-09-17 -->
 
 ## Environment and the test harness
@@ -355,7 +347,11 @@ One bullet per fact, under a topical heading. No secrets.
   the migration files.
   <!-- src: telegrind 1df00df | 2026-09-23 -->
 
-## The Claude meta layer — hazards to carry into the merge
+## The Claude meta layer — hazards that left with it (2026-09-14)
+
+These now describe `~/my/cladaeb`, not telegrind: the meta layer is out and it is
+not merging (last bullet). They are kept here because they were measured here and
+are recorded nowhere else.
 
 - **`CLAUDE_CWD` unset means the bot spawns Claude Code inside the live
   checkout.** The meta-layer handler falls back to the bot's own working
@@ -380,7 +376,7 @@ One bullet per fact, under a topical heading. No secrets.
   fixed anchor.
   <!-- src: telegrind db9de98 | 2026-09-12 -->
 - **The meta layer is OUT of telegrind as of 2026-09-14 — it is not merging, and
-  the hazards below now describe another repository's problem.** The forcing
+  the hazards above now describe another repository's problem.** The forcing
   fact is that a process cannot rebuild and restart itself: `docker compose up -d
   --build` destroys the container the turn is running in, and aiogram has already
   advanced the polling offset, so the deploy request dies as silence rather than
@@ -390,7 +386,6 @@ One bullet per fact, under a topical heading. No secrets.
   new repo, `~/my/aiogram-blackbox`, records what a bot saw and said to JSONL;
   the dependency direction is **apps → recorder**, and nothing about Claude may
   live in it.
-  <!-- conflicts-with: "## The Claude meta layer — hazards to carry into the merge" -->
   <!-- src: telegrind 944dab3 | 2026-09-17 -->
 
 <!-- KB refreshed against 1df00df on 2026-09-23 -->

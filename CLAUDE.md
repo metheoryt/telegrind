@@ -4,8 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 > **Scope — this is `main`.** The code in this checkout is still the 2026-08
 > Google Sheets build, which is what runs on latitude today. **Everything
-> below describes the dialogue-first rewrite**, which lives on
-> `metheoryt/dialogue-first` and has never been deployed — the two-bot
+> below describes the dialogue-first rewrite**, whose branch
+> `metheoryt/dialogue-first` was deleted from origin on 2026-09-14 (proved an
+> ancestor of `metheoryt/v2`; a local ref may still exist on a given box) and
+> which has never been deployed — the two-bot
 > redesign that supersedes it is on `metheoryt/v2`. This file and
 > `.claude/memory/project.md` are carried here so the design of record and
 > the project's hard-won facts travel with the repository rather than with
@@ -117,7 +119,7 @@ Asking is the second trigger, and the only one that parses anything:
 
 ```
 /q <question>
-  → handlers/query.py               # store the question, extractable=False
+  → handlers/query.py               # store the question, verdict="question"
   → extract.run                     # the whole unparsed tail, in one call
   → answer.spec_for                 # question → a closed query spec
   → query.run                       # the spec → SQL → numbers
@@ -142,7 +144,8 @@ session and a `ChatConfig` into the handler kwargs. It narrows on the update
 type: `Message` and `MessageReactionUpdated` pass, everything else is dropped.
 
 **`telegrind/bot/handlers/handlers.py`** — ingestion. The slash catch-all first
-(stored with `extractable=False`, so a command never coins a category), then
+(stored with `verdict="system"`, so a command never coins a category — see
+*Message routing*), then
 voice, then a filterless catch-all so a sticker or a photo is stored too.
 `acknowledge` places the receipt and never raises: the row is already
 committed, so a Telegram failure costs a visual cue and nothing else. An edit
@@ -191,8 +194,8 @@ model is never asked to add anything up.
 **`telegrind/coerce.py`** — the write boundary for a fact field. A value that
 parses becomes a real JSON number, so `(fields->>'amount')::numeric` cannot
 fail the whole query; one that does not stays text and simply never aggregates.
-`to_instant` resolves a date against the **message's own** timestamp, in the
-chat's timezone.
+`to_instant` resolves a date against the ENTRY's `occurred_at` (not a message
+timestamp), in the chat's `tz_offset` — see the `metheoryt/v2` bullet below.
 
 **`telegrind/config.py`** — `ChatConfig`, the timezone offset and default
 currency, read off the `chat` row.
@@ -288,9 +291,13 @@ reading the code or running against a real `Session` finds it.
 <!-- src: telegrind 35574a2 | 2026-09-12 -->
 
 **Bump `PROMPT_VERSION` only when the prompt changed meaning.** It is stamped on
-every extracted fact and is what a later re-extraction pass uses to find facts
-produced by an older prompt; a gratuitous bump invalidates the eval baseline and
-stamps mismatched versions on facts written during live testing.
+every extracted fact — `extract.py` writes `fact.prompt_version` and
+`store.mark_extracted` writes `message.extract_prompt_version` — but **nothing in
+`telegrind/` reads either column** (measured 2026-09-17: three writers, zero
+readers), so a re-extraction pass cannot find older-prompt facts from the stamp
+today; whatever it needs, it does not get from this column. Bump it anyway only
+on a meaning change: a gratuitous bump invalidates the eval baseline and stamps
+mismatched versions on facts written during live testing.
 <!-- src: telegrind 35574a2 | 2026-09-12 -->
 
 - **Switching the column a selector reads means every writer must pass it
@@ -342,7 +349,6 @@ stamps mismatched versions on facts written during live testing.
   cfg, row.occurred_at)` in `extract.py`), so «вчера» resolves against when the
   entry happened, in the chat's `tz_offset` — which is what makes it work for a
   side-loaded entry that has no message at all.
-  <!-- conflicts-with: "`to_instant` resolves a date against the **message's own** timestamp, in the chat's timezone." -->
   <!-- src: telegrind 1df00df | 2026-09-23 -->
 
 ## Message routing — the `verdict` column
@@ -356,6 +362,4 @@ stamps mismatched versions on facts written during live testing.
   expand half of an expand/contract migration, deliberate, not two flags left
   to disagree. The reasoning is written out in
   `docs/superpowers/specs/2026-09-11-claude-meta-layer-design.md`.
-  <!-- conflicts-with: "The slash catch-all first (stored with `extractable=False`, so a command never coins a category)" -->
-  <!-- conflicts-with: "`/q <question>` → handlers/query.py # store the question, extractable=False" -->
   <!-- src: telegrind db9de98 | 2026-09-12 -->
