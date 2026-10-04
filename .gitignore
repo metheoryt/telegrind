@@ -12,3 +12,8 @@ google-account.json
 .claude/skills/generated/
 # Claude Code machine-local settings
 .claude/settings.local.json
+
+# Project memory lives in the agent-memory repo (~/.claude/memory/projects/
+# metheoryt/telegrind/); .claude/memory is a symlink to it. No trailing slash: a
+# `/`-suffixed pattern does not match a symlink.
+.claude/memory
