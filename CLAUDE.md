@@ -14,6 +14,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 > one branch. Read the architecture section as the design, not as a map of
 > the files beside it.
 
+> **Correction (2026-10-04): `.claude/memory/project.md` no longer travels with
+> the repository.** It moved to the agent-memory repo
+> (`projects/metheoryt/telegrind/project.md`) and `.claude/memory` is now a
+> gitignored symlink to it; this file is the only design-of-record document
+> still carried on `main`.
+<!-- conflicts-with: "This file and `.claude/memory/project.md` are carried here so the design of record and the project's hard-won facts travel with the repository rather than with one branch." -->
+<!-- src: telegrind afd98c8 | 2026-10-11 -->
+
 ## What This Is
 
 Telegrind is an async Telegram bot that keeps a personal log. You write what
