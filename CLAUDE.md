@@ -8,18 +8,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 > `metheoryt/dialogue-first` was deleted from origin on 2026-09-14 (proved an
 > ancestor of `metheoryt/v2`; a local ref may still exist on a given box) and
 > which has never been deployed — the two-bot
-> redesign that supersedes it is on `metheoryt/v2`. This file and
-> `.claude/memory/project.md` are carried here so the design of record and
-> the project's hard-won facts travel with the repository rather than with
-> one branch. Read the architecture section as the design, not as a map of
-> the files beside it.
+> redesign that supersedes it is on `metheoryt/v2`. This file is carried here
+> so the design of record travels with the repository rather than with one
+> branch (`.claude/memory/project.md` was carried with it until 2026-10-04 —
+> see the correction below). Read the architecture section as the design, not
+> as a map of the files beside it.
 
 > **Correction (2026-10-04): `.claude/memory/project.md` no longer travels with
 > the repository.** It moved to the agent-memory repo
 > (`projects/metheoryt/telegrind/project.md`) and `.claude/memory` is now a
 > gitignored symlink to it; this file is the only design-of-record document
 > still carried on `main`.
-<!-- conflicts-with: "This file and `.claude/memory/project.md` are carried here so the design of record and the project's hard-won facts travel with the repository rather than with one branch." -->
 <!-- src: telegrind afd98c8 | 2026-10-11 -->
 
 ## What This Is
