@@ -49,7 +49,8 @@ What telegrind owns:
 - the agent's contract: the rules in `agent/CLAUDE.md` that every turn runs
   under, and the live gate that measures whether the agent keeps them.
 
-What the agent owns: the fact tables, their schema, the person's own rules.
+What the agent owns: the fact tables, their schema, the person's own rules,
+and the import of bank statements the person drops in (section 8, STATEMENTS).
 
 ### SCOPE
 
@@ -461,6 +462,42 @@ The two files and three tables Python depends on.
   person's `CLAUDE.md`, never reads another person's directory, and never
   sends anything to Telegram itself; its only channel is `Done.text`.
 
+### STATEMENTS
+
+Part of the person's money moves through banks that export statements —
+Kaspi and Freedom first. A statement is a document like any other: dropped
+in the chat, stored and downloaded by Python (REQ-MSG-2), read by the agent
+(REQ-CONTRACT-9). What is special is what the agent does with its rows: they
+overlap with what the person typed by hand, and some of them are the person
+moving money between their own accounts. The rules are the contract's; the
+file formats are measured, not specified (section 12).
+
+- **REQ-CONTRACT-13** — A statement is imported row by row into the same
+  fact tables as messages, in the same pass that processes its entry. Every
+  fact table that can take a statement row has a `source TEXT NOT NULL`
+  column (`message` or `statement`) and an `account TEXT` column (the bank
+  or card the row belongs to, as the person names it); a row from a
+  statement has `entry_id` = the statement's entry. The statement's own
+  columns the agent does not lift (merchant code, authorisation id) are
+  kept in a `TEXT` column, not dropped.
+- **REQ-CONTRACT-14** — A hand-written entry and a statement row that
+  describe the same thing are reconciled into one row: same account when
+  the message names one, amounts equal within rounding, dates within one
+  day, and nothing in the wording that says otherwise. The kept row takes
+  the amount and date from the statement and the comment from the message,
+  keeps `entry_id` of the message and names the statement's entry in a
+  `statement_entry_id INTEGER` column; the statement row is not inserted a
+  second time. The pass's closing line says how many rows matched and how
+  many statement rows found no message. A match the agent is unsure of is
+  not made; both rows stay and the line says so.
+- **REQ-CONTRACT-15** — The person's own accounts are listed in an
+  `accounts(name TEXT PRIMARY KEY, bank TEXT, kind TEXT)` table the agent
+  maintains from what the person says and from the statements it has seen.
+  A row that moves money from one listed account to another — in a
+  statement as a transfer, or in a message («перекинул 50000 с каспи на
+  фридом») — is a `transfer` fact with `from_account` and `to_account`, and
+  never an expense or an income. A sum over expenses never includes it.
+
 ---
 
 ## 9. Schedule
@@ -509,7 +546,9 @@ deploys automatically.
 
 ## 11. Starting point
 
-The repository keeps its history. The first commit of this version deletes
+The repository keeps its history. v2 never ran in production, so there is
+no v2 data to carry over; the v1 workbook is the only history worth
+importing (REQ-DEPLOY-5). The first commit of this version deletes
 everything v2 built except:
 
 - `docs/telegram-bot-api.md`, the measured Bot API surface;
@@ -546,6 +585,16 @@ becomes one.
 - **The `claude` CLI's behaviour at the subscription limit mid-pass**: whether
   a half-done pass leaves `processed` consistent. The contract's
   delete-then-insert per entry bounds the damage to one entry.
+- **Kaspi and Freedom statement formats.** Which files the apps export (PDF,
+  XLSX, CSV), whether headless Claude Code reads a Kaspi PDF's table in one
+  pass, and how a transfer between the person's own accounts is worded in
+  each. REQ-CONTRACT-13 to 15 are measured on real statements the owner
+  drops in the dev chat; the live gate gains a statement case once one is
+  sanitized into `tests/fixtures/`.
+- **Reconciliation precision.** How often a hand-typed «4500 такси» and the
+  statement's «YANDEX GO 4 500,00» are matched, and how often two different
+  purchases of the same amount on one day are wrongly merged. REQ-CONTRACT-14
+  says «unsure → both rows stay»; the threshold is the gate's to find.
 
 ## 13. Out of scope
 
@@ -556,7 +605,9 @@ becomes one.
   and written down. A container per turn with one directory mounted is the
   fix if strangers ever use the bot; `televibe` admits it by replacing the
   `claude` binary with a wrapper.
-- API-key models, Postgres, the workbook, automatic import of anything.
+- API-key models, Postgres, the workbook. Automatic import of anything: a
+  statement arrives because the person drops it in the chat, never because
+  the bot fetched it.
 - Forking a chain, streaming answers word by word.
 - Deletion of a Telegram message: the Bot API does not report it to a plain
   bot; the reaction gesture is the deletion.
