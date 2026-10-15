@@ -414,3 +414,21 @@ because that code still exists.
   <!-- src: telegrind 5dcec58 | 2026-09-12 -->
 
 <!-- KB refreshed against 5dcec58 on 2026-09-12 -->
+
+## v3 — the rewrite on televibe (decided 2026-10-15)
+
+- **v3 replaces v2 wholesale; `SPEC.md` on branch `metheoryt/v3` is the law**
+  (workspace `~/orca/workspaces/telegrind/v3`). Python owns a per-person
+  SQLite log (`events` append-only + `entries` current state), receipts,
+  Scribe+cleanup voice, and a model-free question trigger (reply to bot, `?`,
+  `/`); a headless Claude Code turn via `televibe` owns `facts.sqlite`, its
+  schema and the person's own `CLAUDE.md`. No Postgres, no Anthropic SDK.
+  The user chose this over patching v2 after the 2026-10-15 critique
+  (currency-blind sums, 200-entry tail vs 2048 tokens, false-zero answers).
+- **Multi-user from day one**: `users/<telegram id>/` is the isolation unit and
+  the agent's cwd; allowlist in env; isolation is by directory and contract,
+  not a sandbox — accepted for a list of trusted people.
+- **televibe gets a new primitive first**: a sessionless, tool-less, JSON-schema
+  one-shot call (what jared's `cleanup.py` hand-rolls). Scribe itself stays
+  out of televibe (vendor HTTP, zero-deps rule); copy jared's 80 lines until a
+  third project needs it.
