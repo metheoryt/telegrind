@@ -2,6 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **On `metheoryt/v3` this file still describes v2.** `SPEC.md` at the root is
+> the design of record for v3 — the per-person log in SQLite, the agent through
+> `televibe`, no Postgres and no Anthropic SDK — and
+> `docs/superpowers/plans/2026-10-15-telegrind-v3.md` is its plan, whose first
+> task deletes the v2 code walked through below and rewrites this file. Until
+> that lands, read `SPEC.md` first and treat everything below as v2.
+
 ## What This Is
 
 Telegrind is an async Telegram bot that keeps a personal log. You write what
