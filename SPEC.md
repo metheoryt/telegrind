@@ -1,0 +1,596 @@
+# telegrind — specification
+
+**This document is the law.** Each requirement has an id and is claimed by a
+test that names that id. Where the code and this document disagree, the code
+is wrong. A requirement changes by editing this file first. Ids are
+append-only: a withdrawn requirement is struck through and keeps its id.
+
+Section 12 lists what is not measured yet. Nothing there is a requirement.
+Section 13 lists what is out of scope. Nothing there is deferred by accident.
+
+Settled in chat with the owner on 2026-10-15. This is the third shape of the
+bot: v1 wrote expenses into a Google workbook, v2 (branch `metheoryt/v2`)
+stored every message in Postgres and derived facts with the Anthropic API
+behind a classifier and a closed query language. v3 keeps v2's one good
+promise — nothing written is lost, and parsing is deferred and sees its
+neighbours — and hands everything that needs judgement to a headless coding
+agent run through `televibe`.
+
+---
+
+## 1. What telegrind is
+
+A Telegram bot that keeps a person's log. The person writes whatever happened,
+in free form: text, a voice note, a photo of a receipt, a forwarded message.
+Every message is stored verbatim on arrival, by plain Python, before any model
+is involved. Later — on a schedule, or when the person asks something — an
+agent (Claude Code, through `televibe`) reads the unprocessed tail of the log
+in context, derives facts into tables it designs itself, and answers questions
+by querying those tables. Arithmetic is SQL's; the agent writes the query and
+reads the result.
+
+There is no fixed schema. Expenses, blood pressure, weight, what made the
+person happy today — the categories and their columns are the agent's to coin,
+grow and merge, per person. What is fixed is the discipline around the agent:
+what is stored before it runs, what it may write, what it must keep, and what
+it must never do (count in its head, sum across currencies, invent).
+
+Several people use one bot. Each person's data is a directory of their own,
+and nothing crosses between directories.
+
+What telegrind owns:
+
+- receiving and storing messages, edits, reactions, media and transcripts,
+  with no model between arrival and commit;
+- deciding, without a model, whether a text message is a question;
+- transcribing voice notes and cleaning the transcript;
+- starting agent turns — a pass over the tail, or an answer — and showing
+  them in the chat;
+- the agent's contract: the rules in `agent/CLAUDE.md` that every turn runs
+  under, and the live gate that measures whether the agent keeps them.
+
+What the agent owns: the fact tables, their schema, the person's own rules.
+
+### SCOPE
+
+- **REQ-SCOPE-1** — No Python module in `telegrind/` imports a database
+  driver other than `sqlite3`, and none imports `anthropic` or any other model
+  SDK. The agent is reached only through `televibe`. A test fails the build
+  otherwise.
+- **REQ-SCOPE-2** — No Python module in `telegrind/` opens `facts.sqlite` for
+  writing. The only reads of it are the three tables of REQ-FACTS-2. A test
+  greps the sources for the file name and checks every open is read-only.
+
+---
+
+## 2. Layout on disk
+
+One data directory, `DATA_DIR` (default `/data/telegrind`). Inside it, one
+directory per person, keyed by Telegram user id. Every agent turn of that
+person runs with their directory as its working directory.
+
+```
+<DATA_DIR>/
+  CLAUDE.md                 the agent's contract (section 8); a copy of
+                            agent/CLAUDE.md from this repository, written at
+                            start-up
+  users/<user id>/          the person's directory and the agent's cwd
+    CLAUDE.md               the person's own rules; written by the agent only
+    log.sqlite              the log; written by Python only (section 3)
+    facts.sqlite            the facts; written by the agent only
+    media/<sha256>          downloaded photos, documents, voice files
+```
+
+### LAYOUT
+
+- **REQ-LAYOUT-1** — The person's directory, `log.sqlite` and `media/` are
+  created on the first stored message. `facts.sqlite` and the person's
+  `CLAUDE.md` are never created by Python: their absence means the agent has
+  not run yet.
+- **REQ-LAYOUT-2** — `<DATA_DIR>/CLAUDE.md` is overwritten from
+  `agent/CLAUDE.md` every time the bot starts. The person's `CLAUDE.md` is
+  never written, read or deleted by Python.
+- **REQ-LAYOUT-3** — Claude Code reads `CLAUDE.md` from the working
+  directory and every parent, so a turn in `users/<id>/` sees the contract
+  and the person's rules with no prompt assembly. A test runs a fake agent in
+  a person's directory and checks both files are on the path Claude Code
+  walks (the fake records its cwd; the layout test checks the parent chain).
+- **REQ-LAYOUT-4** — Paths never move. A Claude Code session is keyed by its
+  working directory and its config directory; a moved path silently starts
+  empty sessions and breaks every reply chain. `DATA_DIR` and the account home
+  are set once and documented in the deploy (section 10).
+
+---
+
+## 3. The log
+
+`log.sqlite` is the record of what Telegram sent, and nothing derived. Two
+tables carry the record: `events`, which only grows, and `entries`, the
+current state of each message rebuilt from its events. Both are written in
+one transaction.
+
+```sql
+events(id INTEGER PRIMARY KEY, message_id INTEGER NOT NULL, at INTEGER NOT NULL,
+       kind TEXT NOT NULL, payload TEXT NOT NULL)
+  -- kind: received | edited | stored | transcribed | deleted | restored | bot_sent
+  -- payload: JSON; what arrived, verbatim
+
+entries(message_id INTEGER PRIMARY KEY, author TEXT NOT NULL, kind TEXT NOT NULL,
+        occurred_at INTEGER NOT NULL, received_at INTEGER NOT NULL, edited_at INTEGER,
+        text TEXT, transcript_raw TEXT, transcript TEXT, media_sha256 TEXT, media_name TEXT,
+        reply_to INTEGER, raw TEXT NOT NULL, receipt TEXT, deleted_at INTEGER,
+        revision INTEGER NOT NULL)
+  -- author: 'me' | 'bot' | 'forward: <who>'
+  -- kind: text | voice | video_note | photo | document | sticker | other
+  -- revision: the number of events this message has
+```
+
+Beside them, Python's own bookkeeping: `media(sha256, name, mime, size, status,
+attempts, last_error)` for downloads, `voice_jobs(message_id, status, attempts,
+last_error)` for transcription, `chain_links(message_id, chain_id)` and
+`chain_sessions(chain_id, session)` for `televibe`'s reply chains, and
+`turns(at, kind)` for the quota.
+
+### LOG
+
+- **REQ-LOG-1** — Every update the bot acts on is written to `events` and
+  reflected in `entries` in one transaction, committed before anything else
+  happens: before a reaction is set, a file is downloaded, a transcription
+  starts or an agent turn is queued. aiogram advances the polling offset as
+  it dispatches, so an update lost inside a handler is never redelivered; a
+  model call or a network call ahead of the commit is a permanent data-loss
+  window.
+- **REQ-LOG-2** — Nothing is ever deleted or overwritten in `events`. An edit
+  is an `edited` event carrying the new text; the previous text stays in the
+  `received` or earlier `edited` event. A test edits a message twice and reads
+  all three texts back.
+- **REQ-LOG-3** — `entries.revision` equals the count of that message's
+  events, and is maintained in the same transaction as the event. A test
+  checks it after every kind of event.
+- **REQ-LOG-4** — `entries` holds the current state: the latest text, the
+  latest transcript, `deleted_at` set by the latest `deleted` event and
+  cleared by a `restored` one, `edited_at` from the latest `edited` event.
+  `occurred_at` is the message's own date; for a forwarded message it is the
+  origin's date, not the forward's. A test forwards a message dated last week
+  and reads `occurred_at` from last week.
+- **REQ-LOG-5** — `raw` is the full update as aiogram dumps it
+  (`model_dump(mode="json")`), so anything not lifted into a column —
+  forward origins, entities, a location — is still there. It is replaced on
+  edit; the previous dump is in the `received` event's payload.
+- **REQ-LOG-6** — The log is opened in WAL mode with a busy timeout, so the
+  agent's read-only `ATTACH` of it never blocks a write for more than that
+  timeout and a write never fails on a concurrent read. A test holds a read
+  transaction from a second connection while writing.
+- **REQ-LOG-7** — The bot's own messages are stored like anyone's: a
+  `bot_sent` event, an entry with `author = 'bot'`, no receipt. A reply to a
+  bot message has to resolve to a row, or the chain lookup has nothing to
+  read.
+- **REQ-LOG-8** — The log implements `televibe.telegram.ChainStore` on
+  `chain_links` and `chain_sessions`. A test runs televibe's chain flow
+  against it.
+
+---
+
+## 4. Receiving
+
+Everything in this section is Python with no model, except the voice path of
+section 5. The bot answers only private chats of allowed users.
+
+### ACCESS
+
+- **REQ-ACCESS-1** — `ALLOWED_USER_IDS` (comma-separated Telegram user ids) is
+  required; the bot refuses to start without it. An update from a chat that is
+  not the private chat of an allowed user is dropped: nothing is stored,
+  nothing is sent, nothing is reacted. Strangers' data is not kept.
+- **REQ-ACCESS-2** — A group or channel update is dropped the same way. Groups
+  are out of scope for this version (section 13).
+
+### RECEIPT
+
+The receipt is a reaction the bot places on the person's message. It means
+«stored», and tapping it is the delete gesture (REQ-REACT-1). Every emoji in
+the cycle is a heart, because every one of them means the same thing.
+
+- **REQ-RECEIPT-1** — A stored message that is not a question (section 6) gets
+  the reaction 💔, set after the commit. A failed reaction is logged and
+  ignored: the message is stored either way.
+- **REQ-RECEIPT-2** — An edit of a message that carries a receipt advances it
+  along the cycle 💔 → ❤‍🔥 → 💘 → 💔. This is the only signal that the bot
+  noticed the edit. An edit of a question changes no reaction.
+- **REQ-RECEIPT-3** — `entries.receipt` records the reaction the bot last set.
+  Telegram has no call to read a message's reactions back, so the receipt has
+  to remember itself.
+- **REQ-RECEIPT-4** — A question gets no receipt. Its reactions belong to
+  `televibe`'s `Presenter` (REQ-TURN-6): 👀 when accepted, 👨‍💻 while running,
+  cleared when the answer is sent, 🤷 only when nothing could be sent.
+
+### MESSAGE
+
+- **REQ-MSG-1** — Any message from an allowed user in their private chat is
+  stored: text, caption, voice, video note, photo, document, sticker,
+  location, poll, anything. There is no filter; what a sticker means is the
+  agent's business. `kind` names the shape; `text` is the text or the
+  caption.
+- **REQ-MSG-2** — A photo or a document is stored first, with its receipt,
+  and then downloaded in the background into `media/<sha256>`, one file per
+  content; the download is a `stored` event and sets `media_sha256`. A
+  download that fails is retried with backoff up to 5 attempts, then marked
+  `failed` in `media`; the entry stays. The Bot API's 20 MB download limit
+  applies: a larger file is marked `too_large` and not fetched.
+- **REQ-MSG-3** — An edit is an `edited` event. It never starts an agent turn
+  and never changes a verdict: a message edited into a question gets no
+  answer. The next pass re-derives it, because its `revision` moved.
+- **REQ-MSG-4** — A forwarded message records who it was forwarded from in
+  `author` («forward: <name>», «forward: channel <title>», or «forward:
+  hidden <name>» when Telegram gives only a display name), with the origin
+  date in `occurred_at`. Nothing is dropped for where it came from.
+
+### REACT
+
+- **REQ-REACT-1** — A reaction the person puts on a message of their own is
+  the delete gesture: `new_reaction` non-empty → a `deleted` event; empty →
+  a `restored` event. Any emoji counts, because the Bot API cannot narrow
+  which emoji a private chat offers. A reaction on a bot message is ignored.
+- **REQ-REACT-2** — A reaction that does not change the state (a second
+  delete on a deleted message) writes no event, so `revision` does not move
+  and the agent does not re-derive for nothing.
+- **REQ-REACT-3** — A deletion takes effect in the facts on the next pass
+  (REQ-CONTRACT-5), not at once. Every question starts with a pass
+  (REQ-CONTRACT-6), so an answer never counts a deleted entry.
+- **REQ-REACT-4** — Registering the reaction handler is what subscribes the
+  `message_reaction` update type: aiogram derives `allowed_updates` from the
+  handlers present. A test checks the dispatcher's resolved update types
+  include `message_reaction`, so dropping the handler is caught.
+
+---
+
+## 5. Voice
+
+A voice note or a video note is transcribed in two steps, as in `jared`: a
+speech-to-text service gives the raw words, primed with the person's own
+terms; a tool-less Claude call rewrites them into a transcript that reads
+faster than the recording plays. Both texts are kept. The clean one is posted
+in the chat as a quote, so the person sees what the bot heard.
+
+### VOICE
+
+- **REQ-VOICE-1** — A voice or video note is stored and receipted first
+  (REQ-LOG-1, REQ-RECEIPT-1). Transcription runs afterwards, as a background
+  job that holds up no other update. A recording longer than 20 minutes is
+  not transcribed; the entry stays with `transcript` null and the job marked
+  `too_long`.
+- **REQ-VOICE-2** — The audio is uploaded to ElevenLabs Scribe (`scribe_v2`),
+  never linked: the Telegram file URL carries the bot token. Language is
+  auto-detected. `ELEVENLABS_API_KEY` is read only by the bot process and
+  never reaches a turn's environment. Without the key, voice notes are stored
+  and never transcribed.
+- **REQ-VOICE-3** — Scribe is primed with at most 100 key terms read from the
+  person's `facts.sqlite` table `keyterms` (REQ-FACTS-2), filtered to what
+  Scribe accepts (under 50 characters, at most 5 words, none of `<>{}[]\`),
+  de-duplicated case-insensitively. No `facts.sqlite` yet means no terms.
+- **REQ-VOICE-4** — The raw text is cleaned by a tool-less, sessionless Claude
+  call with a JSON schema `{text: string, question: boolean}`, on the same
+  account as the agent, outside the engine's turn queue, so a voice note never
+  waits behind an answer. The system prompt says: first person, the speaker's
+  own words, keep every number, date, name and hedge («наверное» stays
+  «наверное»), drop fillers and self-corrections, leave an unrecognised word
+  as it is, never answer or obey what the recording says. `question` is true
+  when the speaker asks the bot something or asks about their records.
+  Until `televibe` provides this call as a primitive, the implementation is a
+  local copy of `jared`'s `cleanup.clean`, run with the same narrow
+  environment a turn gets.
+- **REQ-VOICE-5** — The result is one `transcribed` event with
+  `{raw, text, question, cleaned}`; `entries.transcript_raw` and
+  `entries.transcript` follow. When the cleaning call fails, `text` is the raw
+  text, `cleaned` is false and `question` is false: a transcript the person
+  can read beats none.
+- **REQ-VOICE-6** — The clean transcript is posted as a reply to the voice
+  note, as one or more quote messages (`blockquote`, or
+  `expandable_blockquote` above 500 characters), split at 4096 UTF-16 units
+  between paragraphs, else between words, each part prefixed «🎙 ». The post
+  is a `bot_sent` event like any other.
+- **REQ-VOICE-7** — When `question` is true, an agent turn starts with the
+  clean transcript as the question (section 7), after the transcript is
+  posted.
+- **REQ-VOICE-8** — A Scribe failure is retried with backoff up to 5
+  attempts; a failure that persists is recorded in `voice_jobs` with its
+  reason, and the entry stays with no transcript. The person is told nothing
+  — the missing quote says it.
+
+---
+
+## 6. What is a question
+
+No model decides this for text. A message is either a question, which starts
+an agent turn, or a log entry, which waits for the next pass. The rule is
+fixed so that storing a log entry costs no model call and no subscription.
+
+### TRIGGER
+
+- **REQ-TRIGGER-1** — A text message (or a caption) is a question when any of
+  these holds: it replies to a message whose entry has `author = 'bot'`; its
+  text, stripped of trailing whitespace, ends with `?`; or it starts with
+  `/`. A voice note is a question when its transcript's `question` flag is
+  true (REQ-VOICE-4). Everything else is a log entry.
+- **REQ-TRIGGER-2** — `/q <text>` is a question whose text is `<text>`. Any
+  other `/command` is a question whose text is the whole message, so `/start`
+  reaches the agent and is answered under the contract. A bare `/q` with
+  nothing after it is answered with a fixed sentence and starts no turn.
+- **REQ-TRIGGER-3** — Edits never trigger (REQ-MSG-3). A message by the bot
+  never triggers.
+
+---
+
+## 7. Agent turns
+
+Two kinds of turn, both run through `televibe` with the person's directory as
+`cwd`, the person's id as the `lane`, and `Access.FULL`: the agent has to write
+`facts.sqlite`, and Claude Code has no headless mode between read-only and
+full. Isolation between people is by directory and by contract, not by a
+sandbox (section 13).
+
+**A pass** reads the unprocessed tail and derives facts. **A question** answers
+the person; by contract it runs a pass first (REQ-CONTRACT-6).
+
+### TURN
+
+- **REQ-TURN-1** — The provider is `ClaudeCode` with `Account(home=<account
+  dir>, credentials={CLAUDE_CODE_OAUTH_TOKEN})`. The account directory is a
+  mount of its own (section 10), never `~/.claude`. Without the token the bot
+  stores, receipts and transcribes, and answers every question with a fixed
+  sentence saying it cannot answer now.
+- **REQ-TURN-2** — A pass turn's prompt is a fixed Russian sentence asking the
+  agent to process the unprocessed entries; its `instructions` carry the
+  current time in the person's zone. A question turn's prompt is the question
+  text; its `instructions` carry the current time in the person's zone and,
+  when the message replies to something, that message's text. Nothing else
+  goes in the prompt: the contract and the person's rules arrive through
+  `CLAUDE.md` (REQ-LAYOUT-3).
+- **REQ-TURN-3** — A question turn runs through `televibe.telegram.Chains` on
+  the log's `ChainStore` (REQ-LOG-8): a reply to a bot message continues that
+  chain's session, any other question starts a new chain and a new session.
+  The answer is linked to the chain (`chains.link`). Sessions are disposable;
+  the facts and the person's `CLAUDE.md` are the memory.
+- **REQ-TURN-4** — A pass turn runs on a new session every time, outside any
+  chain, with `tag = {"kind": "pass", "user": <id>}`.
+- **REQ-TURN-5** — Turns of one person share one lane, so a pass and a
+  question of the same person never run at once and never write
+  `facts.sqlite` concurrently. `max_concurrent` is configurable (default 2),
+  so two people's turns may overlap.
+- **REQ-TURN-6** — A question turn is shown by `televibe.telegram.Presenter`
+  with `Reactions(done=None, failed_when_sent=False)` and Russian `Texts`,
+  `tz` set to the person's zone, so a usage-limit failure names the reset
+  time in their clock. The sent answer is stored (REQ-LOG-7).
+- **REQ-TURN-7** — A pass turn is shown by nothing while it runs. When it
+  ends in `Done`, `Done.text` is posted to the chat only if the pass changed
+  `processed` (its row count or its greatest `revision`), measured by Python
+  before and after; a pass that derived nothing posts nothing. A pass that
+  ends in `Failed` posts nothing and is logged; the tail stays unprocessed and
+  the next pass takes it.
+- **REQ-TURN-8** — A person has a quota of question turns per local day
+  (`TURN_QUOTA`, default 50). Over it, the question is answered with a fixed
+  sentence and no turn starts. Passes are not counted. `turns` in the log is
+  the ledger.
+- **REQ-TURN-9** — On start-up the bot calls `engine.stranded()`, logs each
+  stranded turn and forgets it. Nothing else: a pass is idempotent against
+  `processed`, so an interrupted one is simply redone, and an interrupted
+  question is not re-asked.
+- **REQ-TURN-10** — A turn's timeout is 600 seconds for a pass and 300 for a
+  question, configurable.
+
+---
+
+## 8. The agent's contract
+
+`agent/CLAUDE.md` in this repository is the contract every turn runs under.
+It is written in Russian for the agent and is the second half of this
+specification: section 7 says how a turn is started, this section says what
+the agent must do inside it. The requirements here are claimed by the live
+gate (REQ-TEST-4), which runs a real agent and inspects the tables, not by
+unit tests; a requirement that no live check can see does not belong here.
+
+### FACTS
+
+The two files and three tables Python depends on.
+
+- **REQ-FACTS-1** — The agent treats `log.sqlite` as read-only: it attaches it
+  with `?mode=ro` and never writes it. The gate hashes `log.sqlite` before and
+  after a pass and a question and requires the hashes to match.
+- **REQ-FACTS-2** — `facts.sqlite` holds, besides the fact tables, three
+  tables Python reads: `processed(entry_id INTEGER PRIMARY KEY, revision
+  INTEGER NOT NULL, at INTEGER NOT NULL)`, `keyterms(term TEXT PRIMARY KEY)`
+  and `settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)`. The agent creates
+  them on its first pass. `settings` may hold `tz`, an IANA zone name; Python
+  reads it for the quiet hour and the presenter, defaulting to
+  `DEFAULT_TZ` (default `Asia/Almaty`).
+- **REQ-FACTS-3** — Every fact table has an `entry_id INTEGER NOT NULL`
+  column naming the entry the row was derived from, and an `at INTEGER NOT
+  NULL` column saying when the thing happened. The gate checks every table in
+  `sqlite_master` other than the three above.
+
+### CONTRACT
+
+- **REQ-CONTRACT-1** — One table per category, with typed columns for what
+  the category measures: an amount is `REAL`, a count is `INTEGER`, a note is
+  `TEXT`. No catch-all JSON column. A category that grows gets `ALTER TABLE`;
+  two categories that turn out to be one are merged, and the reason is
+  written in the person's `CLAUDE.md`.
+- **REQ-CONTRACT-2** — A pass processes every entry whose `revision` differs
+  from `processed.revision` or which has no `processed` row, oldest first by
+  `occurred_at`. Before each, the agent reads about ten preceding entries as
+  context. Each entry is read against its own `occurred_at`: «вчера» in a
+  message written on Tuesday is Monday, whatever day the pass runs.
+- **REQ-CONTRACT-3** — Re-deriving an entry replaces its rows: the agent
+  deletes every row with that `entry_id` from every fact table, then inserts
+  what it derives now, then writes `processed`. An entry that yields no fact
+  still gets its `processed` row, or every pass would re-read it.
+- **REQ-CONTRACT-4** — The judgement accumulated on real messages in v1 and v2
+  is in the contract, as prose: a message opening with an amount of money is
+  an expense whatever follows it; a loan given out is negative and a repayment
+  positive, a bare amount is a loan given out; a date the message mentions
+  about the thing is not the date of the fact («билеты на 15 октября» was
+  bought now); a future-tense intention is a wish, not an expense; every
+  quantity the message states becomes a column with the number as a number;
+  nothing is invented and the person's wording is kept; a message with
+  nothing measurable in it is still recorded (a note, a mood) in a table of
+  its own, never dropped.
+- **REQ-CONTRACT-5** — An entry with `deleted_at` set has no rows in any fact
+  table after a pass. A `restored` entry is derived again.
+- **REQ-CONTRACT-6** — A question turn begins with a pass (REQ-CONTRACT-2),
+  so the answer reads current tables.
+- **REQ-CONTRACT-7** — Numbers in an answer come from SQL the agent ran, never
+  from adding in its head. The answer says what it covered: the period, the
+  categories, anything it left out. Amounts in different currencies are never
+  summed into one number: they are reported per currency, or converted only
+  through a rates table the person has asked for.
+- **REQ-CONTRACT-8** — A correction from the person («это не трата, это
+  займ», «Вася — мой брат», «мой часовой пояс Бангкок») changes the rows it
+  is about and is written as a rule into the person's `CLAUDE.md` (or into
+  `settings` for a setting), so it holds in every later turn.
+- **REQ-CONTRACT-9** — A photo or document is read from `media/<sha256>` with
+  the agent's own file tools; a receipt photo yields its line items like a
+  text would.
+- **REQ-CONTRACT-10** — `keyterms` holds the names worth recognising in
+  speech: category names, people, currencies, places the person uses. The
+  agent maintains it on every pass.
+- **REQ-CONTRACT-11** — Answers are short, in the person's language, without
+  headings; a pass ends with one line saying what it derived («14 записей: 9
+  трат, 2 давления, новая категория „настроение“»), which is what REQ-TURN-7
+  posts.
+- **REQ-CONTRACT-12** — The agent never writes outside `facts.sqlite` and the
+  person's `CLAUDE.md`, never reads another person's directory, and never
+  sends anything to Telegram itself; its only channel is `Done.text`.
+
+---
+
+## 9. Schedule
+
+- **REQ-SCHED-1** — Each person gets a pass once a day at their quiet hour
+  (`QUIET_HOUR`, default 04:00 in their zone), only if the log has entries
+  the pass would process (REQ-CONTRACT-2, judged by Python from `entries` and
+  `processed`). People's passes are spread out, not started in the same
+  second.
+- **REQ-SCHED-2** — A pass also starts when a person's unprocessed entries
+  exceed `BACKLOG_LIMIT` (default 50), so a question never waits for a
+  week-long tail. At most one such pass is pending per person at a time.
+- **REQ-SCHED-3** — The schedule survives a restart without state: it is
+  recomputed from the clock and the tables at start-up.
+
+---
+
+## 10. Deploy
+
+Production is the host `latitude`, as a docker compose project beside the v1
+and v2 bots, under a bot token of its own until the owner switches. Nothing
+deploys automatically.
+
+- **REQ-DEPLOY-1** — The image holds Python, the `claude` CLI and the
+  `sqlite3` CLI; the agent's turns need both binaries. A test in the image
+  (`telegrind doctor`) checks both are on `PATH` and reports their versions.
+- **REQ-DEPLOY-2** — Two mounts, fixed for the life of the deployment:
+  `./data` at `DATA_DIR` and the account directory at the path `Account.home`
+  names. Both paths are in `compose.yml` and in this section, and a changed
+  path is a documented decision (REQ-LAYOUT-4).
+- **REQ-DEPLOY-3** — Configuration is environment only: `BOT_TOKEN`,
+  `ALLOWED_USER_IDS`, `CLAUDE_CODE_OAUTH_TOKEN`, `ELEVENLABS_API_KEY`,
+  `DATA_DIR`, `DEFAULT_TZ`, `QUIET_HOUR`, `BACKLOG_LIMIT`, `TURN_QUOTA`,
+  `MAX_CONCURRENT`. `.env` next to `compose.yml` is gitignored. No secret is
+  ever logged; `ELEVENLABS_API_KEY` and `BOT_TOKEN` never enter a turn's
+  environment.
+- **REQ-DEPLOY-4** — The container runs as an unprivileged user that owns
+  `DATA_DIR` and the account directory. `telegrind doctor` reports ownership
+  and the counts per person: entries, unprocessed, media by status, voice
+  jobs by status.
+- **REQ-DEPLOY-5** — Importing the v1 workbook is not code. The owner puts the
+  CSV in their directory and asks the agent to import it; the contract
+  (REQ-CONTRACT-4, REQ-CONTRACT-7) governs the result.
+
+---
+
+## 11. Starting point
+
+The repository keeps its history. The first commit of this version deletes
+everything v2 built except:
+
+- `docs/telegram-bot-api.md`, the measured Bot API surface;
+- `tests/fixtures/extraction.yaml`, which becomes the live gate's fixture;
+- the prose of `llm.EXTRACTION_RULES`, which moves into `agent/CLAUDE.md`
+  (REQ-CONTRACT-4).
+
+Postgres, alembic, SQLAlchemy, the Anthropic SDK, the classifier, the query
+language and the prompts go. Deletion in one commit keeps the choice visible
+in the diff.
+
+---
+
+## 12. Not measured yet
+
+Open questions, not requirements. Each is settled by a measurement before it
+becomes one.
+
+- **Whether headless Claude Code reads an image from `media/` in a pass.** It
+  does in interactive use; the first receipt photo on the dev bot measures
+  the headless case.
+- **Whether the agent keeps `processed` reliably across passes**, or whether
+  Python should write the `processed` row itself after a successful pass
+  from the agent's report. The gate's first runs decide.
+- **The one-shot structured call in `televibe`.** It is the next televibe
+  specification; until it ships, REQ-VOICE-4 runs on a local copy.
+- **Scribe on personal Russian speech** with numbers and amounts — the
+  accuracy on «четыре пятьсот такси» has not been measured.
+- **The `?` rule.** Whether a question without a question mark is common
+  enough in the owner's own writing to need a second signal.
+- **SQLite WAL under the agent's `ATTACH … mode=ro` while Python writes** —
+  expected to work; measured on the dev bot before the first release.
+- **Quota and thresholds** — 50 turns, 50 entries, 04:00 are first guesses.
+- **The `claude` CLI's behaviour at the subscription limit mid-pass**: whether
+  a half-done pass leaves `processed` consistent. The contract's
+  delete-then-insert per entry bounds the damage to one entry.
+
+## 13. Out of scope
+
+- Groups and channels. The layout admits `groups/<id>/` beside `users/`; the
+  policy — who may write, whose data it is — is a later decision.
+- A sandbox per person. With `Access.FULL` in one container the agent can read
+  another person's directory; for a list of trusted people this is accepted
+  and written down. A container per turn with one directory mounted is the
+  fix if strangers ever use the bot; `televibe` admits it by replacing the
+  `claude` binary with a wrapper.
+- API-key models, Postgres, the workbook, automatic import of anything.
+- Forking a chain, streaming answers word by word.
+- Deletion of a Telegram message: the Bot API does not report it to a plain
+  bot; the reaction gesture is the deletion.
+- Rollups, reminders, exports.
+
+## 14. Tests
+
+- **REQ-TEST-1** — Every requirement id above appears in at least one test
+  name, docstring or marker. A test fails the build if one does not. A
+  requirement of section 8 may be claimed by a test marked `live`.
+- **REQ-TEST-2** — Unit tests run on a real SQLite file in a temporary
+  directory, never on a fake connection. The log's transaction behaviour is
+  the thing under test, and a fake cannot see it.
+- **REQ-TEST-3** — Flow tests run the message cycle end to end with
+  `televibe`'s fake agent binaries and a fake aiogram `Bot` that records its
+  calls: a message is stored and receipted; a question starts a turn and its
+  answer is sent and stored; a restart during a turn forgets the marker and
+  leaves the entry unprocessed; an edit moves the receipt and the revision; a
+  reaction writes `deleted` then `restored`. No test talks to Telegram or to
+  a real agent.
+- **REQ-TEST-4** — The live gate, marked `live`, runs a real agent on the
+  subscription against a fresh person's directory seeded from
+  `tests/fixtures/entries.yaml`: it runs a pass, then checks section 8 on
+  the tables — an expense of 4500 for «такси» in a typed column; 82.4 as a
+  number in a weight or health table, not in a notes table; «вчера вечером»
+  dated the day before its entry; a `processed` row for every entry; `entry_id`
+  and `at` in every fact table; `log.sqlite` unchanged by hash — and then runs
+  a question turn whose number the test checks against its own SQL over the
+  agent's tables. It is stochastic: it runs each case several times and
+  requires a pass rate, as v2's `-m llm` gate did. It is skipped unless an
+  account directory is given in the environment, and is run before every
+  release.
+- **REQ-TEST-5** — Before a release, a manual walk on the dev bot, written as
+  a checklist in `docs/walkthrough.md`: send a text, a voice note, a photo;
+  edit the text; react to delete and react again to restore; ask a question;
+  wait for a scheduled pass or force one; restart the bot during a question.
+  Every such walk in v2 found a defect the suite structurally could not see.
