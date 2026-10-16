@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
+from pathlib import Path
 
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     Chat,
     Document,
+    File,
     Message,
     MessageOriginChannel,
     MessageOriginChat,
@@ -118,3 +124,99 @@ def bot_message(uid: int = 7, message_id: int = 500, text: str = "ok", reply_to:
         text=text,
         reply_to_message=reply_to,
     )
+
+
+class FakeBot:
+    """Records every call as (method, kwargs). `fail` maps a method to how many of its calls raise."""
+
+    id = 999
+
+    def __init__(self, *, fail: Mapping[str, int] | None = None, hang: tuple[str, ...] = ()) -> None:
+        self.calls: list[tuple[str, dict]] = []
+        self.fail = dict(fail or {})
+        self.hang = set(hang)
+        self.files: dict[str, bytes] = {}
+        self._last_id = 500
+
+    def names(self) -> list[str]:
+        return [name for name, _ in self.calls]
+
+    def reactions(self) -> list[tuple[int, str | None]]:
+        """(message_id, emoji or None) for every set_message_reaction, in order."""
+        return [
+            (kw["message_id"], kw["reaction"][0].emoji if kw["reaction"] else None)
+            for name, kw in self.calls
+            if name == "set_message_reaction"
+        ]
+
+    def sends(self) -> list[tuple[str, dict]]:
+        return [(name, kw) for name, kw in self.calls if name in ("send_rich_message", "send_message")]
+
+    def texts(self) -> list[str]:
+        return [kw.get("text") or "" for _, kw in self.sends()]
+
+    async def _call(self, name: str, kwargs: dict) -> None:
+        self.calls.append((name, kwargs))
+        if name in self.hang:
+            await asyncio.Event().wait()
+        if self.fail.get(name, 0) > 0:
+            self.fail[name] -= 1
+            raise TelegramBadRequest(method=None, message=f"Bad Request: {name} rejected")
+
+    def _sent(self, kwargs: dict) -> Message:
+        self._last_id += 1
+        reply = kwargs.get("reply_parameters")
+        return Message(
+            message_id=self._last_id,
+            date=NOW,
+            chat=Chat(id=kwargs["chat_id"], type="private"),
+            from_user=bot_user(),
+            text=kwargs.get("text"),
+            reply_to_message=Message(
+                message_id=reply.message_id, date=NOW, chat=Chat(id=kwargs["chat_id"], type="private")
+            )
+            if reply
+            else None,
+        )
+
+    async def set_message_reaction(self, **kwargs) -> bool:
+        await self._call("set_message_reaction", kwargs)
+        return True
+
+    async def send_chat_action(self, **kwargs) -> bool:
+        await self._call("send_chat_action", kwargs)
+        return True
+
+    async def send_rich_message_draft(self, **kwargs) -> bool:
+        await self._call("send_rich_message_draft", kwargs)
+        return True
+
+    async def send_rich_message(self, **kwargs) -> Message:
+        await self._call("send_rich_message", kwargs)
+        return self._sent(kwargs)
+
+    async def send_message(self, **kwargs) -> Message:
+        await self._call("send_message", kwargs)
+        return self._sent(kwargs)
+
+    async def get_file(self, file_id: str) -> File:
+        await self._call("get_file", {"file_id": file_id})
+        return File(
+            file_id=file_id,
+            file_unique_id=f"u-{file_id}",
+            file_path=f"files/{file_id}",
+            file_size=len(self.files.get(file_id, b"\x00" * 10)),
+        )
+
+    async def download_file(
+        self, file_path: str, destination: BytesIO | Path | None = None, **kwargs
+    ) -> BytesIO | None:
+        await self._call("download_file", {"file_path": file_path})
+        data = self.files.get(file_path.removeprefix("files/"), b"\x00" * 10)
+        if destination is None:
+            return BytesIO(data)
+        if isinstance(destination, Path | str):
+            Path(destination).write_bytes(data)
+            return None
+        destination.write(data)
+        return destination
