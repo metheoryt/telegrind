@@ -29,11 +29,34 @@ def test_compose_mounts_and_env():
         assert re.search(rf"^{name}=", dist, re.M), name
 
 
+def _dockerfile_lines() -> list[str]:
+    return [line.strip() for line in (ROOT / "Dockerfile").read_text().splitlines()]
+
+
 def test_dockerfile_installs_both_binaries_as_an_unprivileged_user():
     """REQ-DEPLOY-1, REQ-DEPLOY-4: claude and sqlite3 in the image; the process runs as `bot`."""
-    text = (ROOT / "Dockerfile").read_text()
-    for needle in ("sqlite3", "claude.ai/install.sh", "USER bot", 'CMD ["telegrind", "run"]'):
-        assert needle in text, needle
+    lines = _dockerfile_lines()
+    assert any(line.startswith("RUN apt-get") and "install" in line and "sqlite3" in line for line in lines)
+    assert any("claude.ai/install.sh" in line for line in lines)
+    assert [line for line in lines if line.startswith("USER ")][-1] == "USER bot"
+    assert 'CMD ["telegrind", "run"]' in lines
+
+
+def test_compose_user_is_the_dockerfile_uid():
+    """REQ-DEPLOY-4: compose runs as the uid the image's `bot` owns /app with."""
+    uid = re.search(r"useradd\b.*-u (\d+)", (ROOT / "Dockerfile").read_text()).group(1)
+    assert re.search(rf'^\s*user:\s*"{uid}:{uid}"\s*$', (ROOT / "compose.yml").read_text(), re.M)
+
+
+def test_dockerfile_disables_the_cli_autoupdater():
+    """The pinned claude holds only while the native auto-updater is off."""
+    assert any(line.startswith("ENV") and "DISABLE_AUTOUPDATER=1" in line for line in _dockerfile_lines())
+
+
+def test_deploy_notes_say_to_chown_the_mounts():
+    """REQ-DEPLOY-4: Docker creates a missing bind source as root; the notes say to prepare it."""
+    for name in ("CLAUDE.md", "docs/walkthrough.md"):
+        assert "chown -R 1000:1000" in (ROOT / name).read_text(), name
 
 
 def test_walkthrough_covers_the_spec_list():

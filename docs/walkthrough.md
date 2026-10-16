@@ -2,6 +2,7 @@
 
 Перед релизом. Каждый шаг — что сделать и что должно быть видно.
 
+0. До первого запуска: `mkdir -p ./data ~/.claude-telegrind && chown -R 1000:1000 ./data ~/.claude-telegrind` (или `sudo chown`). Иначе Docker создаст каталоги от root, бот не сможет писать, а `doctor` покажет «NOT OURS».
 1. `docker compose up -d --build` → `docker compose exec bot telegrind doctor`: claude и sqlite3 с версиями, владелец каталогов — наш uid.
 2. Текст «4500 такси» → 💔 на сообщении; в `users/<id>/log.sqlite` одна запись, `revision` 1.
 3. Правка текста → 💔 сменился на ❤‍🔥; `revision` 2; оба текста в `events`.
