@@ -1,0 +1,59 @@
+[project]
+name = "telegrind"
+version = "3.0.0"
+description = "A personal log in Telegram: stored by Python, understood by a headless agent"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    "televibe[telegram]>=0.4,<0.5",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+telegrind = "telegrind.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["telegrind"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-timeout>=2.3",
+    "pyyaml>=6.0",
+    "ruff>=0.14",
+    "ty>=0.0.1a14",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+timeout = 60
+markers = ["live: runs a real agent on the subscription; skipped unless TELEGRIND_LIVE_HOME is set"]
+addopts = "-m 'not live'"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+lint.select = ["E", "W", "F", "I", "B", "C4", "UP", "N", "S", "T20", "SIM", "RUF", "ANN"]
+lint.ignore = ["S101", "ANN401", "RUF001", "RUF002", "RUF003", "S603", "S607"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN", "S", "T20"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["telegrind"]
+
+[tool.ty.environment]
+python-version = "3.12"
+python = "./.venv"
+root = ["."]
+
+[tool.ty.src]
+include = ["telegrind"]

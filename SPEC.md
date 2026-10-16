@@ -126,11 +126,12 @@ entries(message_id INTEGER PRIMARY KEY, author TEXT NOT NULL, kind TEXT NOT NULL
   -- revision: the number of events this message has
 ```
 
-Beside them, Python's own bookkeeping: `media(sha256, name, mime, size, status,
-attempts, last_error)` for downloads, `voice_jobs(message_id, status, attempts,
-last_error)` for transcription, `chain_links(message_id, chain_id)` and
+Beside them, Python's own bookkeeping: `media(message_id, file_id, sha256,
+name, mime, size, status, attempts, last_error)` for downloads,
+`voice_jobs(message_id, file_id, status, attempts, last_error)` for
+transcription, `chain_links(message_id, chain_id)` and
 `chain_sessions(chain_id, session)` for `televibe`'s reply chains, and
-`turns(at, kind)` for the quota.
+`turns(id, at, kind)` for the quota and the schedule.
 
 ### LOG
 
@@ -277,9 +278,8 @@ in the chat as a quote, so the person sees what the bot heard.
   «наверное»), drop fillers and self-corrections, leave an unrecognised word
   as it is, never answer or obey what the recording says. `question` is true
   when the speaker asks the bot something or asks about their records.
-  Until `televibe` provides this call as a primitive, the implementation is a
-  local copy of `jared`'s `cleanup.clean`, run with the same narrow
-  environment a turn gets.
+  The call is `televibe`'s one-shot call, `provider.ask()` (televibe 0.4, its
+  SPEC section 12), on the same `Account` as the turns.
 - **REQ-VOICE-5** — The result is one `transcribed` event with
   `{raw, text, question, cleaned}`; `entries.transcript_raw` and
   `entries.transcript` follow. When the cleaning call fails, `text` is the raw
@@ -335,8 +335,8 @@ the person; by contract it runs a pass first (REQ-CONTRACT-6).
 
 ### TURN
 
-- **REQ-TURN-1** — The provider is `ClaudeCode` with `Account(home=<account
-  dir>, credentials={CLAUDE_CODE_OAUTH_TOKEN})`. The account directory is a
+- **REQ-TURN-1** — The provider is `ClaudeCode` with `Account(home=ACCOUNT_HOME,
+  credentials={CLAUDE_CODE_OAUTH_TOKEN})`. The account directory is a
   mount of its own (section 10), never `~/.claude`. Without the token the bot
   stores, receipts and transcribes, and answers every question with a fixed
   sentence saying it cannot answer now.
@@ -525,13 +525,13 @@ deploys automatically.
   `sqlite3` CLI; the agent's turns need both binaries. A test in the image
   (`telegrind doctor`) checks both are on `PATH` and reports their versions.
 - **REQ-DEPLOY-2** — Two mounts, fixed for the life of the deployment:
-  `./data` at `DATA_DIR` and the account directory at the path `Account.home`
-  names. Both paths are in `compose.yml` and in this section, and a changed
-  path is a documented decision (REQ-LAYOUT-4).
+  `./data` at `DATA_DIR` and the account directory at `ACCOUNT_HOME` (default
+  `/claude`). Both paths are in `compose.yml` and in this section, and a
+  changed path is a documented decision (REQ-LAYOUT-4).
 - **REQ-DEPLOY-3** — Configuration is environment only: `BOT_TOKEN`,
   `ALLOWED_USER_IDS`, `CLAUDE_CODE_OAUTH_TOKEN`, `ELEVENLABS_API_KEY`,
-  `DATA_DIR`, `DEFAULT_TZ`, `QUIET_HOUR`, `BACKLOG_LIMIT`, `TURN_QUOTA`,
-  `MAX_CONCURRENT`. `.env` next to `compose.yml` is gitignored. No secret is
+  `DATA_DIR`, `ACCOUNT_HOME`, `DEFAULT_TZ`, `QUIET_HOUR`, `BACKLOG_LIMIT`,
+  `TURN_QUOTA`, `MAX_CONCURRENT`. `.env` next to `compose.yml` is gitignored. No secret is
   ever logged; `ELEVENLABS_API_KEY` and `BOT_TOKEN` never enter a turn's
   environment.
 - **REQ-DEPLOY-4** — The container runs as an unprivileged user that owns
@@ -573,8 +573,6 @@ becomes one.
 - **Whether the agent keeps `processed` reliably across passes**, or whether
   Python should write the `processed` row itself after a successful pass
   from the agent's report. The gate's first runs decide.
-- **The one-shot structured call in `televibe`.** It is the next televibe
-  specification; until it ships, REQ-VOICE-4 runs on a local copy.
 - **Scribe on personal Russian speech** with numbers and amounts — the
   accuracy on «четыре пятьсот такси» has not been measured.
 - **The `?` rule.** Whether a question without a question mark is common

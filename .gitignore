@@ -14,3 +14,7 @@ google-account.json
 .claude/settings.local.json
 # memory-harvest scratch state (`state-before.json` and `decided/` are tracked)
 .claude/harvest/state-remote.json
+
+# telegrind v3
+data/
+.pytest_cache/
