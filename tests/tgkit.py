@@ -18,7 +18,9 @@ from aiogram.types import (
     MessageOriginChat,
     MessageOriginHiddenUser,
     MessageOriginUser,
+    MessageReactionUpdated,
     PhotoSize,
+    ReactionTypeEmoji,
     Sticker,
     User,
     VideoNote,
@@ -112,6 +114,19 @@ def user_message(
         reply_to_message=reply_to,
         forward_origin=origin,
         edit_date=edit_date,
+    )
+
+
+def reaction(
+    uid: int = 7, message_id: int = 10, emoji: str | None = "💔", chat_type: str = "private"
+) -> MessageReactionUpdated:
+    return MessageReactionUpdated(
+        chat=Chat(id=uid if chat_type == "private" else -1001, type=chat_type),
+        message_id=message_id,
+        date=NOW,
+        user=user(uid),
+        old_reaction=[] if emoji else [ReactionTypeEmoji(type="emoji", emoji="💔")],
+        new_reaction=[ReactionTypeEmoji(type="emoji", emoji=emoji)] if emoji else [],
     )
 
 
