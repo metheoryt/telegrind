@@ -14,9 +14,9 @@ def question_text(text: str | None, *, reply_to_author: str | None, author: str)
         return None
     stripped = text.strip()
     if stripped.startswith("/"):
-        command, _, rest = stripped.partition(" ")
-        if command.split("@", 1)[0] == "/q":
-            return rest.strip() or BARE_Q
+        parts = stripped.split(maxsplit=1)
+        if parts[0].split("@", 1)[0] == "/q":
+            return parts[1].strip() if len(parts) > 1 else BARE_Q
         return stripped
     if reply_to_author == "bot" or stripped.endswith("?"):
         return stripped
