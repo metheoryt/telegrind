@@ -11,34 +11,39 @@ from telegrind.triggers import BARE_Q_TEXT
 
 class Recorder:
     def __init__(self):
-        self.answers, self.media, self.voice, self.entries = [], [], [], []
+        self.answers, self.entries = [], []
 
     async def answer(self, uid, message, text):
         self.answers.append((uid, message.message_id, text))
-
-    def enqueue(self, uid, inc):
-        (self.media if inc.media else self.voice).append((uid, inc.message_id))
 
     def on_entry(self, uid):
         self.entries.append(uid)
 
 
+class Queue:
+    def __init__(self):
+        self.jobs = []
+
+    def enqueue(self, uid, inc):
+        self.jobs.append((uid, inc.message_id))
+
+
 @pytest.fixture
 def app(tmp_path):
     cfg = Config.from_env({"BOT_TOKEN": "t", "ALLOWED_USER_IDS": "7", "DATA_DIR": str(tmp_path / "data")})
-    rec = Recorder()
+    rec, media_q, voice_q = Recorder(), Queue(), Queue()
     bot = FakeBot()
     app = App(
         config=cfg,
         bot=bot,
         layout=Layout(cfg.data_dir),
         answerer=rec,
-        media=rec,
-        voice=rec,
+        media=media_q,
+        voice=voice_q,
         watcher=rec,
         clock=lambda: 1_760_000_000,
     )
-    app.rec = rec
+    app.rec, app.media_q, app.voice_q = rec, media_q, voice_q
     yield app
     app.close()
 
@@ -49,6 +54,7 @@ async def test_text_is_stored_then_receipted(app):
     log = app.log_for(7)
     entry = log.entry(10)
     assert entry.text == "4500 такси" and entry.receipt == "💔" and entry.revision == 1
+    await app.drain()
     assert app.bot.reactions() == [(10, "💔")] and app.rec.answers == [] and app.rec.entries == [7]
     assert (app.layout.user_dir(7) / "media").is_dir() and not app.layout.facts_path(7).exists()
 
@@ -109,7 +115,7 @@ async def test_photo_and_voice_are_enqueued_after_the_receipt(app):
     """REQ-MSG-2, REQ-VOICE-1: media and voice jobs are enqueued once the entry is committed and receipted."""
     await app.on_message(user_message(photo=True))
     await app.on_message(user_message(voice=15, message_id=11))
-    assert app.rec.media == [(7, 10)] and app.rec.voice == [(7, 11)]
+    assert app.media_q.jobs == [(7, 10)] and app.voice_q.jobs == [(7, 11)]
     assert app.bot.reactions() == [(10, "💔"), (11, "💔")]
 
 
@@ -117,7 +123,12 @@ async def test_photo_with_a_question_caption_downloads_and_answers_without_recei
     """REQ-MSG-2, REQ-RECEIPT-4: a receipt photo asking «сколько тут?» is downloaded and answered; no heart."""
     await app.on_message(user_message(photo=True, caption="сколько тут?"))
     await app.drain()
-    assert app.rec.media == [(7, 10)] and app.rec.answers == [(7, 10, "сколько тут?")] and app.bot.reactions() == []
+    assert (
+        app.media_q.jobs == [(7, 10)]
+        and app.voice_q.jobs == []
+        and app.rec.answers == [(7, 10, "сколько тут?")]
+        and app.bot.reactions() == []
+    )
 
 
 async def test_edit_moves_the_receipt_and_the_revision(app):
@@ -126,6 +137,7 @@ async def test_edit_moves_the_receipt_and_the_revision(app):
     await app.on_edit(user_message(text="сколько такси?", edit_date=1_760_000_010))
     entry = app.log_for(7).entry(10)
     assert entry.text == "сколько такси?" and entry.revision == 2 and entry.receipt == "❤‍🔥"
+    await app.drain()
     assert app.bot.reactions() == [(10, "💔"), (10, "❤‍🔥")] and app.rec.answers == []
 
 
@@ -180,3 +192,23 @@ async def test_say_records_the_bot_message_with_parse_mode_none(app):
     assert app.log_for(7).entry(sent.message_id).text == "12 000 < 15 000"
     app.bot.fail["send_message"] = 1
     assert await app.say(7, "x", reply_to=None) is None
+
+
+async def test_a_failing_spawned_task_is_logged_and_drain_survives(app, caplog):
+    """A turn that raises must leave an ERROR record; drain() neither raises nor stops the others."""
+
+    async def boom():
+        raise ValueError("kaput")
+
+    done = []
+
+    async def fine():
+        done.append(1)
+
+    app.spawn(boom())
+    app.spawn(fine())
+    with caplog.at_level("ERROR", logger="telegrind.app"):
+        await app.drain()
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1 and "ValueError" in errors[0].getMessage() and "kaput" in errors[0].getMessage()
+    assert done == [1]

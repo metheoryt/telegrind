@@ -67,8 +67,13 @@ class App:
     def spawn(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
         task = asyncio.get_running_loop().create_task(coro)
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        task.add_done_callback(self._done)
         return task
+
+    def _done(self, task: asyncio.Task[Any]) -> None:
+        self._tasks.discard(task)
+        if not task.cancelled() and (exc := task.exception()) is not None:
+            log.error("spawned task failed: %s: %s", type(exc).__name__, exc, exc_info=exc)
 
     async def drain(self) -> None:
         while self._tasks:
