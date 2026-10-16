@@ -18,3 +18,4 @@ google-account.json
 # telegrind v3
 data/
 .pytest_cache/
+.probes/
