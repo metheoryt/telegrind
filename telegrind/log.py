@@ -6,7 +6,7 @@ import json
 import sqlite3
 import time
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -92,6 +92,11 @@ class Event:
 
 
 class Log:
+    """The connection is used from the event-loop thread only; no method is thread-safe.
+
+    `check_same_thread=False` exists solely so a test can release a lock from a `threading.Timer`.
+    """
+
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.conn = sqlite3.connect(self.path, isolation_level=None, timeout=5.0, check_same_thread=False)
@@ -109,11 +114,14 @@ class Log:
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             yield self.conn
-        except BaseException:
-            self.conn.execute("ROLLBACK")
-            raise
-        else:
             self.conn.execute("COMMIT")
+        except BaseException:
+            # A failed COMMIT leaves the transaction open; roll back so the connection is usable again.
+            # A ROLLBACK failure must not mask the original exception.
+            if self.conn.in_transaction:
+                with suppress(sqlite3.Error):
+                    self.conn.execute("ROLLBACK")
+            raise
 
     # -- events and entries -----------------------------------------------------------
 

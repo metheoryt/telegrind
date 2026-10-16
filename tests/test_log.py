@@ -123,3 +123,32 @@ def test_a_held_write_waits_within_the_timeout(log, tmp_path):
     release.join()
     assert log.entry(10) is not None
     other.close()
+
+
+class FailingCommit:
+    """Delegates to a real connection but fails the first COMMIT, as SQLITE_BUSY or an I/O error would."""
+
+    def __init__(self, conn):
+        self.conn = conn
+        self.failed = False
+
+    def execute(self, sql, *args):
+        if sql == "COMMIT" and not self.failed:
+            self.failed = True
+            raise sqlite3.OperationalError("database is locked")
+        return self.conn.execute(sql, *args)
+
+    def __getattr__(self, name):
+        return getattr(self.conn, name)
+
+
+def test_a_failed_commit_does_not_wedge_the_connection(log):
+    """A COMMIT that raises must roll back, so the next write can begin."""
+    real = log.conn
+    log.conn = FailingCommit(real)
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        log.record_received(incoming(user_message(text="x"), now=T0))
+    assert log.entry(10) is None  # rolled back, nothing half-written
+    entry = log.record_received(incoming(user_message(text="y"), now=T0))
+    assert entry.text == "y" and entry.revision == 1
+    log.conn = real
