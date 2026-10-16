@@ -296,6 +296,16 @@ class Log:
                 (status, error, 1 if attempt else 0, message_id),
             )
 
+    def count_entries(self) -> int:
+        """Entries a person wrote (the bot's own are not counted); for `telegrind doctor`."""
+        return self.conn.execute("SELECT count(*) FROM entries WHERE author != ?", (AUTHOR_BOT,)).fetchone()[0]
+
+    def media_counts(self) -> dict[str, int]:
+        return {r[0]: r[1] for r in self.conn.execute("SELECT status, count(*) FROM media GROUP BY status")}
+
+    def voice_counts(self) -> dict[str, int]:
+        return {r[0]: r[1] for r in self.conn.execute("SELECT status, count(*) FROM voice_jobs GROUP BY status")}
+
     # -- the turn ledger and the tail -------------------------------------------------
 
     def turn_add(self, kind: str, at: int) -> None:

@@ -1,0 +1,3 @@
+#!/bin/sh
+# Stand-in for the sqlite3 CLI so `telegrind doctor` is testable on a box without it.
+echo "3.46.1 2024-08-13 fake"
