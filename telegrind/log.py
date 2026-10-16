@@ -247,3 +247,105 @@ class Log:
             return None
         row = self.conn.execute("SELECT author FROM entries WHERE message_id = ?", (message_id,)).fetchone()
         return row["author"] if row else None
+
+    # -- media and voice jobs ---------------------------------------------------------
+
+    def media_enqueue(
+        self, message_id: int, file_id: str, name: str | None, mime: str | None, size: int | None
+    ) -> None:
+        with self._tx():
+            self.conn.execute(
+                "INSERT OR IGNORE INTO media(message_id, file_id, name, mime, size, status)"
+                " VALUES (?, ?, ?, ?, ?, 'pending')",
+                (message_id, file_id, name, mime, size),
+            )
+
+    def media_pending(self) -> list[sqlite3.Row]:
+        return list(self.conn.execute("SELECT * FROM media WHERE status = 'pending' ORDER BY message_id"))
+
+    def media_set(
+        self,
+        message_id: int,
+        status: str,
+        *,
+        sha256: str | None = None,
+        error: str | None = None,
+        attempt: bool = False,
+    ) -> None:
+        with self._tx():
+            self.conn.execute(
+                "UPDATE media SET status = ?, sha256 = coalesce(?, sha256), last_error = ?, attempts = attempts + ?"
+                " WHERE message_id = ?",
+                (status, sha256, error, 1 if attempt else 0, message_id),
+            )
+
+    def voice_enqueue(self, message_id: int, file_id: str) -> None:
+        with self._tx():
+            self.conn.execute(
+                "INSERT OR IGNORE INTO voice_jobs(message_id, file_id, status) VALUES (?, ?, 'pending')",
+                (message_id, file_id),
+            )
+
+    def voice_pending(self) -> list[sqlite3.Row]:
+        return list(self.conn.execute("SELECT * FROM voice_jobs WHERE status = 'pending' ORDER BY message_id"))
+
+    def voice_set(self, message_id: int, status: str, *, error: str | None = None, attempt: bool = False) -> None:
+        with self._tx():
+            self.conn.execute(
+                "UPDATE voice_jobs SET status = ?, last_error = ?, attempts = attempts + ? WHERE message_id = ?",
+                (status, error, 1 if attempt else 0, message_id),
+            )
+
+    # -- the turn ledger and the tail -------------------------------------------------
+
+    def turn_add(self, kind: str, at: int) -> None:
+        with self._tx():
+            self.conn.execute("INSERT INTO turns(at, kind) VALUES (?, ?)", (at, kind))
+
+    def turns_since(self, kind: str, since: int) -> int:
+        return self.conn.execute("SELECT count(*) FROM turns WHERE kind = ? AND at >= ?", (kind, since)).fetchone()[0]
+
+    def unprocessed(self, processed: dict[int, int]) -> list[Entry]:
+        """Entries a pass would process (REQ-CONTRACT-2), as Python judges it from `processed`."""
+        rows = self.conn.execute(
+            f"SELECT {', '.join(ENTRY_COLUMNS)} FROM entries WHERE author != ? ORDER BY occurred_at, message_id",  # noqa: S608
+            (AUTHOR_BOT,),
+        )
+        return [Entry(*r) for r in rows if processed.get(r["message_id"]) != r["revision"]]
+
+    def context_before(self, message_id: int, limit: int = 10) -> list[Entry]:
+        pivot = self.entry(message_id)
+        if pivot is None:
+            return []
+        rows = self.conn.execute(
+            f"SELECT {', '.join(ENTRY_COLUMNS)} FROM entries WHERE (occurred_at, message_id) < (?, ?)"  # noqa: S608
+            " ORDER BY occurred_at DESC, message_id DESC LIMIT ?",
+            (pivot.occurred_at, pivot.message_id, limit),
+        )
+        return [Entry(*r) for r in rows][::-1]
+
+    # -- televibe.telegram.ChainStore (REQ-LOG-8); chat_id is the person's own chat, so it is not stored
+
+    async def chain_of(self, chat_id: int, message_id: int) -> str | None:
+        row = self.conn.execute("SELECT chain_id FROM chain_links WHERE message_id = ?", (message_id,)).fetchone()
+        return row["chain_id"] if row else None
+
+    async def link(self, chat_id: int, message_id: int, chain_id: str) -> None:
+        with self._tx():
+            self.conn.execute(
+                "INSERT INTO chain_links(message_id, chain_id) VALUES (?, ?)"
+                " ON CONFLICT(message_id) DO UPDATE SET chain_id = excluded.chain_id",
+                (message_id, chain_id),
+            )
+
+    async def session_of(self, chain_id: str) -> str | None:
+        row = self.conn.execute("SELECT session FROM chain_sessions WHERE chain_id = ?", (chain_id,)).fetchone()
+        return row["session"] if row else None
+
+    async def save(self, chain_id: str, session: str) -> None:
+        with self._tx():
+            self.conn.execute(
+                "INSERT INTO chain_sessions(chain_id, session) VALUES (?, ?)"
+                " ON CONFLICT(chain_id) DO UPDATE SET session = excluded.session",
+                (chain_id, session),
+            )
