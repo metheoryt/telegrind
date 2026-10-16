@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_compose_mounts_and_env():
-    """REQ-DEPLOY-2, REQ-DEPLOY-3: the two mounts at the spec's paths, env from .env, unprivileged user."""
+    """REQ-DEPLOY-2, REQ-DEPLOY-3, REQ-LAYOUT-4: two mounts at fixed paths, env from .env, unprivileged."""
     compose = (ROOT / "compose.yml").read_text()
     for needle in ("./data:/data/telegrind", ":/claude", "env_file", "1000:1000"):
         assert needle in compose, needle

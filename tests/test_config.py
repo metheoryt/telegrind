@@ -10,7 +10,7 @@ BASE = {"BOT_TOKEN": "123:abc", "ALLOWED_USER_IDS": "7, 42"}
 
 
 def test_defaults():
-    """REQ-DEPLOY-3: every knob has the spec's default; tokens absent are None."""
+    """REQ-DEPLOY-3, REQ-TURN-10: the spec's defaults (a pass 600 s, a question 300 s); absent tokens are None."""
     cfg = Config.from_env(BASE)
     assert cfg.bot_token == "123:abc" and cfg.allowed_user_ids == frozenset({7, 42})
     assert cfg.claude_token is None and cfg.elevenlabs_key is None
@@ -26,7 +26,7 @@ def test_defaults():
 
 
 def test_every_variable_is_read():
-    """REQ-DEPLOY-3: the full list, as the spec names it."""
+    """REQ-DEPLOY-3, REQ-TURN-10: the full list, as the spec names it; both turn timeouts are configurable."""
     cfg = Config.from_env(
         {
             **BASE,

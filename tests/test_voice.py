@@ -99,7 +99,8 @@ def ask_text(name="ask.jsonl"):
 
 
 async def test_voice_is_transcribed_cleaned_posted_and_stored(rig, tmp_path):
-    """REQ-VOICE-1, -2, -5, -6: upload (never a link), raw and clean kept, quote posted as bot_sent."""
+    """REQ-VOICE-1, -2, REQ-VOICE-4, -5, -6: upload (never a link); cleaned by the one-shot call with --json-schema;
+    raw and clean kept, quote posted as bot_sent."""
     app = rig
     app.bot.files["v1"] = b"OGG"
     out = ask_text()

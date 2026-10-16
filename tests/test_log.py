@@ -1,4 +1,6 @@
-"""The log: events only grow, entries hold the current state (SPEC section 3)."""
+"""The log: events only grow, entries hold the current state (SPEC section 3).
+
+REQ-TEST-2: every test here runs on a real SQLite file in tmp_path, never on a fake connection."""
 
 import json
 import sqlite3
