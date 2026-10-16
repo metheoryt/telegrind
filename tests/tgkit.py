@@ -168,7 +168,8 @@ class FakeBot:
         return [(name, kw) for name, kw in self.calls if name in ("send_rich_message", "send_message")]
 
     def texts(self) -> list[str]:
-        return [kw.get("text") or "" for _, kw in self.sends()]
+        """What each send showed: `text`, or a rich message's markdown."""
+        return [kw.get("text") or getattr(kw.get("rich_message"), "markdown", None) or "" for _, kw in self.sends()]
 
     async def _call(self, name: str, kwargs: dict) -> None:
         self.calls.append((name, kwargs))
