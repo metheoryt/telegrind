@@ -59,8 +59,10 @@ def at_local_hour(clock, agent, uid, hour):
 async def test_backlog_pass_starts_over_the_limit(rig):
     """REQ-SCHED-2: more than BACKLOG_LIMIT unprocessed entries → a pass, once."""
     app, agent, *_ = rig
-    for i in range(3):
+    for i in range(2):  # exactly BACKLOG_LIMIT: not over it
         await app.on_message(user_message(text=f"{i} x", message_id=10 + i))
+    assert agent.started == []
+    await app.on_message(user_message(text="2 x", message_id=12))
     assert agent.started == [7]  # started on the third entry, not again on later ones
     await app.on_message(user_message(text="4 x", message_id=14))
     assert agent.started == [7]
@@ -109,3 +111,20 @@ async def test_quiet_hour_in_the_persons_zone(rig):
     conn.close()
     at_local_hour(clock, agent, 7, 4)  # 04:05 Bangkok == 05:05 Almaty
     assert await sched.tick() == [7]
+
+
+async def test_one_failing_user_does_not_stop_the_tick(rig, monkeypatch):
+    """A user whose due() raises is logged and skipped; the next user still starts."""
+    app, agent, sched, clock, _ = rig
+    await app.on_message(user_message(text="x"))
+    await app.on_message(user_message(uid=8, text="y"))
+    at_local_hour(clock, agent, 7, 4)
+    real_due = sched.due
+
+    def due(uid):
+        if uid == 7:
+            raise sqlite3.DatabaseError("locked")
+        return real_due(uid)
+
+    monkeypatch.setattr(sched, "due", due)
+    assert await sched.tick() == [8]

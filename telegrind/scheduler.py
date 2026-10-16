@@ -43,12 +43,15 @@ class Scheduler:
     async def tick(self) -> list[int]:
         started: list[int] = []
         for uid in self.app.layout.users():
-            if uid not in self.app.config.allowed_user_ids or not self.due(uid):
-                continue
-            if started:
-                await self.sleep(self.spread_s)
-            if self.agent.start_pass(uid):
-                started.append(uid)
+            try:
+                if uid not in self.app.config.allowed_user_ids or not self.due(uid):
+                    continue
+                if started:
+                    await self.sleep(self.spread_s)
+                if self.agent.start_pass(uid):
+                    started.append(uid)
+            except Exception as exc:  # one person's broken tables must not starve the rest
+                log.exception("user %d: schedule check failed (%s)", uid, type(exc).__name__)
         return started
 
     async def run(self) -> None:
