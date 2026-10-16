@@ -570,15 +570,13 @@ becomes one.
 - **Whether headless Claude Code reads an image from `media/` in a pass.** It
   does in interactive use; the first receipt photo on the dev bot measures
   the headless case.
-- **Whether the agent keeps `processed` reliably across passes**, or whether
-  Python should write the `processed` row itself after a successful pass
-  from the agent's report. The gate's first runs decide.
 - **Scribe on personal Russian speech** with numbers and amounts — the
   accuracy on «четыре пятьсот такси» has not been measured.
 - **The `?` rule.** Whether a question without a question mark is common
   enough in the owner's own writing to need a second signal.
 - **SQLite WAL under the agent's `ATTACH … mode=ro` while Python writes** —
-  expected to work; measured on the dev bot before the first release.
+  reading is measured (see section 14); a Python write landing *during* the
+  agent's read is not, and is measured on the dev bot before the first release.
 - **Quota and thresholds** — 50 turns, 50 entries, 04:00 are first guesses.
 - **The `claude` CLI's behaviour at the subscription limit mid-pass**: whether
   a half-done pass leaves `processed` consistent. The contract's
@@ -638,6 +636,15 @@ becomes one.
   requires a pass rate, as v2's `-m llm` gate did. It is skipped unless an
   account directory is given in the environment, and is run before every
   release.
+
+  Measured by the gate's first run (2026-10-16, 3 corpus runs, Claude Code
+  2.1.301), and so no longer open in section 12:
+  - *`processed` is kept by the agent.* Every run wrote a row at revision 1
+    for all 25 seeded entries and the question, and the deletion scenario's
+    three consecutive passes kept it current; Python does not write it.
+  - *The agent reads a WAL-mode log through `mode=ro`.* The seeded entries
+    were still in `log.sqlite-wal` under Python's open connection when the
+    pass ran, and every run found all of them; no row of the log changed.
 - **REQ-TEST-5** — Before a release, a manual walk on the dev bot, written as
   a checklist in `docs/walkthrough.md`: send a text, a voice note, a photo;
   edit the text; react to delete and react again to restore; ask a question;
