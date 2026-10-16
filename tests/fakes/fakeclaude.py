@@ -7,7 +7,8 @@ FAKE_MODE          hang: start `sleep 600` in the group, then sleep forever
                    pass: write ./facts.sqlite as a pass would (processed rows for every non-bot entry of ./log.sqlite,
                          an `expenses` table with a row per entry whose text opens with a number), then replay
 FAKE_STDERR        text to write to stderr after the replay
-FAKE_SLEEP         seconds to sleep before the replay
+FAKE_SLEEP         seconds to sleep after the replay's first line when that line is the init record (before the
+                   pass write and the rest), else before the replay: a real claude reports its session first
 FAKE_EXIT          exit code (default 0)
 """
 
@@ -73,14 +74,22 @@ def main() -> int:
             )
         )
     mode = env.get("FAKE_MODE", "")
+    fixture = env.get("FAKE_ASK_FIXTURE" if "--json-schema" in argv else "FAKE_TURN_FIXTURE")
+    lines = (
+        [line.replace("{{SESSION_ID}}", _session_id(argv)) for line in Path(fixture).read_text().splitlines()]
+        if fixture
+        else []
+    )
+    head = lines[:1] if lines and '"subtype": "init"' in lines[0] else []
+    for line in head:  # the init record: televibe's Started, as a real claude sends it before any work
+        sys.stdout.write(line + "\n")
+    sys.stdout.flush()
     time.sleep(float(env.get("FAKE_SLEEP", "0")))
     if mode == "pass":
         _write_facts(cwd)
-    fixture = env.get("FAKE_ASK_FIXTURE" if "--json-schema" in argv else "FAKE_TURN_FIXTURE")
-    if fixture:
-        for line in Path(fixture).read_text().splitlines():
-            sys.stdout.write(line.replace("{{SESSION_ID}}", _session_id(argv)) + "\n")
-        sys.stdout.flush()
+    for line in lines[len(head) :]:
+        sys.stdout.write(line + "\n")
+    sys.stdout.flush()
     if "FAKE_STDERR" in env:
         sys.stderr.write(env["FAKE_STDERR"])
         sys.stderr.flush()

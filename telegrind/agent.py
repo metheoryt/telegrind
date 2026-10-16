@@ -9,7 +9,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiogram.types import Message
-from televibe import Access, Account, ClaudeCode, Done, Engine, Failed, Limits
+from televibe import Access, Account, ClaudeCode, Done, Engine, Failed, Limits, Started
 from televibe.events import Event
 from televibe.telegram import Chains, Presenter, Reactions, Texts
 
@@ -212,7 +212,9 @@ class Agent:
         if self.engine is None or self.provider is None:
             return
         store, facts = self.app.log_for(uid), self.facts(uid)
-        before = facts.mark()
+        # Entering only queues the turn behind the lane; a question ahead of it runs a pass of its own and
+        # writes processed. So `before` is measured at Started, and at entry only if no Started ever came.
+        at_entry, before = facts.mark(), None
         store.turn_add("pass", self.app.clock())
         session = self.provider.new_session(self.app.layout.user_dir(uid))
         end: Done | Failed | None = None
@@ -227,14 +229,16 @@ class Agent:
             tag={"kind": "pass", "user": uid},
         ) as turn:
             async for event in turn:
-                if isinstance(event, Done | Failed):
+                if isinstance(event, Started) and before is None:
+                    before = facts.mark()
+                elif isinstance(event, Done | Failed):
                     end = event
         if not isinstance(end, Done):
             reason = end.reason if isinstance(end, Failed) else "no terminal event"
             log.warning("user %d: pass failed: %s", uid, reason)
             return
         digest = end.text.strip()
-        if facts.mark() != before and digest:  # REQ-TURN-7
+        if facts.mark() != (at_entry if before is None else before) and digest:  # REQ-TURN-7
             await self.app.say(uid, digest, None)
 
     # -- start-up -------------------------------------------------------------------------

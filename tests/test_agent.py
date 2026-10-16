@@ -48,7 +48,8 @@ async def test_question_turn_answers_links_and_stores(rig, tmp_path):
     """REQ-TURN-1, REQ-TURN-2, REQ-TURN-3, REQ-TURN-6, REQ-TURN-8, REQ-LOG-7.
 
     The fake's answer is sent, linked to the chain, stored; reactions 👀 → 👨‍💻 → cleared."""
-    app, _, _ = rig
+    app, agent, _ = rig
+    agent.turn_env = {**turn_env(tmp_path), "BOT_TOKEN": "x", "ELEVENLABS_API_KEY": "y"}  # never reach the child
     await app.on_message(user_message(text="сколько такси?"))
     await app.drain()
     bot, store = app.bot, app.log_for(7)
@@ -137,7 +138,7 @@ async def test_pass_posts_the_digest_only_when_processed_changed(rig, tmp_path):
     """REQ-TURN-4, REQ-TURN-7: a pass that wrote processed posts Done.text; one that changed nothing posts nothing."""
     app, agent, _ = rig
     await app.on_message(user_message(text="4500 такси"))
-    agent.turn_env = turn_env(tmp_path, mode="pass")
+    agent.turn_env = turn_env(tmp_path, mode="pass", sleep=0.2)  # the work lands after Started, as in a real pass
     await agent.run_pass(7)
     assert len(app.bot.texts()) == 1 and app.bot.texts()[0] == ANSWER
     rec = records(tmp_path)[0]
@@ -146,6 +147,38 @@ async def test_pass_posts_the_digest_only_when_processed_changed(rig, tmp_path):
     agent.turn_env = turn_env(tmp_path)  # a plain replay changes no table
     await agent.run_pass(7)
     assert len(app.bot.texts()) == 1
+
+
+class SignalBot(FakeBot):
+    """A FakeBot that sets `queued` when the 👀 of a question lands."""
+
+    def __init__(self):
+        super().__init__()
+        self.queued = asyncio.Event()
+
+    async def set_message_reaction(self, **kwargs) -> bool:
+        await super().set_message_reaction(**kwargs)
+        if kwargs["reaction"] and kwargs["reaction"][0].emoji == "👀":
+            self.queued.set()
+        return True
+
+
+async def test_pass_queued_behind_a_question_measures_from_its_own_start(rig, tmp_path):
+    """REQ-TURN-7: a question ahead in the lane runs the pass the contract asks of it; the pass queued behind it
+    derives nothing, so it posts nothing — `before` is measured when the pass starts, not when it is queued."""
+    app, agent, _ = rig
+    app.bot = SignalBot()
+    agent.turn_env = turn_env(tmp_path, mode="pass", sleep=0.3)  # the question writes processed
+    await app.on_message(user_message(text="4500 такси"))
+    await app.on_message(user_message(text="сколько такси?", message_id=11))
+    await app.bot.queued.wait()  # the question's env is taken before its task next yields
+    agent.turn_env = turn_env(tmp_path)  # the pass is a plain replay: it changes nothing
+    assert agent.start_pass(7) is True
+    await agent.passes[7]
+    await app.drain()
+    assert len(records(tmp_path)) == 2
+    assert agent.facts(7).mark() != (0, 0)  # the question did change processed
+    assert app.bot.texts() == [ANSWER]  # the question's answer, and no digest
 
 
 async def test_failed_pass_posts_nothing(rig, tmp_path):
