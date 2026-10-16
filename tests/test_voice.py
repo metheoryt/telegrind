@@ -247,3 +247,16 @@ async def test_without_elevenlabs_key_voice_is_stored_only(tmp_path, fake_path):
     assert scribe.requests == [] and app.bot.reactions() == [(10, "💔")]
     app.close()
     await client.aclose()
+
+
+@pytest.mark.parametrize("limit", [4096, 60])
+def test_every_part_is_prefixed_and_within_the_limit(limit):
+    """REQ-VOICE-6: each part, not only the first, opens with «🎙 », and none exceeds the limit in UTF-16 units."""
+    text = "\n\n".join(["слово 😀 " * 300, "а" * 5000, "ещё абзац"])
+    parts = chunks(text, limit)
+    assert len(parts) >= 3
+    assert all(p.startswith(PREFIX) for p in parts)
+    assert all(len(p.encode("utf-16-le")) // 2 <= limit for p in parts)
+    assert all(quote(p)[0].offset == 0 and quote(p)[0].length == len(p.encode("utf-16-le")) // 2 for p in parts)
+    body = "".join(p.removeprefix(PREFIX) for p in parts)
+    assert body.replace(" ", "").replace("\n", "") == text.replace(" ", "").replace("\n", "")  # nothing lost

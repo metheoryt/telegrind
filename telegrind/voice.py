@@ -39,26 +39,27 @@ def _cut(para: str, limit: int) -> tuple[str, str]:
     while _units(para[:n]) > limit:
         n -= 1
     space = para.rfind(" ", 0, n + 1)
-    if space > n // 2:  # not the prefix's own space
+    if space > n // 2:  # a space in the first half would waste most of the part
         return para[:space], para[space + 1 :]
     return para[:n], para[n:]
 
 
 def chunks(text: str, limit: int = TG_LIMIT) -> list[str]:
-    """PREFIX + text as messages of at most `limit`, split between paragraphs, else between words."""
+    """Text as messages of at most `limit`, each opening with PREFIX, split between paragraphs, else between words."""
+    room = limit - _units(PREFIX)  # every part carries the prefix (REQ-VOICE-6)
     pieces = []
-    for para in (PREFIX + text.strip()).split("\n\n"):
-        while _units(para) > limit:
-            head, para = _cut(para, limit)
+    for para in text.strip().split("\n\n"):
+        while _units(para) > room:
+            head, para = _cut(para, room)
             pieces.append(head)
         pieces.append(para)
     out: list[str] = []
     for piece in pieces:
-        if out and _units(out[-1]) + 2 + _units(piece) <= limit:
+        if out and _units(out[-1]) + 2 + _units(piece) <= room:
             out[-1] += "\n\n" + piece
         else:
             out.append(piece)
-    return out
+    return [PREFIX + part for part in out]
 
 
 def quote(part: str) -> list[MessageEntity]:
