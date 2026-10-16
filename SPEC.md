@@ -60,7 +60,9 @@ and the import of bank statements the person drops in (section 8, STATEMENTS).
   otherwise.
 - **REQ-SCOPE-2** — No Python module in `telegrind/` opens `facts.sqlite` for
   writing. The only reads of it are the three tables of REQ-FACTS-2. A test
-  greps the sources for the file name and checks every open is read-only.
+  inspects the sources' AST: the file name is a path literal in the layout
+  module alone, every use of that path goes to the read-only reader, which
+  opens it `mode=ro` and reads only those three tables.
 
 ---
 
@@ -395,8 +397,13 @@ unit tests; a requirement that no live check can see does not belong here.
 The two files and three tables Python depends on.
 
 - **REQ-FACTS-1** — The agent treats `log.sqlite` as read-only: it attaches it
-  with `?mode=ro` and never writes it. The gate hashes `log.sqlite` before and
-  after a pass and a question and requires the hashes to match.
+  with `?mode=ro` and never writes it. The gate compares the log's content
+  before and after a pass and a question turn: no existing row of any table
+  changes or disappears, no schema object (table, index, trigger, view) appears
+  or disappears, no table gains a row except the ones Python itself appends to
+  in those turns, and none gains a row for an entry seeded before them. (A
+  byte hash cannot see a write: the log is in WAL mode and Python's connection
+  stays open, so writes land in `log.sqlite-wal`.)
 - **REQ-FACTS-2** — `facts.sqlite` holds, besides the fact tables, three
   tables Python reads: `processed(entry_id INTEGER PRIMARY KEY, revision
   INTEGER NOT NULL, at INTEGER NOT NULL)`, `keyterms(term TEXT PRIMARY KEY)`
@@ -630,9 +637,11 @@ becomes one.
   the tables — an expense of 4500 for «такси» in a typed column; 82.4 as a
   number in a weight or health table, not in a notes table; «вчера вечером»
   dated the day before its entry; a `processed` row for every entry; `entry_id`
-  and `at` in every fact table; `log.sqlite` unchanged by hash — and then runs
-  a question turn whose number the test checks against its own SQL over the
-  agent's tables. It is stochastic: it runs each case several times and
+  and `at` in every fact table; `log.sqlite` unchanged in content beyond
+  Python's own appends (REQ-FACTS-1) — then records one more entry and runs a
+  question turn, checks that the turn's own pass processed that entry, and
+  checks the answer's number against the test's own SQL over the agent's
+  tables, a sum no single entry's text says. It is stochastic: it runs each case several times and
   requires a pass rate, as v2's `-m llm` gate did. It is skipped unless an
   account directory is given in the environment, and is run before every
   release.

@@ -7,10 +7,13 @@
 #   not_notes: the row is not in a table whose name contains "note" or "записи"
 # An item with `texts` is a run of consecutive entries; `rows_per_entry` is how
 # many rows each must own (context is for understanding an entry, never for
-# moving its fact onto a neighbour).
+# moving its fact onto a neighbour). `question` is described where it stands.
 entries:
   - text: "4500 такси"
     expect: {amount: 4500}
+  - text: "1200 такси"
+    sent: "2026-09-14 09:00"
+    expect: {amount: 1200}
   - text: "5.4 usd хостинг"
     expect: {amount: 5.4}
   - text: "41 бат массаж вчера вечером"
@@ -56,7 +59,11 @@ entries:
   - texts: ["хлеб 500", "и молоко 300"]
     expect: {rows_per_entry: [1, 1]}
 question:
-  text: "Сколько я потратил на такси?"
-  # the gate finds the такси row by entry_id, reads its amount by SQL, and
-  # requires that number (digits only) in the answer
-  entry: "4500 такси"
+  text: "Сколько я потратил на такси в сентябре?"
+  # `entries` are the corpus's такси entries; `fresh` is recorded after the
+  # pass and before the question, so only the question's own pass
+  # (REQ-CONTRACT-6) can count it. The gate sums the amounts SQL finds for all
+  # of them and requires that sum (6500, which no single entry says) in the
+  # answer, and a processed row for `fresh` after the question.
+  entries: ["4500 такси", "1200 такси"]
+  fresh: {text: "800 такси", sent: "2026-09-20 19:00"}

@@ -2,11 +2,11 @@
 
   TELEGRIND_LIVE_HOME=~/.claude-telegrind uv run pytest -m live -v
 Optional: TELEGRIND_LIVE_TOKEN (a CLAUDE_CODE_OAUTH_TOKEN; without it the account's own login is used),
-TELEGRIND_LIVE_RUNS (3), TELEGRIND_LIVE_PASS_RATE (0.67).
+TELEGRIND_LIVE_RUNS (3), TELEGRIND_LIVE_PASS_RATE (2/3, given as a fraction: 0.6667).
 
-Stochastic: the corpus is run TELEGRIND_LIVE_RUNS times on fresh directories (a pass, then a question) and each rated
-check must hold in that share of runs. The deletion and correction scenarios run once each. Every run's directory is
-left under pytest's basetemp with a summary.json beside it.
+Stochastic: the corpus is run TELEGRIND_LIVE_RUNS times on fresh directories (a pass, a fresh entry, then a question)
+and each rated check must hold in at least ceil(rate x runs) of them: 2 of 3 by default. The deletion and correction
+scenarios run once each. Every run's directory is left under pytest's basetemp with a summary.json beside it.
 
 Claims section 8: REQ-FACTS-1, REQ-FACTS-2, REQ-FACTS-3, REQ-CONTRACT-1, REQ-CONTRACT-2, REQ-CONTRACT-3,
 REQ-CONTRACT-4, REQ-CONTRACT-5, REQ-CONTRACT-6, REQ-CONTRACT-7, REQ-CONTRACT-8, REQ-CONTRACT-9, REQ-CONTRACT-10,
@@ -17,6 +17,7 @@ The ones no run below checks yet (CONTRACT-9, 13, 14, 15, DEPLOY-5) are listed s
 
 import asyncio
 import json
+import math
 import os
 import re
 import sqlite3
@@ -41,7 +42,7 @@ CORPUS = yaml.safe_load((Path(__file__).parent / "fixtures" / "entries.yaml").re
 ENTRIES: list[dict] = CORPUS["entries"]
 QUESTION: dict = CORPUS["question"]
 RUNS = int(os.environ.get("TELEGRIND_LIVE_RUNS", "3"))
-RATE = float(os.environ.get("TELEGRIND_LIVE_PASS_RATE", "0.67"))
+RATE = float(os.environ.get("TELEGRIND_LIVE_PASS_RATE", str(2 / 3)))  # 2 of 3 runs; see _needed
 PASS_TIMEOUT_S = 900  # a 25-entry corpus in one pass; production's 600 s is sized for the backlog limit
 QUESTION_TIMEOUT_S = 300  # production's default (REQ-TURN-10)
 # The module fixture runs every corpus run before the first test that uses it, inside that test's timeout.
@@ -49,6 +50,7 @@ pytestmark = [pytest.mark.live, pytest.mark.timeout(RUNS * (PASS_TIMEOUT_S + QUE
 UID = 7
 FIRST_ID = 10
 QUESTION_ID = 900
+FRESH_ID = 800
 PYTHON_TABLES = {"processed", "keyterms", "settings", "accounts", "sqlite_sequence"}
 NOT_A_QUANTITY = {"id", "at", "due", "revision"}  # and every *_at / *_id column: times and references
 # What the agent may leave in the person's directory (REQ-CONTRACT-12).
@@ -165,36 +167,74 @@ def _count(path: Path, sql: str) -> int:
         conn.close()
 
 
+def _processed(path: Path) -> dict[int, int]:
+    if "processed" not in _tables(path):
+        return {}
+    conn = _ro(path)
+    try:
+        return {int(e): int(r) for e, r in conn.execute("SELECT entry_id, revision FROM processed")}
+    finally:
+        conn.close()
+
+
+def _amount(row: dict) -> float | None:
+    """The row's amount: its `amount` column, or its only quantity."""
+    if isinstance(row.get("amount"), int | float):
+        return float(row["amount"])
+    numbers = _numbers(row)
+    return numbers[0] if len(numbers) == 1 else None
+
+
+def _says(answer: str, number: float) -> bool:
+    """The answer states `number`: a thousands separator (space, NBSP, narrow NBSP, comma) and a sign are allowed;
+    a longer number that contains it is not."""
+    if number != int(number):
+        return False
+    flat = re.sub(r"(?<=\d)[\s,](?=\d{3}(?!\d))", "", answer)
+    return re.search(rf"(?<![\d.,]){int(number)}(?!\d)", flat) is not None
+
+
 # -- log.sqlite, compared by content ------------------------------------------------------------
 # A byte hash of log.sqlite proves nothing: the log is in WAL mode and Python's connection stays open, so every
 # write, the agent's included, lands in log.sqlite-wal and the main file's bytes do not move. And Python itself
-# writes during a pass (the turn ledger, the digest) and before a question (the question's own entry).
+# writes during a pass (the turn ledger, the digest) and around a question (the entries, the answer).
+
+# The tables Python appends to during a pass or a question turn: `turns` (Agent.run_pass and Agent.answer:
+# turn_add), `events` and `entries` (App.say and the answer: record_bot_sent; the fresh entry and the question:
+# record_received), `chain_links` and `chain_sessions` (televibe's Chains linking the answer). New rows are allowed
+# there and only there, and never for a seeded entry.
+APPENDED_BY_PYTHON = frozenset({"turns", "events", "entries", "chain_links", "chain_sessions"})
 
 
-def _log_snapshot(path: Path) -> dict[str, tuple[list[str], set[tuple]]]:
+def _log_snapshot(path: Path) -> dict:
+    """Every schema object (tables, indexes, triggers, views) and every row of every table."""
     conn = _ro(path)
     try:
-        out = {}
+        schema = set(conn.execute("SELECT type, name, tbl_name, sql FROM sqlite_master").fetchall())
+        tables = {}
         for (table,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall():
             cur = conn.execute(f'SELECT * FROM "{table}"')
-            out[table] = ([d[0] for d in cur.description], set(cur.fetchall()))
-        return out
+            tables[table] = ([d[0] for d in cur.description], set(cur.fetchall()))
+        return {"schema": schema, "tables": tables}
     finally:
         conn.close()
 
 
 def _log_changes(before: dict, after: dict, seeded: set[int]) -> list[str]:
     """What changed in the log beyond Python's own appends: an empty list means the agent wrote nothing."""
-    problems = [f"new table {t}" for t in sorted(set(after) - set(before))]
-    for table, (cols, rows) in before.items():
-        if table not in after:
-            problems.append(f"table {table} dropped")
-            continue
-        _, now = after[table]
+    problems = [f"schema object added: {o[0]} {o[1]}" for o in sorted(after["schema"] - before["schema"], key=repr)]
+    problems += [f"schema object removed: {o[0]} {o[1]}" for o in sorted(before["schema"] - after["schema"], key=repr)]
+    for table, (cols, rows) in before["tables"].items():
+        if table not in after["tables"]:
+            continue  # reported above as a removed schema object
+        _, now = after["tables"][table]
         problems += [f"{table}: row changed or deleted: {row}" for row in sorted(rows - now, key=repr)]
-        if "message_id" in cols:
+        added = now - rows
+        if added and table not in APPENDED_BY_PYTHON:
+            problems += [f"{table}: row inserted: {row}" for row in sorted(added, key=repr)]
+        elif "message_id" in cols:
             at = cols.index("message_id")
-            problems += [f"{table}: new row for a seeded entry: {r}" for r in now - rows if r[at] in seeded]
+            problems += [f"{table}: new row for a seeded entry: {r}" for r in added if r[at] in seeded]
     return problems
 
 
@@ -216,6 +256,10 @@ async def _one_run(tmp_path: Path, home: str) -> dict:
         after_pass = _log_snapshot(log_path)
         texts = app.bot.texts()
         digest = texts[-1] if texts else ""
+        fresh = QUESTION["fresh"]
+        sent = datetime.fromisoformat(fresh["sent"]).replace(tzinfo=TZ)
+        await app.on_message(user_message(uid=UID, message_id=FRESH_ID, text=fresh["text"], date=sent))
+        fresh_before_q = _processed(facts_path).get(FRESH_ID)
         t0 = time.monotonic()
         await app.on_message(user_message(uid=UID, text=QUESTION["text"], message_id=QUESTION_ID))
         await app.drain()
@@ -231,6 +275,7 @@ async def _one_run(tmp_path: Path, home: str) -> dict:
     run = {
         "dir": str(tmp_path),
         "ids": ids,
+        "fresh_processed": (fresh_before_q, _processed(facts_path).get(FRESH_ID)),
         "facts": facts_path,
         "log_changes": (_log_changes(before, after_pass, seeded), _log_changes(after_pass, after_q, seeded)),
         "stray": stray,
@@ -241,7 +286,7 @@ async def _one_run(tmp_path: Path, home: str) -> dict:
     }
     summary = {k: v for k, v in run.items() if k != "facts"}
     summary["tables"] = {t: _count(facts_path, f'SELECT count(*) FROM "{t}"') for t in _tables(facts_path)}
-    summary["rows"] = {text: _rows_for(facts_path, i) for text, i in ids.items()}
+    summary["rows"] = {text: _rows_for(facts_path, i) for text, i in {**ids, "fresh": FRESH_ID}.items()}
     (tmp_path / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1, default=str))
     return run
 
@@ -252,9 +297,15 @@ def runs(tmp_path_factory) -> list[dict]:
     return [asyncio.run(_one_run(tmp_path_factory.mktemp(f"run{i}"), home)) for i in range(RUNS)]
 
 
+def _needed(runs: int) -> int:
+    """How many of `runs` must pass: compared as counts, so 2/3 is not lost to 0.666… < 0.67."""
+    return math.ceil(RATE * runs - 1e-9)
+
+
 def _rate(checks: list[bool], detail: object = "") -> None:
     ok = sum(checks)
-    assert ok / len(checks) >= RATE, f"{ok}/{len(checks)} runs passed (need {RATE:.0%}): {checks} {detail}"
+    need = _needed(len(checks))
+    assert ok >= need, f"{ok}/{len(checks)} runs passed (need {need}): {checks} {detail}"
 
 
 def test_log_is_never_written_by_the_agent(runs):
@@ -278,11 +329,7 @@ def test_the_three_tables_exist_and_processed_covers_every_entry(runs):
     checks, detail = [], []
     for r in runs:
         tables = set(_tables(r["facts"]))
-        processed = {}
-        if "processed" in tables:
-            conn = _ro(r["facts"])
-            processed = dict(conn.execute("SELECT entry_id, revision FROM processed"))
-            conn.close()
+        processed = _processed(r["facts"])
         missing = sorted(i for i in r["ids"].values() if processed.get(i) != 1)
         checks.append({"processed", "keyterms", "settings"} <= tables and missing == [])
         detail.append({"tables": sorted(tables), "missing": missing})
@@ -337,15 +384,25 @@ def test_pass_ends_with_one_line_digest(runs):
     _rate([bool(c) for c in checks], [r["digest"] for r in runs])
 
 
+def test_question_runs_its_own_pass_first(runs):
+    """REQ-CONTRACT-6: an entry recorded after the pass and before the question is processed by the question turn."""
+    states = [r["fresh_processed"] for r in runs]
+    _rate([before is None and after == 1 for before, after in states], states)
+
+
 def test_question_number_matches_sql(runs):
-    """REQ-CONTRACT-6, REQ-CONTRACT-7: the answer's number is the amount SQL finds for the такси entry."""
-    checks = []
+    """REQ-CONTRACT-6, REQ-CONTRACT-7: the answer states the sum SQL finds over the September такси entries, the
+    fresh one included: a number no single entry's text says."""
+    checks, detail = [], []
     for r in runs:
-        rows = _rows_for(r["facts"], r["ids"][QUESTION["entry"]])
-        amounts = [n for _, row in rows for n in _numbers(row)]
-        digits = re.sub(r"\s", "", r["answer"])
-        checks.append(bool(amounts) and any(str(int(a)) in digits for a in amounts if a == int(a)))
-    _rate(checks, [r["answer"] for r in runs])
+        ids = [r["ids"][t] for t in QUESTION["entries"]] + [FRESH_ID]
+        per_entry = [_rows_for(r["facts"], i) for i in ids]
+        amounts = [_amount(row) for rows in per_entry for _, row in rows]
+        total = sum(a for a in amounts if a is not None)
+        ok = [len(rows) for rows in per_entry] == [1] * len(ids) and None not in amounts and _says(r["answer"], total)
+        checks.append(ok)
+        detail.append((total, amounts, r["answer"]))
+    _rate(checks, detail)
 
 
 def test_keyterms_are_maintained(runs):
@@ -385,37 +442,45 @@ def test_deleted_entry_has_no_rows_after_a_pass(tmp_path):
     assert back, "the restored entry was not derived again"
 
 
+EXPENSE = re.compile(r"expense|spend|трат|расход", re.I)
+LOAN = re.compile(r"loan|debt|займ|долг", re.I)
+
+
 def test_correction_becomes_a_rule(tmp_path):
-    """REQ-CONTRACT-8: «это займ, не трата» changes the rows and writes the person's CLAUDE.md."""
+    """REQ-CONTRACT-8: «5000 Вася» opens with an amount, so the first pass files it as an expense; «это займ, не
+    трата» moves the row into loans and adds a rule to the person's CLAUDE.md that was not there before."""
     home = _home()
 
-    async def run() -> tuple[str, list, list]:
+    async def run() -> tuple[str, str, list, list]:
         cfg = _config(tmp_path, home)
         layout = Layout(cfg.data_dir)
         layout.install_contract()
+        rules_path = layout.user_dir(UID) / "CLAUDE.md"
         async with Engine(tmp_path / "state") as engine:
             app = App(config=cfg, bot=FakeBot(), layout=layout)
             agent = Agent(config=cfg, app=app, engine=engine, provider=_provider(cfg, home))
             app.answerer = agent
-            await app.on_message(user_message(uid=UID, message_id=FIRST_ID, text="Вася 5000"))
+            await app.on_message(user_message(uid=UID, message_id=FIRST_ID, text="5000 Вася"))
             await agent.run_pass(UID)
             first = _rows_for(layout.facts_path(UID), FIRST_ID)
-            text = "Вася 5000 — это займ Васе, не трата. Вася всегда займы?"
+            rules_before = rules_path.read_text() if rules_path.exists() else ""
+            text = "5000 Вася — это займ Васе, не трата. Вася у меня всегда займы, запомнишь?"
             await app.on_message(user_message(uid=UID, message_id=FIRST_ID + 1, text=text))
             await app.drain()
-            rules_path = layout.user_dir(UID) / "CLAUDE.md"
-            rules = rules_path.read_text() if rules_path.exists() else ""
+            rules_after = rules_path.read_text() if rules_path.exists() else ""
             rows = _rows_for(layout.facts_path(UID), FIRST_ID)
             app.close()
-        return rules, first, rows
+        return rules_before, rules_after, first, rows
 
-    rules, first, rows = asyncio.run(run())
-    (tmp_path / "summary.json").write_text(
-        json.dumps({"rules": rules, "first": first, "rows": rows}, ensure_ascii=False)
-    )
-    assert "Вася" in rules, f"no rule about Вася in the person's CLAUDE.md: {rules!r}"
+    before, after, first, rows = asyncio.run(run())
+    summary = {"rules_before": before, "rules_after": after, "first": first, "rows": rows}
+    (tmp_path / "summary.json").write_text(json.dumps(summary, ensure_ascii=False))
+    assert first and all(EXPENSE.search(t) for t, _ in first), f"the first pass did not file it as an expense: {first}"
     assert rows, "the corrected entry has no rows"
-    assert not any(re.search(r"expense|spend|трат|расход", t, re.I) for t, _ in rows), (first, rows)
+    assert all(LOAN.search(t) and not EXPENSE.search(t) for t, _ in rows), f"not moved to loans: {rows}"
+    added = [line for line in after.splitlines() if line.strip() and line not in before.splitlines()]
+    assert added, "the correction added nothing to the person's CLAUDE.md"
+    assert any("Вас" in line for line in added), f"the added rule does not name Вася: {added}"
 
 
 @pytest.mark.xfail(run=False, reason="needs a receipt photo fixture; REQ-CONTRACT-9 is measured on the dev bot first")
