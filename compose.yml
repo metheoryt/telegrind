@@ -1,0 +1,18 @@
+name: telegrind3
+
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    user: "1000:1000"
+    volumes:
+      # Both paths are fixed for the life of the deployment (SPEC REQ-LAYOUT-4, REQ-DEPLOY-2):
+      # a Claude Code session is keyed by its cwd and its config dir.
+      - ./data:/data/telegrind
+      - ${TELEGRIND_ACCOUNT_DIR:-~/.claude-telegrind}:/claude
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
