@@ -64,3 +64,10 @@ def test_walkthrough_covers_the_spec_list():
     text = (ROOT / "docs" / "walkthrough.md").read_text().lower()
     for word in ("текст", "голос", "фото", "правк", "удал", "восстанов", "вопрос", "проход", "перезапус"):
         assert word in text, word
+
+
+def test_dockerfile_pins_the_claude_the_live_gate_measured():
+    """REQ-TEST-4, REQ-DEPLOY-1: the image runs the CLI version SPEC records the live gate as measured on."""
+    pin = re.search(r"claude\.ai/install\.sh \| bash -s (\S+)", (ROOT / "Dockerfile").read_text()).group(1)
+    measured = re.search(r"Claude Code\s+(\d+\.\d+\.\d+)", (ROOT / "SPEC.md").read_text()).group(1)
+    assert pin == measured

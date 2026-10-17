@@ -7,7 +7,7 @@ RUN groupadd -g 1000 bot && useradd -m -u 1000 -g 1000 bot
 # The claude CLI, pinned, installed for the bot user (it lives under its home).
 # The pin holds only with DISABLE_AUTOUPDATER=1, set below: the bot user owns the install and would self-update.
 USER bot
-RUN curl -fsSL https://claude.ai/install.sh | bash -s 2.1.300
+RUN curl -fsSL https://claude.ai/install.sh | bash -s 2.1.301
 ENV PATH=/home/bot/.local/bin:$PATH DISABLE_AUTOUPDATER=1
 
 USER root
