@@ -443,11 +443,11 @@ async def test_an_addressed_reply_to_an_answer_continues_its_chain(rig, tmp_path
     assert first["argv"][first["argv"].index("--session-id") + 1] == third["argv"][third["argv"].index("--resume") + 1]
 
 
-async def test_an_addressed_turn_gives_the_receipt_back(rig, tmp_path):
-    """REQ-RECEIPT-4: 👀 replaces the heart for the turn; the heart comes back after the answer."""
+async def test_an_addressed_turn_leaves_no_receipt(rig, tmp_path):
+    """REQ-RECEIPT-4: ❤ takes the entry out of the log, so 💔 goes and does not come back after the answer."""
     app, _, _ = rig
     await app.on_message(user_message(text="вчера было 5000"))
     await app.on_reaction(reaction(emoji="❤"))
     await app.drain()
-    assert [r[1] for r in app.bot.reactions()] == ["💔", "👀", "👨‍💻", None, "💔"]
-    assert app.log_for(7).entry(10).receipt == "💔" and ANSWER in app.bot.texts()[-1]
+    assert [r[1] for r in app.bot.reactions()] == ["💔", None, "👀", "👨‍💻", None]
+    assert app.log_for(7).entry(10).receipt is None and ANSWER in app.bot.texts()[-1]

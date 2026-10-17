@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS entries(
     occurred_at INTEGER NOT NULL, received_at INTEGER NOT NULL, edited_at INTEGER,
     text TEXT, transcript_raw TEXT, transcript TEXT, media_sha256 TEXT, media_name TEXT,
     reply_to INTEGER, raw TEXT NOT NULL, receipt TEXT, deleted_at INTEGER,
-    revision INTEGER NOT NULL);
+    revision INTEGER NOT NULL, addressed_at INTEGER);
 CREATE TABLE IF NOT EXISTS media(
     message_id INTEGER PRIMARY KEY, file_id TEXT NOT NULL, sha256 TEXT, name TEXT, mime TEXT, size INTEGER,
     status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT);
@@ -52,6 +52,7 @@ ENTRY_COLUMNS = (
     "receipt",
     "deleted_at",
     "revision",
+    "addressed_at",
 )
 SELECT_ENTRY = (
     "SELECT " + ", ".join(ENTRY_COLUMNS) + " FROM entries WHERE message_id = ?"  # noqa: S608 - column names are a constant
@@ -80,6 +81,7 @@ class Entry:
     receipt: str | None
     deleted_at: int | None
     revision: int
+    addressed_at: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +106,9 @@ class Log:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=5000")
         self.conn.executescript(SCHEMA)
+        columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(entries)")}
+        if "addressed_at" not in columns:  # a log created before ❤ took an entry out of the log
+            self.conn.execute("ALTER TABLE entries ADD COLUMN addressed_at INTEGER")
 
     def close(self) -> None:
         self.conn.close()
@@ -182,6 +187,18 @@ class Log:
                 "UPDATE entries SET deleted_at = ? WHERE message_id = ?", (at if deleted else None, message_id)
             )
             self._append(message_id, "deleted" if deleted else "restored", payload, at)
+        return self._entry(message_id)
+
+    def record_address(self, message_id: int, addressed: bool, payload: dict[str, Any], at: int) -> Entry | None:
+        """REQ-TRIGGER-4: ❤ put marks the entry addressed to the bot, ❤ taken off clears it."""
+        with self._tx():
+            row = self.conn.execute("SELECT addressed_at FROM entries WHERE message_id = ?", (message_id,)).fetchone()
+            if row is None or (row["addressed_at"] is not None) == addressed:
+                return None
+            self.conn.execute(
+                "UPDATE entries SET addressed_at = ? WHERE message_id = ?", (at if addressed else None, message_id)
+            )
+            self._append(message_id, "addressed" if addressed else "unaddressed", payload, at)
         return self._entry(message_id)
 
     def record_stored(

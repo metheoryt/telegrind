@@ -122,7 +122,7 @@ entries(message_id INTEGER PRIMARY KEY, author TEXT NOT NULL, kind TEXT NOT NULL
         occurred_at INTEGER NOT NULL, received_at INTEGER NOT NULL, edited_at INTEGER,
         text TEXT, transcript_raw TEXT, transcript TEXT, media_sha256 TEXT, media_name TEXT,
         reply_to INTEGER, raw TEXT NOT NULL, receipt TEXT, deleted_at INTEGER,
-        revision INTEGER NOT NULL)
+        revision INTEGER NOT NULL, addressed_at INTEGER)
   -- author: 'me' | 'bot' | 'forward: <who>'
   -- kind: text | voice | video_note | photo | document | sticker | other
   -- revision: the number of events this message has
@@ -153,7 +153,10 @@ transcription, `chain_links(message_id, chain_id)` and
   checks it after every kind of event.
 - **REQ-LOG-4** — `entries` holds the current state: the latest text, the
   latest transcript, `deleted_at` set by the latest `deleted` event and
-  cleared by a `restored` one, `edited_at` from the latest `edited` event.
+  cleared by a `restored` one, `addressed_at` set by the latest `addressed`
+  event and cleared by an `unaddressed` one, `edited_at` from the latest
+  `edited` event. A log made before `addressed_at` existed gains the column
+  when it is opened.
   `occurred_at` is the message's own date; for a forwarded message it is the
   origin's date, not the forward's. A test forwards a message dated last week
   and reads `occurred_at` from last week.
@@ -207,10 +210,9 @@ the cycle is a heart, because every one of them means the same thing.
 - **REQ-RECEIPT-4** — A question gets no receipt. Its reactions belong to
   `televibe`'s `Presenter` (REQ-TURN-6): 👀 when accepted, 👨‍💻 while running,
   cleared when the answer is sent, 🤷 only when nothing could be sent. A
-  message addressed with ❤ (REQ-TRIGGER-4) keeps its receipt: the bot can
-  hold one reaction on a message, so the Presenter's 👀 replaces the heart
-  for the turn, and the heart is set again once the answer or the failure
-  text is sent. When nothing could be sent, 🤷 stays.
+  message addressed with ❤ (REQ-TRIGGER-4) stops being a log entry, so it
+  loses its receipt when ❤ is put and gets 💔 back when ❤ is taken off; a
+  question taken off ❤ gets no receipt, since it never was a log entry.
 
 ### MESSAGE
 
@@ -339,8 +341,12 @@ that storing a log entry costs no model call and no subscription.
   voice note) as the question. Only putting it counts (`televibe`'s
   `reaction_added`, its SPEC section 13): keeping or removing ❤ starts
   nothing. ❤ on the bot's transcript quote addresses the voice note it
-  quotes; ❤ on any other bot message is ignored. The entry stays a log entry
-  with its receipt, and the pass derives it as usual. An entry with no text
+  quotes; ❤ on any other bot message is ignored. Putting ❤ is an `addressed`
+  event and taking it off an `unaddressed` one, on the addressed entry (the
+  voice note, for ❤ on its quote); only ❤ itself changing counts, so another
+  emoji beside it changes nothing. An addressed entry is a request to the
+  bot, not a log entry: the pass derives no facts from it, and taking ❤ off
+  returns it to the log (REQ-CONTRACT-5). An entry with no text
   (a photo without a caption, a sticker) is addressed with a fixed sentence
   asking the agent to look at it. The turn is a question turn in every
   other respect: quota, chain, timeout, presenter.
@@ -472,8 +478,9 @@ The two files and three tables Python depends on.
   nothing is invented and the person's wording is kept; a message with
   nothing measurable in it is still recorded (a note, a mood) in a table of
   its own, never dropped.
-- **REQ-CONTRACT-5** — An entry with `deleted_at` set has no rows in any fact
-  table after a pass. A `restored` entry is derived again.
+- **REQ-CONTRACT-5** — An entry with `deleted_at` or `addressed_at` set has
+  no rows in any fact table after a pass. A `restored` or `unaddressed` entry
+  is derived again.
 - **REQ-CONTRACT-6** — A question turn begins with a pass (REQ-CONTRACT-2),
   so the answer reads current tables.
 - **REQ-CONTRACT-7** — Numbers in an answer come from SQL the agent ran, never
@@ -622,7 +629,8 @@ becomes one.
   accuracy on «четыре пятьсот такси» has not been measured.
 - **❤ as the only signal.** Whether addressing by the default double-tap
   ❤ is quick enough in daily use, and whether a stray double-tap starts
-  turns nobody asked for.
+  turns nobody asked for — and, since ❤ takes an entry out of the log, drops
+  its facts until ❤ is taken off.
 - **SQLite WAL under the agent's `ATTACH … mode=ro` while Python writes** —
   reading is measured (see section 14); a Python write landing *during* the
   agent's read is not, and is measured on the dev bot before the first release.

@@ -16,7 +16,7 @@ from telegrind.incoming import AUTHOR_BOT, Incoming, incoming
 from telegrind.layout import Layout
 from telegrind.log import Entry, Log, now
 from telegrind.receipts import FIRST, holds_heart, next_receipt
-from telegrind.triggers import ADDRESS, question_text
+from telegrind.triggers import ADDRESS, holds_address, question_text
 
 log = logging.getLogger(__name__)
 
@@ -172,17 +172,39 @@ class App:
         author = store.author_of(update.message_id)
         if author is None:
             return  # a message the log never saw
-        if author == AUTHOR_BOT:  # REQ-REACT-1: ignored, but ❤ on a transcript quote addresses its voice note
-            if reaction_added(update, ADDRESS) and (voice := await self._quoted_voice(uid, update.message_id)):
-                await self.address(uid, voice)
-            return
         new = [r.emoji for r in update.new_reaction if isinstance(r, ReactionTypeEmoji)]
+        old = [r.emoji for r in update.old_reaction if isinstance(r, ReactionTypeEmoji)]
         payload = update.model_dump(mode="json", exclude_none=True)
+        if author == AUTHOR_BOT:  # REQ-REACT-1: ignored, but ❤ on a transcript quote addresses its voice note
+            if (voice := await self._quoted_voice(uid, update.message_id)) is not None:
+                await self._mark_addressed(uid, voice.message_id, old, new, payload)
+                if reaction_added(update, ADDRESS):
+                    await self.address(uid, voice)
+            return
         entry = store.record_reaction(update.message_id, deleted=holds_heart(new), payload=payload, at=self.clock())
         if entry is not None:
             self.entry_changed(uid)
+        await self._mark_addressed(uid, update.message_id, old, new, payload)
         if reaction_added(update, ADDRESS) and (target := store.entry(update.message_id)) is not None:
             await self.address(uid, target)
+
+    async def _mark_addressed(
+        self, uid: int, message_id: int, old: list[str], new: list[str], payload: dict[str, Any]
+    ) -> None:
+        """REQ-TRIGGER-4, REQ-RECEIPT-4: ❤ put takes the entry out of the log, and its 💔 with it;
+        ❤ taken off brings both back. Only a change of ❤ itself counts, so 👍 beside it changes nothing."""
+        if holds_address(old) == holds_address(new):
+            return
+        store = self.log_for(uid)
+        entry = store.record_address(message_id, addressed=holds_address(new), payload=payload, at=self.clock())
+        if entry is None:
+            return
+        self.entry_changed(uid)
+        if entry.addressed_at is not None:
+            if entry.receipt is not None:
+                await self.react(uid, message_id, None)
+        elif question_text(entry.text, reply_to_author=store.author_of(entry.reply_to), author=entry.author) is None:
+            await self.react(uid, message_id, FIRST)  # a question was never a log entry: no heart for it
 
     async def _quoted_voice(self, uid: int, message_id: int) -> Entry | None:
         """The voice note a bot message quotes: a bot message replying to one, outside every answer chain."""

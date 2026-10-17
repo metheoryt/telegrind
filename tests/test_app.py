@@ -180,14 +180,35 @@ async def test_other_emoji_delete_nothing_and_ask_nothing(app, emoji):
     assert app.rec.answers == []
 
 
-async def test_heart_addresses_an_entry_and_keeps_it_a_log_entry(app):
-    """REQ-TRIGGER-4: ❤ on the person's entry starts an addressed turn with its text; the entry is unchanged."""
+async def test_heart_addresses_an_entry_and_takes_it_out_of_the_log(app):
+    """REQ-TRIGGER-4, REQ-RECEIPT-4: ❤ starts an addressed turn; the entry is marked addressed and loses 💔."""
     await app.on_message(user_message(text="вчера было не 500, а 5000"))
     await app.on_reaction(reaction(emoji="❤"))
     await app.drain()
     entry = app.log_for(7).entry(10)
     assert app.rec.answers == [(7, 10, "вчера было не 500, а 5000")] and app.rec.addressed == [True]
-    assert entry.receipt == "💔" and entry.deleted_at is None and entry.revision == 1
+    assert entry.addressed_at == 1_760_000_000 and entry.receipt is None and entry.revision == 2
+    assert app.bot.reactions()[-1][1] is None and app.rec.entries == [7, 7]  # stored, then addressed
+
+
+async def test_removing_the_heart_returns_the_entry_to_the_log(app):
+    """REQ-TRIGGER-4, REQ-RECEIPT-4: ❤ taken off → no longer addressed, 💔 back, nothing asked."""
+    await app.on_message(user_message(text="такси 4500"))
+    await app.on_reaction(reaction(emoji="❤"))
+    await app.on_reaction(reaction(emoji=None, old="❤"))
+    await app.drain()
+    entry = app.log_for(7).entry(10)
+    assert entry.addressed_at is None and entry.receipt == "💔" and entry.revision == 3
+    assert app.rec.answers == [(7, 10, "такси 4500")] and app.rec.entries == [7, 7, 7]
+
+
+async def test_removing_the_heart_from_a_question_sets_no_receipt(app):
+    """REQ-RECEIPT-4: a question was never a log entry, so taking ❤ off it gives it no 💔."""
+    await app.on_message(user_message(text="/start"))
+    await app.on_reaction(reaction(emoji="❤"))
+    await app.on_reaction(reaction(emoji=None, old="❤"))
+    await app.drain()
+    assert app.log_for(7).entry(10).receipt is None and "💔" not in [r[1] for r in app.bot.reactions()]
 
 
 async def test_heart_with_a_variation_selector_addresses_too(app):
@@ -235,6 +256,31 @@ async def test_heart_on_a_voice_note_and_on_its_transcript_quote(app):
     await app.on_reaction(reaction(message_id=quote.message_id, emoji="❤"))
     await app.drain()
     assert app.rec.answers == [(7, 10, "сколько я потратил"), (7, 10, "сколько я потратил")]
+
+
+async def test_heart_on_a_transcript_quote_takes_the_voice_note_out_of_the_log(app):
+    """REQ-TRIGGER-4: ❤ on the quote addresses the note it quotes; taking it off returns the note to the log."""
+    await app.on_message(user_message(voice=15))
+    app.log_for(7).record_transcript(10, raw="raw", text="заправился на 15000", cleaned=True, at=1_760_000_001)
+    quote = await app.say(7, "🎙 заправился на 15000", reply_to=10)
+    await app.on_reaction(reaction(message_id=quote.message_id, emoji="❤"))
+    note = app.log_for(7).entry(10)
+    assert note.addressed_at == 1_760_000_000 and note.receipt is None
+    await app.on_reaction(reaction(message_id=quote.message_id, emoji=None, old="❤"))
+    await app.drain()
+    note = app.log_for(7).entry(10)
+    assert note.addressed_at is None and note.receipt == "💔"
+
+
+async def test_another_emoji_on_the_quote_leaves_the_note_addressed(app):
+    """REQ-TRIGGER-4: only ❤ being put or taken off changes anything; 👍 on the quote does not."""
+    await app.on_message(user_message(voice=15))
+    app.log_for(7).record_transcript(10, raw="raw", text="заправился", cleaned=True, at=1_760_000_001)
+    quote = await app.say(7, "🎙 заправился", reply_to=10)
+    await app.on_reaction(reaction(emoji="❤"))
+    await app.on_reaction(reaction(message_id=quote.message_id, emoji="👍"))
+    await app.drain()
+    assert app.log_for(7).entry(10).addressed_at == 1_760_000_000
 
 
 async def test_heart_on_a_voice_note_without_a_transcript_says_so(app):

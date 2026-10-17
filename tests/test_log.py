@@ -76,6 +76,41 @@ def test_deleted_and_restored(log):
     assert log.record_reaction(99, deleted=True, payload={}, at=T0) is None
 
 
+def test_addressed_and_unaddressed(log):
+    """REQ-LOG-4, REQ-TRIGGER-4: addressed_at set by ❤ then cleared; each change is an event, a repeat is not."""
+    log.record_received(incoming(user_message(text="x"), now=T0))
+    e1 = log.record_address(10, addressed=True, payload={}, at=T0 + 1)
+    assert e1.addressed_at == T0 + 1 and e1.revision == 2
+    assert log.record_address(10, addressed=True, payload={}, at=T0 + 2) is None
+    e2 = log.record_address(10, addressed=False, payload={}, at=T0 + 3)
+    assert e2.addressed_at is None and e2.revision == 3
+    assert [e.kind for e in log.events(10)] == ["received", "addressed", "unaddressed"]
+    assert log.record_address(99, addressed=True, payload={}, at=T0) is None
+
+
+def test_an_old_log_gains_addressed_at(tmp_path):
+    """REQ-LOG-4: a log created before addressed_at existed gets the column on open, its rows intact."""
+    path = tmp_path / "log.sqlite"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE entries(message_id INTEGER PRIMARY KEY, author TEXT NOT NULL, kind TEXT NOT NULL,"
+        " occurred_at INTEGER NOT NULL, received_at INTEGER NOT NULL, edited_at INTEGER, text TEXT,"
+        " transcript_raw TEXT, transcript TEXT, media_sha256 TEXT, media_name TEXT, reply_to INTEGER,"
+        " raw TEXT NOT NULL, receipt TEXT, deleted_at INTEGER, revision INTEGER NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO entries VALUES (10, 'me', 'text', 1, 1, NULL, 'x', NULL, NULL, NULL, NULL, NULL, '{}',"
+        " '💔', NULL, 1)"
+    )
+    conn.commit()
+    conn.close()
+    log = Log(path)
+    try:
+        assert log.entry(10).addressed_at is None and log.entry(10).text == "x"
+    finally:
+        log.close()
+
+
 def test_forward_is_dated_by_its_origin(log):
     """REQ-LOG-4, REQ-MSG-4: occurred_at is the origin's date, author names the source."""
     entry = log.record_received(incoming(user_message(text="receipt", forward=("user", "Vasya Pupkin")), now=T0))

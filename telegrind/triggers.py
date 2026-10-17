@@ -5,6 +5,12 @@ from __future__ import annotations
 from telegrind.incoming import AUTHOR_ME
 
 ADDRESS = "❤"  # the person's reaction that addresses an entry to the bot (REQ-TRIGGER-4)
+_VS16 = "\ufe0f"
+
+
+def holds_address(emoji: list[str]) -> bool:
+    """REQ-TRIGGER-4: one of the reactions is ❤, with or without the variation selector."""
+    return any(e.replace(_VS16, "") == ADDRESS for e in emoji)
 
 
 def question_text(text: str | None, *, reply_to_author: str | None, author: str) -> str | None:

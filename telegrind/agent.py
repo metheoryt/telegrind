@@ -172,10 +172,8 @@ class Agent:
     # -- a question -----------------------------------------------------------------------
 
     async def answer(self, uid: int, message: Message, text: str, *, addressed: bool = False) -> None:
-        """A question turn. An addressed one (REQ-TRIGGER-4) carries its context and gives the receipt back."""
+        """A question turn. An addressed one (REQ-TRIGGER-4) carries the context around its entry."""
         store = self.app.log_for(uid)
-        own = store.entry(message.message_id)
-        receipt = own.receipt if addressed and own is not None else None
         if self.engine is None or self.provider is None:
             await self.app.say(uid, NO_AGENT_TEXT, message.message_id)
             return
@@ -223,11 +221,9 @@ class Agent:
             raise
         except Exception as exc:  # entering the chain turn failed: 👀 is still on the question; say so
             log.warning("user %d: question turn failed before it ran: %s", uid, type(exc).__name__)
-            await self.app.react(uid, message.message_id, receipt)
+            await self.app.react(uid, message.message_id, None)
             await self.app.say(uid, FAILED_TEXT, message.message_id)
             return
-        if sent is not None and receipt is not None:  # REQ-RECEIPT-4: the 👀 took the heart's place; give it back
-            await self.app.react(uid, message.message_id, receipt)
         if sent is not None:
             await chains.link(chain, sent)
             # A rich message comes back without `text`: store what the presenter sent (REQ-LOG-7).
