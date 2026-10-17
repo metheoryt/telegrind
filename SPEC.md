@@ -493,7 +493,9 @@ The two files and three tables Python depends on.
   agent maintains it on every pass.
 - **REQ-CONTRACT-11** — The bot is a character: Aicha (Аиша), an anime girl,
   a cute but businesslike assistant. She speaks of herself in the feminine
-  («записала», «посчитала»), and so do the bot's fixed sentences. Answers are
+  («записала», «посчитала»), and so do the bot's fixed sentences. The
+  feminine is hers only: the person is spoken of as their «О человеке»
+  section says, and without gender until it exists (REQ-CONTRACT-16). Answers are
   short, in the person's language, without headings; a pass ends with one line saying what it derived («14 записей: 9
   трат, 2 давления, новая категория „настроение“»), which is what REQ-TURN-7
   posts.
@@ -536,6 +538,13 @@ file formats are measured, not specified (section 12).
   statement as a transfer, or in a message («перекинул 50000 с каспи на
   фридом») — is a `transfer` fact with `from_account` and `to_account`, and
   never an expense or an income. A sum over expenses never includes it.
+- **REQ-CONTRACT-16** — Getting acquainted. While the person's `CLAUDE.md`
+  has no «## О человеке» section, a question turn first does what was asked
+  and then ends with three or four short questions: how to address them
+  (name, he or she), the people who recur in the records, what matters most
+  to track. The person replies to that message, so the answer continues the
+  chain; the agent writes it into the section and uses it from then on. An
+  unanswered round is not repeated every turn, only on `/start`.
 
 ---
 

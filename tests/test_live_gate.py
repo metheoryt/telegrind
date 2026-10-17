@@ -10,8 +10,9 @@ scenarios run once each. Every run's directory is left under pytest's basetemp w
 
 Claims section 8: REQ-FACTS-1, REQ-FACTS-2, REQ-FACTS-3, REQ-CONTRACT-1, REQ-CONTRACT-2, REQ-CONTRACT-3,
 REQ-CONTRACT-4, REQ-CONTRACT-5, REQ-CONTRACT-6, REQ-CONTRACT-7, REQ-CONTRACT-8, REQ-CONTRACT-9, REQ-CONTRACT-10,
-REQ-CONTRACT-11, REQ-CONTRACT-12, REQ-CONTRACT-13, REQ-CONTRACT-14, REQ-CONTRACT-15, REQ-DEPLOY-5, and REQ-REACT-3.
-The ones no run below checks yet (CONTRACT-9, 13, 14, 15, DEPLOY-5) are listed so REQ-TEST-1 holds and are marked
+REQ-CONTRACT-11, REQ-CONTRACT-12, REQ-CONTRACT-13, REQ-CONTRACT-14, REQ-CONTRACT-15, REQ-CONTRACT-16,
+REQ-DEPLOY-5, and REQ-REACT-3.
+The ones no run below checks yet (CONTRACT-9, 13, 14, 15, 16, DEPLOY-5) are listed so REQ-TEST-1 holds and are marked
 `xfail(run=False)` below until a fixture exists: claimed, not exercised.
 """
 
@@ -495,3 +496,8 @@ def test_receipt_photo_yields_line_items():
 @pytest.mark.xfail(run=False, reason="needs sanitized Kaspi/Freedom statements (SPEC section 12)")
 def test_statement_import_reconciliation_and_transfers():
     """REQ-CONTRACT-13, REQ-CONTRACT-14, REQ-CONTRACT-15, REQ-DEPLOY-5: claimed, not exercised."""
+
+
+@pytest.mark.xfail(run=False, reason="checked live on the owner's first turns, not in a scripted run")
+def test_getting_acquainted():
+    """REQ-CONTRACT-16: claimed, not exercised."""
