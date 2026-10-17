@@ -230,11 +230,16 @@ class Agent:
                 tag={"kind": "question", "user": uid},
             ) as turn:
                 watched = _Watched(turn)
-                notice = asyncio.create_task(self._say_if_long(uid, message.message_id, watched))
+                sending = asyncio.Event()
+                notice = asyncio.create_task(self._say_if_long(uid, message.message_id, watched, sending))
                 try:
                     sent = await presenter.show(watched)
                 finally:
-                    notice.cancel()
+                    # A notice already being sent is waited for: cancelled, it could land with its id lost.
+                    if not sending.is_set():
+                        notice.cancel()
+                    await asyncio.wait([notice])
+                said = None if notice.cancelled() else notice.result()
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # entering the chain turn failed: 👀 is still on the question; say so
@@ -252,13 +257,19 @@ class Agent:
                 sent.model_dump(mode="json", exclude_none=True),
                 self.app.clock(),
             )
+            if said is not None:  # REQ-TURN-11: the answer is out, so the notice goes and one message is left
+                await self.app.unsay(uid, said.message_id)
 
-    async def _say_if_long(self, uid: int, message_id: int, watched: _Watched) -> None:
+    async def _say_if_long(
+        self, uid: int, message_id: int, watched: _Watched, sending: asyncio.Event
+    ) -> Message | None:
         """REQ-TURN-11: one notice, LONG_TURN_S after the turn started, if it has not ended by then."""
         await watched.started.wait()
         await asyncio.sleep(LONG_TURN_S)
-        if watched.end is None:
-            await self.app.say(uid, LONG_TURN_TEXT, message_id)
+        if watched.end is not None:
+            return None
+        sending.set()
+        return await self.app.say(uid, LONG_TURN_TEXT, message_id)
 
     # -- a pass ---------------------------------------------------------------------------
 

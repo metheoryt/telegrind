@@ -131,6 +131,13 @@ class App:
         )
         return sent
 
+    async def unsay(self, uid: int, message_id: int) -> None:
+        """Delete a message the bot sent. Its log row stays: it was said. A failure is logged and ignored."""
+        try:
+            await self.bot.delete_message(chat_id=uid, message_id=message_id)
+        except (TelegramAPIError, OSError, TimeoutError) as exc:
+            log.warning("delete of %d/%d failed: %s", uid, message_id, type(exc).__name__)
+
     # -- updates -----------------------------------------------------------------------
 
     async def on_message(self, msg: Message) -> None:

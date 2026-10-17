@@ -160,6 +160,7 @@ class FakeBot:
         self.fail = dict(fail or {})
         self.hang = set(hang)
         self.files: dict[str, bytes] = {}
+        self.sent: list[Message] = []
         self._last_id = 500
 
     def names(self) -> list[str]:
@@ -188,10 +189,13 @@ class FakeBot:
             self.fail[name] -= 1
             raise TelegramBadRequest(method=None, message=f"Bad Request: {name} rejected")
 
+    def deleted(self) -> list[int]:
+        return [kw["message_id"] for name, kw in self.calls if name == "delete_message"]
+
     def _sent(self, kwargs: dict) -> Message:
         self._last_id += 1
         reply = kwargs.get("reply_parameters")
-        return Message(
+        message = Message(
             message_id=self._last_id,
             date=NOW,
             chat=Chat(id=kwargs["chat_id"], type="private"),
@@ -203,6 +207,8 @@ class FakeBot:
             if reply
             else None,
         )
+        self.sent.append(message)
+        return message
 
     async def set_message_reaction(self, **kwargs) -> bool:
         await self._call("set_message_reaction", kwargs)
@@ -223,6 +229,10 @@ class FakeBot:
     async def send_message(self, **kwargs) -> Message:
         await self._call("send_message", kwargs)
         return self._sent(kwargs)
+
+    async def delete_message(self, **kwargs) -> bool:
+        await self._call("delete_message", kwargs)
+        return True
 
     async def get_file(self, file_id: str) -> File:
         await self._call("get_file", {"file_id": file_id})
