@@ -43,6 +43,7 @@ TELEGRIND_LIVE_HOME=~/.claude-telegrind uv run pytest -m live   # live gate: rea
 - **The turn's final text is what gets stored**, not `sent.text`: televibe's `Presenter` sends the answer as a rich message.
 - **Record fixtures with `--setting-sources project`.** SessionStart hooks on a dev box inject personal memory into a headless `claude -p` call.
 - **`log.sqlite` is used from the event-loop thread only.** No method is thread-safe.
+- **A new column on an existing table needs an `ALTER` on open.** `SCHEMA` is all `CREATE TABLE IF NOT EXISTS`, so editing it alone never reaches a live `log.sqlite`; `log.py` checks `PRAGMA table_info(entries)` and adds `addressed_at` that way. Do the same for the next column.
 - **A pass's «before» mark is read on the `Started` event**, not at queue time.
 - **The manual walkthrough is not ceremony** (`docs/walkthrough.md`). Every end-to-end walk of this family of bots has found a defect the suite structurally could not see.
 - **Never `source .env`** (CRLF and secrets leak into failure output) and **never dump `docker compose config`**: it prints every resolved secret. `BOT_TOKEN` and `ELEVENLABS_API_KEY` are stripped from every turn's env by the code; keep it that way. `.env.dist` carries placeholders only.
