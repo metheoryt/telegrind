@@ -2,7 +2,7 @@
 
 import pytest
 
-from telegrind.triggers import BARE_Q, question_text
+from telegrind.triggers import question_text
 
 
 @pytest.mark.parametrize(
@@ -15,13 +15,8 @@ from telegrind.triggers import BARE_Q, question_text
         ("а это что", "me", None),
         ("/start", None, "/start"),
         ("/help me", None, "/help me"),
-        ("/q сколько такси", None, "сколько такси"),
-        ("/q   ", None, BARE_Q),
-        ("/q", None, BARE_Q),
-        ("/q@telegrind_bot сколько такси", None, "сколько такси"),
-        ("/q\nсколько такси", None, "сколько такси"),
-        ("/q\tx", None, "x"),
-        ("/q@bot\nx", None, "x"),
+        ("/q сколько такси", None, "/q сколько такси"),
+        ("/q", None, "/q"),
         ("", None, None),
         (None, None, None),
         (None, "bot", None),
@@ -29,7 +24,7 @@ from telegrind.triggers import BARE_Q, question_text
 )
 def test_rule(text, reply_author, expected):
     """REQ-TRIGGER-1, REQ-TRIGGER-2: reply to the bot and leading / only — a trailing ? is a log entry;
-    /q strips itself; bare /q is the sentinel."""
+    every command, /q included, is a question with its whole text."""
     assert question_text(text, reply_to_author=reply_author, author="me") == expected
 
 

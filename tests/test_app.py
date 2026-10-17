@@ -7,7 +7,6 @@ from telegrind.app import ADDRESSED_EMPTY, NO_TRANSCRIPT_TEXT, App
 from telegrind.config import Config
 from telegrind.layout import Layout
 from telegrind.media import MediaJobs
-from telegrind.triggers import BARE_Q_TEXT
 
 
 class Recorder:
@@ -90,10 +89,10 @@ async def test_a_trailing_question_mark_is_a_log_entry(app):
 
 async def test_a_command_gets_no_receipt_and_reaches_the_answerer(app):
     """REQ-TRIGGER-2, REQ-RECEIPT-4: a question is stored with no heart and handed on with its text."""
-    await app.on_message(user_message(text="/q сколько такси"))
+    await app.on_message(user_message(text="/start"))
     await app.drain()
     assert app.log_for(7).entry(10).receipt is None and app.bot.reactions() == []
-    assert app.rec.answers == [(7, 10, "сколько такси")] and app.rec.addressed == [False]
+    assert app.rec.answers == [(7, 10, "/start")] and app.rec.addressed == [False]
 
 
 async def test_reply_to_bot_is_a_question(app):
@@ -107,14 +106,13 @@ async def test_reply_to_bot_is_a_question(app):
     assert app.rec.answers == [(7, 11, "а за сентябрь")]
 
 
-async def test_slash_q_and_bare_q(app):
-    """REQ-TRIGGER-2: /q strips itself; bare /q gets the fixed sentence and starts nothing."""
+async def test_q_is_an_ordinary_command(app):
+    """REQ-TRIGGER-2: /q has no meaning of its own; it reaches the agent whole, a bare /q included."""
     await app.on_message(user_message(text="/q сколько"))
     await app.on_message(user_message(text="/q", message_id=11))
     await app.drain()
-    assert app.rec.answers == [(7, 10, "сколько")]
-    assert app.bot.texts() == [BARE_Q_TEXT]
-    assert app.log_for(7).entry(app.bot.sends()[0][1]["chat_id"] and 501).author == "bot"
+    assert app.rec.answers == [(7, 10, "/q сколько"), (7, 11, "/q")]
+    assert app.bot.texts() == []
 
 
 async def test_start_command_reaches_the_agent(app):
@@ -249,11 +247,11 @@ async def test_heart_on_a_voice_note_without_a_transcript_says_so(app):
 
 async def test_heart_on_a_bot_answer_is_ignored(app):
     """REQ-TRIGGER-4: ❤ on a bot message that is not a transcript quote does nothing."""
-    await app.on_message(user_message(text="/q x"))
+    await app.on_message(user_message(text="/start"))
     sent = await app.say(7, "answer", reply_to=10)
     await app.on_reaction(reaction(message_id=sent.message_id, emoji="❤"))
     await app.drain()
-    assert app.rec.answers == [(7, 10, "x")]
+    assert app.rec.answers == [(7, 10, "/start")]
 
 
 async def test_reaction_on_unknown_or_bot_message_writes_nothing(app):

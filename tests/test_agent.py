@@ -66,7 +66,7 @@ async def test_question_turn_answers_links_and_stores(rig, tmp_path):
     assert store.entry(sent_id).text == ANSWER
     assert store.turns_since("question", 0) == 1
     rec = records(tmp_path)[0]
-    assert rec["cwd"] == str(app.layout.user_dir(7)) and rec["prompt"] == "сколько такси?"
+    assert rec["cwd"] == str(app.layout.user_dir(7)) and rec["prompt"] == "/q сколько такси?"
     argv = rec["argv"]
     assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions" and "--session-id" in argv
     assert "2026-10-15" in argv[argv.index("--append-system-prompt") + 1]

@@ -16,7 +16,7 @@ from telegrind.incoming import AUTHOR_BOT, Incoming, incoming
 from telegrind.layout import Layout
 from telegrind.log import Entry, Log, now
 from telegrind.receipts import FIRST, holds_heart, next_receipt
-from telegrind.triggers import ADDRESS, BARE_Q, BARE_Q_TEXT, question_text
+from telegrind.triggers import ADDRESS, question_text
 
 log = logging.getLogger(__name__)
 
@@ -148,9 +148,7 @@ class App:
         if question is None:
             await self.react(uid, inc.message_id, FIRST)
             self.entry_changed(uid)
-        if question is BARE_Q:
-            await self.say(uid, BARE_Q_TEXT, inc.message_id)
-        elif isinstance(question, str) and self.answerer is not None:
+        elif self.answerer is not None:
             self.spawn(self.answerer.answer(uid, msg, question))
 
     async def on_edit(self, msg: Message) -> None:

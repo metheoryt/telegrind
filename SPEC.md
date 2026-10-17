@@ -327,10 +327,10 @@ that storing a log entry costs no model call and no subscription.
   with `/`. Nothing else in a message makes it a question: not a trailing
   `?`, not the words. Everything else is a log entry, and it may be
   addressed later (REQ-TRIGGER-4).
-- **REQ-TRIGGER-2** — `/q <text>` is a question whose text is `<text>`. Any
-  other `/command` is a question whose text is the whole message, so `/start`
-  reaches the agent and is answered under the contract. A bare `/q` with
-  nothing after it is answered with a fixed sentence and starts no turn.
+- **REQ-TRIGGER-2** — A `/command` is a question whose text is the whole
+  message, so `/start` reaches the agent and is answered under the contract.
+  No command has a meaning of its own: `/q` is gone (❤ replaced it), and a
+  leftover `/q …` reaches the agent whole like any other command.
 - **REQ-TRIGGER-3** — Edits never trigger (REQ-MSG-3). A message by the bot
   never triggers.
 - **REQ-TRIGGER-4** — ❤ put by the person on an entry that is not the
@@ -491,8 +491,10 @@ The two files and three tables Python depends on.
 - **REQ-CONTRACT-10** — `keyterms` holds the names worth recognising in
   speech: category names, people, currencies, places the person uses. The
   agent maintains it on every pass.
-- **REQ-CONTRACT-11** — Answers are short, in the person's language, without
-  headings; a pass ends with one line saying what it derived («14 записей: 9
+- **REQ-CONTRACT-11** — The bot is a character: Aicha (Аиша), an anime girl,
+  a cute but businesslike assistant. She speaks of herself in the feminine
+  («записала», «посчитала»), and so do the bot's fixed sentences. Answers are
+  short, in the person's language, without headings; a pass ends with one line saying what it derived («14 записей: 9
   трат, 2 давления, новая категория „настроение“»), which is what REQ-TURN-7
   posts.
 - **REQ-CONTRACT-12** — The agent never writes outside `facts.sqlite` and the
