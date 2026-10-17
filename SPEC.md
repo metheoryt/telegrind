@@ -421,12 +421,10 @@ the person; by contract it runs a pass first (REQ-CONTRACT-6).
   question, configurable. A statement import is a long question, and a turn cut
   short loses its answer.
 - **REQ-TURN-11** — A question turn still running 60 seconds after it started
-  gets one fixed sentence as a reply: it is long, the answer will come there,
-  and entries can be sent meanwhile. The answer then comes as usual, and once
-  it is out the notice is deleted, so one message is left; a notice still
-  being sent when the turn ends is waited for, not cancelled, so it cannot
-  land undeleted. If no answer could be sent the notice stays. Entries sent
-  meanwhile are logged at once; another question waits in the lane.
+  gets one fixed sentence in its live draft, the bubble the answer then
+  replaces: it is long, the answer will come there, and entries can be sent
+  meanwhile. No second message is sent; the answer comes as usual. Entries
+  sent meanwhile are logged at once; another question waits in the lane.
 
 ---
 

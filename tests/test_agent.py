@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 import pytest
 from conftest import records, turn_env
 from televibe import Engine
+from televibe.telegram import Presenter
 from tgkit import NOW, FakeBot, bot_message, reaction, user_message
 
 from telegrind import agent as agent_module
@@ -464,56 +465,37 @@ async def test_every_fifth_question_may_ask_an_aside(rig, tmp_path):
 
 
 async def test_a_long_question_says_so_and_answers_when_done(rig, tmp_path, monkeypatch):
-    """REQ-TURN-11: a question still running after LONG_TURN_S is told it is long; the answer comes when it ends."""
+    """REQ-TURN-11: a question still running after LONG_TURN_S gets the notice in its draft, not a second message;
+    the answer comes when it ends."""
     app, agent, _ = rig
+    notes = note_spy(monkeypatch)
     monkeypatch.setattr(agent_module, "LONG_TURN_S", 0.2)
     agent.turn_env = turn_env(tmp_path, sleep=0.8)
     await app.on_message(user_message(text="/q разбери выписки"))
     await app.drain()
-    assert app.bot.texts() == [LONG_TURN_TEXT, ANSWER]
-    notice = app.bot.sends()[0][1]
-    assert notice["reply_parameters"].message_id == 10
-    # the notice goes once the answer is out, so one message is left (the delete comes after the answer)
-    assert app.bot.deleted() == [app.bot.sent[0].message_id]
-    assert app.bot.names().index("delete_message") > app.bot.names().index("send_rich_message")
+    assert notes == [LONG_TURN_TEXT]
+    assert app.bot.texts() == [ANSWER]
 
 
-class SlowNoticeBot(FakeBot):
-    """A FakeBot whose plain send is delivered at once but returns only after the answer went out."""
+def note_spy(monkeypatch) -> list[str | None]:
+    """Every Presenter.note text, in order; the draft it shows in is televibe's to test."""
+    notes: list[str | None] = []
+    real = Presenter.note
 
-    def __init__(self):
-        super().__init__()
-        self.answered = asyncio.Event()
+    def note(self, text):
+        notes.append(text)
+        return real(self, text)
 
-    async def send_rich_message(self, **kwargs):
-        sent = await super().send_rich_message(**kwargs)
-        self.answered.set()
-        return sent
-
-    async def send_message(self, **kwargs):
-        sent = await super().send_message(**kwargs)
-        await self.answered.wait()
-        return sent
-
-
-async def test_a_notice_still_in_flight_when_the_answer_comes_is_deleted_too(rig, tmp_path, monkeypatch):
-    """REQ-TURN-11: a notice being sent as the turn ends is waited for, not cancelled: it lands, so it must go."""
-    app, agent, _ = rig
-    app.bot = SlowNoticeBot()
-    monkeypatch.setattr(agent_module, "LONG_TURN_S", 0.2)
-    agent.turn_env = turn_env(tmp_path, sleep=0.5)
-    await app.on_message(user_message(text="/q разбери выписки"))
-    await app.drain()
-    notice = next(m.message_id for m in app.bot.sent if m.text == LONG_TURN_TEXT)
-    assert app.bot.deleted() == [notice]
+    monkeypatch.setattr(Presenter, "note", note)
+    return notes
 
 
 async def test_a_quick_question_says_nothing_about_time(rig, tmp_path, monkeypatch):
     """REQ-TURN-11: a question that ends before LONG_TURN_S gets its answer alone, and no notice after it."""
     app, _, _ = rig
+    notes = note_spy(monkeypatch)
     monkeypatch.setattr(agent_module, "LONG_TURN_S", 0.3)
     await app.on_message(user_message(text="/q сколько такси?"))
     await app.drain()
     await asyncio.sleep(0.5)
-    assert app.bot.texts() == [ANSWER]
-    assert app.bot.deleted() == []
+    assert app.bot.texts() == [ANSWER] and notes == []
