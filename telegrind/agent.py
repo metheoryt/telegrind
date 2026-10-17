@@ -45,6 +45,8 @@ ADDRESSED_INTRO = "Человек отметил это сообщение ❤: 
 CONTEXT_INTRO = "Записи журнала перед ним (время, автор, текст):"
 CONTEXT_SIZE = 10  # REQ-TRIGGER-5: about ten entries, as a pass reads (REQ-CONTRACT-2)
 DELETED_MARK = " (удалено)"
+ASIDE_EVERY = 5  # REQ-CONTRACT-17: one question turn in this many may end with a question by the way
+ASIDE_TEXT = "В этом ответе можно спросить между прочим (см. «Знакомство»)."
 WEEKDAYS = ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")
 
 
@@ -132,6 +134,8 @@ class Agent:
         reply_text: str | None = None,
         reply_author: str = AUTHOR_BOT,
         addressed: Message | None = None,
+        *,
+        aside: bool = False,
     ) -> str:
         """REQ-TURN-2: the current time in the person's zone, and the replied text, introduced by who wrote it.
         REQ-TRIGGER-5: for a message addressed with ❤, when it was written and the entries before it."""
@@ -141,6 +145,8 @@ class Agent:
             lines += self._addressed(uid, addressed)
         if reply_text:
             lines += [REPLY_INTRO.get(reply_author, FORWARD_INTRO), "<<<", reply_text, ">>>"]
+        if aside:
+            lines.append(ASIDE_TEXT)
         return "\n".join(lines)
 
     def _addressed(self, uid: int, message: Message) -> list[str]:
@@ -199,6 +205,7 @@ class Agent:
                 "user %d: media of %d not stored in %s s; answering without it", uid, message.message_id, MEDIA_WAIT_S
             )
         store.turn_add("question", self.app.clock())
+        aside = store.turns_since("question", 0) % ASIDE_EVERY == 0
         try:
             chain = await chains.find(message) or chains.new()
             async with chains.turn(
@@ -210,7 +217,9 @@ class Agent:
                 prompt=text,
                 access=Access.FULL,
                 lane=str(uid),
-                instructions=self.instructions(uid, reply_text, reply_author, message if addressed else None),
+                instructions=self.instructions(
+                    uid, reply_text, reply_author, message if addressed else None, aside=aside
+                ),
                 env=self.env(),
                 timeout_s=self.config.question_timeout_s,
                 tag={"kind": "question", "user": uid},

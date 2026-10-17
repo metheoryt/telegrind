@@ -547,11 +547,17 @@ file formats are measured, not specified (section 12).
   never an expense or an income. A sum over expenses never includes it.
 - **REQ-CONTRACT-16** — Getting acquainted. While the person's `CLAUDE.md`
   has no «## О человеке» section, a question turn first does what was asked
-  and then ends with three or four short questions: how to address them
-  (name, he or she), the people who recur in the records, what matters most
-  to track. The person replies to that message, so the answer continues the
-  chain; the agent writes it into the section and uses it from then on. An
-  unanswered round is not repeated every turn, only on `/start`.
+  and then asks one thing: how to address them (name, he or she). The person
+  replies to that message, so the answer continues the chain; the agent
+  writes it into the section and uses it from then on. An unanswered
+  question is not repeated every turn, only on `/start`.
+- **REQ-CONTRACT-17** — Questions by the way. Every fifth question turn
+  (`ASIDE_EVERY`, counted over all question turns) says in its
+  `instructions` that the agent may ask one: a single short question at the
+  end of the answer, answerable in a couple of words and easy to ignore —
+  who someone in the records is, which account, what an unclear entry
+  meant. The agent asks nothing it already knows, and nothing when it has
+  nothing to ask.
 
 ---
 

@@ -13,7 +13,7 @@ from televibe import Engine
 from tgkit import NOW, FakeBot, bot_message, reaction, user_message
 
 from telegrind import agent as agent_module
-from telegrind.agent import NO_AGENT_TEXT, QUOTA_TEXT, Agent, make_provider
+from telegrind.agent import ASIDE_EVERY, ASIDE_TEXT, NO_AGENT_TEXT, QUOTA_TEXT, Agent, make_provider
 from telegrind.app import App
 from telegrind.config import Config
 from telegrind.facts import Facts, FactsUnavailable
@@ -451,3 +451,13 @@ async def test_an_addressed_turn_leaves_no_receipt(rig, tmp_path):
     await app.drain()
     assert [r[1] for r in app.bot.reactions()] == ["💔", None, "👀", "👨‍💻", None]
     assert app.log_for(7).entry(10).receipt is None and ANSWER in app.bot.texts()[-1]
+
+
+async def test_every_fifth_question_may_ask_an_aside(rig, tmp_path):
+    """REQ-CONTRACT-17: every ASIDE_EVERY-th question turn's instructions allow one short question by the way."""
+    app, _, _ = rig
+    for i in range(ASIDE_EVERY):
+        await app.on_message(user_message(text=f"/start {i}", message_id=10 + i))
+        await app.drain()
+    asides = [ASIDE_TEXT in system_prompt(r) for r in records(tmp_path)]
+    assert asides == [False] * (ASIDE_EVERY - 1) + [True]
