@@ -41,6 +41,10 @@ REACTIONS = Reactions(done=None, failed_when_sent=False)  # a reaction or a text
 MEDIA_WAIT_S = 30.0  # how long a question with a photo or document waits for its own download
 REPLY_INTRO = {AUTHOR_BOT: "Человек отвечает на это сообщение бота:", AUTHOR_ME: "Человек отвечает на свою запись:"}
 FORWARD_INTRO = "Человек отвечает на пересланное сообщение:"  # any other author is a forward
+ADDRESSED_INTRO = "Человек отметил это сообщение 🙏: оно обращено к тебе. Оно написано {when}."
+CONTEXT_INTRO = "Записи журнала перед ним (время, автор, текст):"
+CONTEXT_SIZE = 10  # REQ-TRIGGER-5: about ten entries, as a pass reads (REQ-CONTRACT-2)
+DELETED_MARK = " (удалено)"
 WEEKDAYS = ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")
 
 
@@ -122,13 +126,39 @@ class Agent:
         local = self.local_now(uid)
         return int(local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
 
-    def instructions(self, uid: int, reply_text: str | None = None, reply_author: str = AUTHOR_BOT) -> str:
-        """REQ-TURN-2: the current time in the person's zone, and the replied text, introduced by who wrote it."""
+    def instructions(
+        self,
+        uid: int,
+        reply_text: str | None = None,
+        reply_author: str = AUTHOR_BOT,
+        addressed: Message | None = None,
+    ) -> str:
+        """REQ-TURN-2: the current time in the person's zone, and the replied text, introduced by who wrote it.
+        REQ-TRIGGER-5: for a message addressed with 🙏, when it was written and the entries before it."""
         local = self.local_now(uid)
         lines = [f"Сейчас {local:%Y-%m-%d %H:%M}, {WEEKDAYS[local.weekday()]}, зона {self.tz_of(uid).key}."]
+        if addressed is not None:
+            lines += self._addressed(uid, addressed)
         if reply_text:
             lines += [REPLY_INTRO.get(reply_author, FORWARD_INTRO), "<<<", reply_text, ">>>"]
         return "\n".join(lines)
+
+    def _addressed(self, uid: int, message: Message) -> list[str]:
+        store, tz = self.app.log_for(uid), self.tz_of(uid)
+        entry = store.entry(message.message_id)
+        written = entry.occurred_at if entry is not None else int(message.date.timestamp())
+        replied = message.reply_to_message
+        pivot = replied.message_id if replied is not None and store.entry(replied.message_id) else message.message_id
+        lines = [ADDRESSED_INTRO.format(when=f"{datetime.fromtimestamp(written, tz):%Y-%m-%d %H:%M}")]
+        context = store.context_before(pivot, CONTEXT_SIZE)
+        if context:
+            lines += [CONTEXT_INTRO, "<<<"]
+            for e in context:
+                said = e.transcript or e.text or f"[{e.kind}]"
+                mark = DELETED_MARK if e.deleted_at is not None else ""
+                lines.append(f"{datetime.fromtimestamp(e.occurred_at, tz):%Y-%m-%d %H:%M} {e.author}: {said}{mark}")
+            lines.append(">>>")
+        return lines
 
     def quota_left(self, uid: int) -> int:
         used = self.app.log_for(uid).turns_since("question", self.day_start(uid))
@@ -141,8 +171,11 @@ class Agent:
 
     # -- a question -----------------------------------------------------------------------
 
-    async def answer(self, uid: int, message: Message, text: str) -> None:
+    async def answer(self, uid: int, message: Message, text: str, *, addressed: bool = False) -> None:
+        """A question turn. An addressed one (REQ-TRIGGER-4) carries its context and gives the receipt back."""
         store = self.app.log_for(uid)
+        own = store.entry(message.message_id)
+        receipt = own.receipt if addressed and own is not None else None
         if self.engine is None or self.provider is None:
             await self.app.say(uid, NO_AGENT_TEXT, message.message_id)
             return
@@ -179,7 +212,7 @@ class Agent:
                 prompt=text,
                 access=Access.FULL,
                 lane=str(uid),
-                instructions=self.instructions(uid, reply_text, reply_author),
+                instructions=self.instructions(uid, reply_text, reply_author, message if addressed else None),
                 env=self.env(),
                 timeout_s=self.config.question_timeout_s,
                 tag={"kind": "question", "user": uid},
@@ -190,9 +223,11 @@ class Agent:
             raise
         except Exception as exc:  # entering the chain turn failed: 👀 is still on the question; say so
             log.warning("user %d: question turn failed before it ran: %s", uid, type(exc).__name__)
-            await self.app.react(uid, message.message_id, None)
+            await self.app.react(uid, message.message_id, receipt)
             await self.app.say(uid, FAILED_TEXT, message.message_id)
             return
+        if sent is not None and receipt is not None:  # REQ-RECEIPT-4: the 👀 took the heart's place; give it back
+            await self.app.react(uid, message.message_id, receipt)
         if sent is not None:
             await chains.link(chain, sent)
             # A rich message comes back without `text`: store what the presenter sent (REQ-LOG-7).

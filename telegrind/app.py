@@ -9,19 +9,24 @@ from typing import Any, Protocol
 
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import Chat, Message, MessageReactionUpdated, ReactionTypeEmoji, ReplyParameters, User
+from televibe.telegram import reaction_added
 
 from telegrind.config import Config
 from telegrind.incoming import AUTHOR_BOT, Incoming, incoming
 from telegrind.layout import Layout
-from telegrind.log import Log, now
-from telegrind.receipts import FIRST, next_receipt
-from telegrind.triggers import BARE_Q, BARE_Q_TEXT, question_text
+from telegrind.log import Entry, Log, now
+from telegrind.receipts import FIRST, holds_heart, next_receipt
+from telegrind.triggers import ADDRESS, BARE_Q, BARE_Q_TEXT, question_text
 
 log = logging.getLogger(__name__)
 
+VOICE_KINDS = ("voice", "video_note")
+ADDRESSED_EMPTY = "Человек отметил это сообщение 🙏, в нём нет текста. Посмотри, что это, и ответь."
+NO_TRANSCRIPT_TEXT = "Голосовое ещё не расшифровано. Поставь 🙏, когда появится расшифровка."
+
 
 class Answerer(Protocol):
-    async def answer(self, uid: int, message: Message, text: str) -> None: ...
+    async def answer(self, uid: int, message: Message, text: str, *, addressed: bool = False) -> None: ...
 
 
 class JobQueue(Protocol):
@@ -166,11 +171,39 @@ class App:
         if uid is None:
             return
         store = self.log_for(uid)
-        if store.author_of(update.message_id) in (None, AUTHOR_BOT):
-            return  # unknown, or the bot's own message (REQ-REACT-1)
+        author = store.author_of(update.message_id)
+        if author is None:
+            return  # a message the log never saw
+        if author == AUTHOR_BOT:  # REQ-REACT-1: ignored, but 🙏 on a transcript quote addresses its voice note
+            if reaction_added(update, ADDRESS) and (voice := await self._quoted_voice(uid, update.message_id)):
+                await self.address(uid, voice)
+            return
+        new = [r.emoji for r in update.new_reaction if isinstance(r, ReactionTypeEmoji)]
         payload = update.model_dump(mode="json", exclude_none=True)
-        entry = store.record_reaction(
-            update.message_id, deleted=bool(update.new_reaction), payload=payload, at=self.clock()
-        )
+        entry = store.record_reaction(update.message_id, deleted=holds_heart(new), payload=payload, at=self.clock())
         if entry is not None:
             self.entry_changed(uid)
+        if reaction_added(update, ADDRESS) and (target := store.entry(update.message_id)) is not None:
+            await self.address(uid, target)
+
+    async def _quoted_voice(self, uid: int, message_id: int) -> Entry | None:
+        """The voice note a bot message quotes: a bot message replying to one, outside every answer chain."""
+        store = self.log_for(uid)
+        sent = store.entry(message_id)
+        if sent is None or sent.reply_to is None or await store.chain_of(uid, message_id) is not None:
+            return None
+        voice = store.entry(sent.reply_to)
+        return voice if voice is not None and voice.kind in VOICE_KINDS and voice.author != AUTHOR_BOT else None
+
+    async def address(self, uid: int, entry: Entry) -> None:
+        """REQ-TRIGGER-4, REQ-VOICE-7: start an addressed turn on a stored entry."""
+        if entry.kind in VOICE_KINDS:
+            if not entry.transcript:
+                await self.say(uid, NO_TRANSCRIPT_TEXT, entry.message_id)
+                return
+            text = entry.transcript
+        else:
+            text = (entry.text or "").strip() or ADDRESSED_EMPTY
+        if self.answerer is not None:
+            message = Message.model_validate_json(entry.raw)  # televibe REQ-REACTED-2: a stored message drives a turn
+            self.spawn(self.answerer.answer(uid, message, text, addressed=True))

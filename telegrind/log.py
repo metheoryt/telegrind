@@ -196,18 +196,14 @@ class Log:
             self._append(message_id, "stored", {"sha256": sha256, "name": name, "mime": mime, "size": size}, at)
         return self._entry(message_id)
 
-    def record_transcript(
-        self, message_id: int, raw: str, text: str, question: bool, cleaned: bool, at: int
-    ) -> Entry | None:
+    def record_transcript(self, message_id: int, raw: str, text: str, cleaned: bool, at: int) -> Entry | None:
         with self._tx():
             if self._exists(message_id) is None:
                 return None
             self.conn.execute(
                 "UPDATE entries SET transcript_raw = ?, transcript = ? WHERE message_id = ?", (raw, text, message_id)
             )
-            self._append(
-                message_id, "transcribed", {"raw": raw, "text": text, "question": question, "cleaned": cleaned}, at
-            )
+            self._append(message_id, "transcribed", {"raw": raw, "text": text, "cleaned": cleaned}, at)
         return self._entry(message_id)
 
     def record_bot_sent(self, message_id: int, text: str, reply_to: int | None, raw: dict[str, Any], at: int) -> Entry:

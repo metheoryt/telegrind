@@ -105,7 +105,7 @@ async def test_voice_is_transcribed_cleaned_posted_and_stored(rig, tmp_path):
     app = rig
     app.bot.files["v1"] = b"OGG"
     out = ask_text()
-    assert out["question"] is False and out["text"] != RAW  # the recording this test is about
+    assert out["text"] != RAW  # the recording this test is about
     await app.on_message(user_message(voice=15))
     await app.drain()
     req = app.scribe.requests[0]
@@ -114,7 +114,7 @@ async def test_voice_is_transcribed_cleaned_posted_and_stored(rig, tmp_path):
     entry = app.log_for(7).entry(10)
     assert entry.transcript_raw == RAW and entry.transcript == out["text"]
     event = next(e for e in app.log_for(7).events(10) if e.kind == "transcribed")
-    assert event.payload == {"raw": RAW, "text": out["text"], "question": False, "cleaned": True}
+    assert event.payload == {"raw": RAW, "text": out["text"], "cleaned": True}
     _, kw = app.bot.sends()[0]
     assert kw["text"] == PREFIX + out["text"] and kw["parse_mode"] is None
     assert kw["entities"][0].type in ("blockquote", "expandable_blockquote") and kw["reply_parameters"].message_id == 10
@@ -138,25 +138,22 @@ async def test_bot_secrets_never_reach_the_cleanup_call(rig, tmp_path):
     assert app.log_for(7).entry(10).transcript == ask_text()["text"]  # the call ran and was not refused
 
 
-async def test_voice_question_flag_starts_a_turn_after_the_post(rig, tmp_path):
-    """REQ-VOICE-7: question true → an agent turn with the clean text, after the quote is posted."""
+async def test_a_spoken_question_starts_no_turn_by_itself(rig, tmp_path):
+    """REQ-VOICE-4, REQ-VOICE-7: a note asking «сколько я потратил» is transcribed and posted; only 🙏 asks it."""
     app = rig
-    out = ask_text("ask_question.jsonl")
-    assert out["question"] is True
+    out = ask_text("ask_question.jsonl")  # a recorded answer that still carries the old `question: true`
     app.scribe.text = QUESTION_RAW
     app.voice.ask_env = turn_env(tmp_path, ask="ask_question.jsonl")
     await app.on_message(user_message(voice=15))
     await app.drain()
-    names = app.bot.names()
-    first_send = names.index("send_message")
-    assert app.bot.texts()[0] == PREFIX + out["text"]
-    assert "set_message_reaction" in names[first_send:]  # the turn's 👀 comes after the quote
-    turn = next(r for r in records(tmp_path) if "--json-schema" not in r["argv"])
-    assert turn["prompt"] == out["text"]
+    assert app.bot.texts() == [PREFIX + out["text"]] and app.bot.reactions() == [(10, "💔")]
+    assert [r for r in records(tmp_path) if "--json-schema" not in r["argv"]] == []
+    schema = next(r for r in records(tmp_path) if "--json-schema" in r["argv"])["argv"]
+    assert "question" not in schema[schema.index("--json-schema") + 1]
 
 
 async def test_cleanup_failure_posts_the_raw_text_and_asks_nothing(rig, tmp_path):
-    """REQ-VOICE-5: the cleaning call fails → raw text, cleaned false, question false; a transcript beats none."""
+    """REQ-VOICE-5: the cleaning call fails → raw text, cleaned false; a transcript beats none."""
     app = rig
     app.voice.ask_env = turn_env(tmp_path, ask="turn.jsonl")  # a result with no structured_output → AskFailed
     await app.on_message(user_message(voice=15))
@@ -164,7 +161,7 @@ async def test_cleanup_failure_posts_the_raw_text_and_asks_nothing(rig, tmp_path
     entry = app.log_for(7).entry(10)
     assert entry.transcript == RAW and entry.transcript_raw == RAW
     event = next(e for e in app.log_for(7).events(10) if e.kind == "transcribed")
-    assert event.payload == {"raw": RAW, "text": RAW, "question": False, "cleaned": False}
+    assert event.payload == {"raw": RAW, "text": RAW, "cleaned": False}
     assert app.bot.texts() == [PREFIX + RAW]
 
 

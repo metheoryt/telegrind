@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable, Mapping
 
 import httpx
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import Message, MessageEntity, ReplyParameters
+from aiogram.types import MessageEntity, ReplyParameters
 from televibe import TelevibeError
 
 from telegrind.agent import NEVER_IN_A_TURN, TURN_ENV, Agent
@@ -147,23 +147,20 @@ class VoiceJobs:
                         return
                     await self.sleep(BACKOFF_S[attempts - 1])
             cleaned, ok = await self._clean(uid, raw, terms)
-        store.record_transcript(message_id, raw, cleaned.text, cleaned.question, ok, self.app.clock())
+        store.record_transcript(message_id, raw, cleaned.text, ok, self.app.clock())
         store.voice_set(message_id, "done")
-        posted = await self._post(uid, message_id, cleaned.text)
-        entry = store.entry(message_id)
-        if cleaned.question and posted and self.agent is not None and entry is not None:
-            await self.agent.answer(uid, Message.model_validate_json(entry.raw), cleaned.text)  # REQ-VOICE-7
+        await self._post(uid, message_id, cleaned.text)  # REQ-VOICE-7: a note is asked only by 🙏
 
     async def _clean(self, uid: int, raw: str, terms: list[str]) -> tuple[Cleaned, bool]:
         """The cleaned transcript and whether the cleaning call succeeded (REQ-VOICE-5: raw beats none)."""
         provider = self.agent.provider if self.agent is not None else None
         if provider is None:
-            return Cleaned(raw, False), False
+            return Cleaned(raw), False
         try:
             return await clean(raw, provider=provider, env=self.env(), keyterms=terms), True
         except (TelevibeError, CleanupError) as exc:
             log.warning("user %d: transcript cleanup failed: %s", uid, type(exc).__name__)
-            return Cleaned(raw, False), False
+            return Cleaned(raw), False
 
     async def _post(self, uid: int, message_id: int, text: str) -> bool:
         """REQ-VOICE-6: the clean text as quote messages replying to the voice note, each a bot_sent."""

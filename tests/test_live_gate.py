@@ -262,6 +262,8 @@ async def _one_run(tmp_path: Path, home: str) -> dict:
         fresh_before_q = _processed(facts_path).get(FRESH_ID)
         t0 = time.monotonic()
         await app.on_message(user_message(uid=UID, text=QUESTION["text"], message_id=QUESTION_ID))
+        await app.drain()  # a log entry until addressed (REQ-TRIGGER-1): no turn yet
+        await app.on_reaction(reaction(uid=UID, message_id=QUESTION_ID, emoji="🙏"))  # REQ-TRIGGER-4
         await app.drain()
         question_s = time.monotonic() - t0
         after_q = _log_snapshot(log_path)
@@ -425,7 +427,7 @@ def test_deleted_entry_has_no_rows_after_a_pass(tmp_path):
             await app.on_message(user_message(uid=UID, message_id=FIRST_ID, text="4500 такси"))
             await agent.run_pass(UID)
             had = _rows_for(layout.facts_path(UID), FIRST_ID)
-            await app.on_reaction(reaction(uid=UID, message_id=FIRST_ID, emoji="👍"))
+            await app.on_reaction(reaction(uid=UID, message_id=FIRST_ID, emoji="💔"))
             at_once = _rows_for(layout.facts_path(UID), FIRST_ID)
             await agent.run_pass(UID)
             gone = _rows_for(layout.facts_path(UID), FIRST_ID)
@@ -464,8 +466,10 @@ def test_correction_becomes_a_rule(tmp_path):
             await agent.run_pass(UID)
             first = _rows_for(layout.facts_path(UID), FIRST_ID)
             rules_before = rules_path.read_text() if rules_path.exists() else ""
-            text = "5000 Вася — это займ Васе, не трата. Вася у меня всегда займы, запомнишь?"
+            # No question mark: a correction is addressed by 🙏 alone (REQ-TRIGGER-4).
+            text = "5000 Вася — это займ Васе, не трата. Вася у меня всегда займы"
             await app.on_message(user_message(uid=UID, message_id=FIRST_ID + 1, text=text))
+            await app.on_reaction(reaction(uid=UID, message_id=FIRST_ID + 1, emoji="🙏"))
             await app.drain()
             rules_after = rules_path.read_text() if rules_path.exists() else ""
             rows = _rows_for(layout.facts_path(UID), FIRST_ID)

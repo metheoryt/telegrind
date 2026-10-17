@@ -9,8 +9,8 @@ from telegrind.triggers import BARE_Q, question_text
     "text, reply_author, expected",
     [
         ("4500 такси", None, None),
-        ("сколько я потратил на такси?", None, "сколько я потратил на такси?"),
-        ("сколько я потратил на такси?  \n", None, "сколько я потратил на такси?"),
+        ("сколько я потратил на такси?", None, None),
+        ("давление 120/80, нормально?", None, None),
         ("а это что", "bot", "а это что"),
         ("а это что", "me", None),
         ("/start", None, "/start"),
@@ -28,13 +28,13 @@ from telegrind.triggers import BARE_Q, question_text
     ],
 )
 def test_rule(text, reply_author, expected):
-    """REQ-TRIGGER-1, REQ-TRIGGER-2: reply to the bot, trailing ?, leading /;
+    """REQ-TRIGGER-1, REQ-TRIGGER-2: reply to the bot and leading / only — a trailing ? is a log entry;
     /q strips itself; bare /q is the sentinel."""
     assert question_text(text, reply_to_author=reply_author, author="me") == expected
 
 
 def test_bot_and_forward_never_trigger():
-    """REQ-TRIGGER-3, REQ-MSG-4: the bot's own text never triggers; a forwarded question is a log entry."""
+    """REQ-TRIGGER-3, REQ-MSG-4: the bot's own text never triggers, nor does a forwarded command."""
     assert question_text("ok?", reply_to_author=None, author="bot") is None
     assert question_text("/q x", reply_to_author=None, author="bot") is None
-    assert question_text("сколько?", reply_to_author=None, author="forward: Vasya") is None
+    assert question_text("/start", reply_to_author=None, author="forward: Vasya") is None

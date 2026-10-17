@@ -51,7 +51,7 @@ def test_edit_of_unknown_message_writes_nothing(log):
 def test_revision_counts_events_of_every_kind(log):
     """REQ-LOG-3: after every kind of event revision == count of the message's events."""
     log.record_received(incoming(user_message(voice=5), now=T0))
-    log.record_transcript(10, raw="четыре пятьсот такси", text="4500 такси", question=False, cleaned=True, at=T0 + 5)
+    log.record_transcript(10, raw="четыре пятьсот такси", text="4500 такси", cleaned=True, at=T0 + 5)
     log.record_edit(incoming(user_message(voice=5, caption="c", edit_date=T0 + 6), now=T0 + 6))
     log.record_reaction(10, deleted=True, payload={"new_reaction": [{"type": "emoji", "emoji": "💔"}]}, at=T0 + 7)
     log.record_reaction(10, deleted=False, payload={"new_reaction": []}, at=T0 + 8)

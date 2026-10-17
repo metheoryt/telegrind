@@ -117,15 +117,24 @@ def user_message(
     )
 
 
+_UNSET = object()
+
+
 def reaction(
-    uid: int = 7, message_id: int = 10, emoji: str | None = "💔", chat_type: str = "private"
+    uid: int = 7,
+    message_id: int = 10,
+    emoji: str | None = "💔",
+    chat_type: str = "private",
+    old: str | object | None = _UNSET,
 ) -> MessageReactionUpdated:
+    """The person's reaction becoming `emoji` (None: removed); `old` is what it was (default: nothing, or 💔)."""
+    was = (None if emoji else "💔") if old is _UNSET else old
     return MessageReactionUpdated(
         chat=Chat(id=uid if chat_type == "private" else -1001, type=chat_type),
         message_id=message_id,
         date=NOW,
         user=user(uid),
-        old_reaction=[] if emoji else [ReactionTypeEmoji(type="emoji", emoji="💔")],
+        old_reaction=[ReactionTypeEmoji(type="emoji", emoji=was)] if isinstance(was, str) else [],
         new_reaction=[ReactionTypeEmoji(type="emoji", emoji=emoji)] if emoji else [],
     )
 

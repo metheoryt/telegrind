@@ -3,7 +3,7 @@
 import pytest
 from tgkit import FakeBot, bot_message, reaction, user_message
 
-from telegrind.app import App
+from telegrind.app import ADDRESSED_EMPTY, NO_TRANSCRIPT_TEXT, App
 from telegrind.config import Config
 from telegrind.layout import Layout
 from telegrind.media import MediaJobs
@@ -12,10 +12,11 @@ from telegrind.triggers import BARE_Q_TEXT
 
 class Recorder:
     def __init__(self):
-        self.answers, self.entries = [], []
+        self.answers, self.entries, self.addressed = [], [], []
 
-    async def answer(self, uid, message, text):
+    async def answer(self, uid, message, text, *, addressed=False):
         self.answers.append((uid, message.message_id, text))
+        self.addressed.append(addressed)
 
     def on_entry(self, uid):
         self.entries.append(uid)
@@ -79,12 +80,20 @@ async def test_failed_reaction_still_stores(app, monkeypatch):
     assert app.log_for(7).entry(11).text == "y"
 
 
-async def test_question_gets_no_receipt_and_reaches_the_answerer(app):
-    """REQ-TRIGGER-1, REQ-RECEIPT-4: a trailing ? is a question; stored, no heart, handed on with its text."""
-    await app.on_message(user_message(text="сколько такси?"))
+async def test_a_trailing_question_mark_is_a_log_entry(app):
+    """REQ-TRIGGER-1, REQ-RECEIPT-1: «давление 120/80, нормально?» is stored with its heart and starts nothing."""
+    await app.on_message(user_message(text="давление 120/80, нормально?"))
+    await app.drain()
+    assert app.log_for(7).entry(10).receipt == "💔" and app.bot.reactions() == [(10, "💔")]
+    assert app.rec.answers == [] and app.rec.entries == [7]
+
+
+async def test_a_command_gets_no_receipt_and_reaches_the_answerer(app):
+    """REQ-TRIGGER-2, REQ-RECEIPT-4: a question is stored with no heart and handed on with its text."""
+    await app.on_message(user_message(text="/q сколько такси"))
     await app.drain()
     assert app.log_for(7).entry(10).receipt is None and app.bot.reactions() == []
-    assert app.rec.answers == [(7, 10, "сколько такси?")]
+    assert app.rec.answers == [(7, 10, "сколько такси")] and app.rec.addressed == [False]
 
 
 async def test_reply_to_bot_is_a_question(app):
@@ -123,16 +132,14 @@ async def test_photo_and_voice_are_enqueued_once_committed(app):
     assert app.bot.reactions() == [(10, "💔"), (11, "💔")]
 
 
-async def test_photo_with_a_question_caption_downloads_and_answers_without_receipt(app):
-    """REQ-MSG-2, REQ-RECEIPT-4: a receipt photo asking «сколько тут?» is downloaded and answered; no heart."""
+async def test_photo_with_a_question_caption_is_a_log_entry_until_addressed(app):
+    """REQ-MSG-2, REQ-TRIGGER-4: «сколько тут?» on a photo is stored and downloaded; 🙏 then asks with the caption."""
     await app.on_message(user_message(photo=True, caption="сколько тут?"))
     await app.drain()
-    assert (
-        app.media_q.jobs == [(7, 10)]
-        and app.voice_q.jobs == []
-        and app.rec.answers == [(7, 10, "сколько тут?")]
-        and app.bot.reactions() == []
-    )
+    assert app.media_q.jobs == [(7, 10)] and app.rec.answers == [] and app.bot.reactions() == [(10, "💔")]
+    await app.on_reaction(reaction(emoji="🙏"))
+    await app.drain()
+    assert app.rec.answers == [(7, 10, "сколько тут?")] and app.rec.addressed == [True]
 
 
 async def test_edit_moves_the_receipt_and_the_revision(app):
@@ -147,28 +154,105 @@ async def test_edit_moves_the_receipt_and_the_revision(app):
 
 async def test_edit_of_a_question_changes_no_reaction(app):
     """REQ-RECEIPT-2: a question carries no receipt, so its edit sets none."""
-    await app.on_message(user_message(text="сколько?"))
-    await app.on_edit(user_message(text="сколько всего?", edit_date=1_760_000_010))
+    await app.on_message(user_message(text="/q сколько"))
+    await app.on_edit(user_message(text="/q сколько всего", edit_date=1_760_000_010))
     assert app.bot.reactions() == [] and app.log_for(7).entry(10).revision == 2
 
 
 async def test_reaction_deletes_then_restores(app):
-    """REQ-REACT-1, REQ-REACT-2: any emoji → deleted; empty → restored; a repeat writes nothing."""
+    """REQ-REACT-1, REQ-REACT-2: a receipt heart → deleted; another heart → no change; none → restored."""
     await app.on_message(user_message(text="x"))
-    await app.on_reaction(reaction(emoji="👍"))
+    await app.on_reaction(reaction(emoji="💔"))
     assert app.log_for(7).entry(10).deleted_at == 1_760_000_000 and app.log_for(7).entry(10).revision == 2
-    await app.on_reaction(reaction(emoji="🔥"))
+    await app.on_reaction(reaction(emoji="💘", old="💔"))
     assert app.log_for(7).entry(10).revision == 2
-    await app.on_reaction(reaction(emoji=None))
+    await app.on_reaction(reaction(emoji=None, old="💘"))
     assert app.log_for(7).entry(10).deleted_at is None and app.log_for(7).entry(10).revision == 3
     assert app.rec.entries == [7, 7, 7]  # each state change is a new revision the backlog watcher hears about
+    assert app.rec.answers == []
+
+
+@pytest.mark.parametrize("emoji", ["👍", "❤", "❤️", "🔥"])
+async def test_other_emoji_delete_nothing_and_ask_nothing(app, emoji):
+    """REQ-REACT-1: only a receipt heart deletes; the default double-tap ❤ and the rest change nothing."""
+    await app.on_message(user_message(text="x"))
+    await app.on_reaction(reaction(emoji=emoji))
+    await app.drain()
+    assert app.log_for(7).entry(10).deleted_at is None and app.log_for(7).entry(10).revision == 1
+    assert app.rec.answers == []
+
+
+async def test_pray_addresses_an_entry_and_keeps_it_a_log_entry(app):
+    """REQ-TRIGGER-4: 🙏 on the person's entry starts an addressed turn with its text; the entry is unchanged."""
+    await app.on_message(user_message(text="вчера было не 500, а 5000"))
+    await app.on_reaction(reaction(emoji="🙏"))
+    await app.drain()
+    entry = app.log_for(7).entry(10)
+    assert app.rec.answers == [(7, 10, "вчера было не 500, а 5000")] and app.rec.addressed == [True]
+    assert entry.receipt == "💔" and entry.deleted_at is None and entry.revision == 1
+
+
+async def test_pray_kept_or_removed_starts_nothing(app):
+    """REQ-TRIGGER-4: only putting 🙏 counts."""
+    await app.on_message(user_message(text="x"))
+    await app.on_reaction(reaction(emoji="🙏", old="🙏"))
+    await app.on_reaction(reaction(emoji=None, old="🙏"))
+    await app.drain()
+    assert app.rec.answers == []
+
+
+async def test_pray_on_a_deleted_entry_restores_and_addresses_it(app):
+    """REQ-REACT-1, REQ-TRIGGER-4: 🙏 replacing the person's 💔 restores the entry and asks."""
+    await app.on_message(user_message(text="x"))
+    await app.on_reaction(reaction(emoji="💔"))
+    await app.on_reaction(reaction(emoji="🙏", old="💔"))
+    await app.drain()
+    assert app.log_for(7).entry(10).deleted_at is None and app.rec.answers == [(7, 10, "x")]
+
+
+async def test_pray_on_a_forward_and_on_a_bare_photo(app):
+    """REQ-TRIGGER-4: a forward is addressable; an entry with no text is asked with the fixed sentence."""
+    await app.on_message(user_message(text="курс 520", forward=("user", "Иван")))
+    await app.on_message(user_message(photo=True, message_id=11))
+    await app.on_reaction(reaction(emoji="🙏"))
+    await app.on_reaction(reaction(message_id=11, emoji="🙏"))
+    await app.drain()
+    assert app.rec.answers == [(7, 10, "курс 520"), (7, 11, ADDRESSED_EMPTY)]
+
+
+async def test_pray_on_a_voice_note_and_on_its_transcript_quote(app):
+    """REQ-VOICE-7, REQ-TRIGGER-4: 🙏 on the note or on the bot's quote of it asks with the clean transcript."""
+    await app.on_message(user_message(voice=15))
+    app.log_for(7).record_transcript(10, raw="raw", text="сколько я потратил", cleaned=True, at=1_760_000_001)
+    quote = await app.say(7, "🎙 сколько я потратил", reply_to=10)
+    await app.on_reaction(reaction(emoji="🙏"))
+    await app.on_reaction(reaction(message_id=quote.message_id, emoji="🙏"))
+    await app.drain()
+    assert app.rec.answers == [(7, 10, "сколько я потратил"), (7, 10, "сколько я потратил")]
+
+
+async def test_pray_on_a_voice_note_without_a_transcript_says_so(app):
+    """REQ-VOICE-7: no transcript yet → the fixed sentence, no turn."""
+    await app.on_message(user_message(voice=15))
+    await app.on_reaction(reaction(emoji="🙏"))
+    await app.drain()
+    assert app.rec.answers == [] and app.bot.texts() == [NO_TRANSCRIPT_TEXT]
+
+
+async def test_pray_on_a_bot_answer_is_ignored(app):
+    """REQ-TRIGGER-4: 🙏 on a bot message that is not a transcript quote does nothing."""
+    await app.on_message(user_message(text="/q x"))
+    sent = await app.say(7, "answer", reply_to=10)
+    await app.on_reaction(reaction(message_id=sent.message_id, emoji="🙏"))
+    await app.drain()
+    assert app.rec.answers == [(7, 10, "x")]
 
 
 async def test_reaction_on_unknown_or_bot_message_writes_nothing(app):
     """REQ-REACT-1: a reaction on a message the log never saw, or on the bot's message, is ignored."""
     sent = await app.say(7, "answer", reply_to=None)
-    await app.on_reaction(reaction(message_id=sent.message_id, emoji="👍"))
-    await app.on_reaction(reaction(message_id=4242, emoji="👍"))
+    await app.on_reaction(reaction(message_id=sent.message_id, emoji="💔"))
+    await app.on_reaction(reaction(message_id=4242, emoji="💔"))
     assert app.log_for(7).entry(sent.message_id).deleted_at is None and app.log_for(7).entry(4242) is None
 
 

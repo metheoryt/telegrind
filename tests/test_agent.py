@@ -5,11 +5,12 @@ import os
 import subprocess
 import sys
 import textwrap
+from datetime import datetime, timedelta
 
 import pytest
 from conftest import records, turn_env
 from televibe import Engine
-from tgkit import NOW, FakeBot, bot_message, user_message
+from tgkit import NOW, FakeBot, bot_message, reaction, user_message
 
 from telegrind import agent as agent_module
 from telegrind.agent import NO_AGENT_TEXT, QUOTA_TEXT, Agent, make_provider
@@ -54,7 +55,7 @@ async def test_question_turn_answers_links_and_stores(rig, tmp_path):
     The fake's answer is sent, linked to the chain, stored; reactions 👀 → 👨‍💻 → cleared."""
     app, agent, _ = rig
     agent.turn_env = {**turn_env(tmp_path), "BOT_TOKEN": "x", "ELEVENLABS_API_KEY": "y"}  # never reach the child
-    await app.on_message(user_message(text="сколько такси?"))
+    await app.on_message(user_message(text="/q сколько такси?"))
     await app.drain()
     bot, store = app.bot, app.log_for(7)
     assert [r[1] for r in bot.reactions()] == ["👀", "👨‍💻", None]
@@ -80,7 +81,7 @@ async def test_question_turn_answers_links_and_stores(rig, tmp_path):
 async def test_reply_to_the_answer_resumes_the_session_with_the_quoted_text(rig, tmp_path):
     """REQ-TURN-3, REQ-TURN-2: a reply to the answer continues the chain (--resume same id), quoting the answer."""
     app, _, _ = rig
-    await app.on_message(user_message(text="сколько такси?"))
+    await app.on_message(user_message(text="/q сколько такси?"))
     await app.drain()
     sent_id = (
         app.bot.sends()[0]
@@ -115,7 +116,7 @@ async def test_reply_quote_is_worded_by_who_wrote_the_replied_entry(rig, tmp_pat
     app, _, _ = rig
     replied = user_message(text="перевёл 5000", **first)
     await app.on_message(replied)
-    await app.on_message(user_message(text="это много?", message_id=11, reply_to=replied))
+    await app.on_message(user_message(text="/q это много?", message_id=11, reply_to=replied))
     await app.drain()
     prompt = system_prompt(records(tmp_path)[0])
     assert wording in prompt and "перевёл 5000" in prompt and "сообщение бота" not in prompt
@@ -124,8 +125,8 @@ async def test_reply_quote_is_worded_by_who_wrote_the_replied_entry(rig, tmp_pat
 async def test_new_question_is_a_new_session(rig, tmp_path):
     """REQ-TURN-3: a question that replies to nothing starts a new chain and a new session."""
     app, *_ = rig
-    await app.on_message(user_message(text="сколько такси?"))
-    await app.on_message(user_message(text="а сколько еды?", message_id=11))
+    await app.on_message(user_message(text="/q сколько такси?"))
+    await app.on_message(user_message(text="/q а сколько еды?", message_id=11))
     await app.drain()
     ids = [r["argv"][r["argv"].index("--session-id") + 1] for r in records(tmp_path)]
     assert len(ids) == 2 and ids[0] != ids[1]
@@ -138,7 +139,7 @@ async def test_without_a_token_the_bot_says_it_cannot(tmp_path, fake_path):
     app = App(config=cfg, bot=FakeBot(), layout=Layout(cfg.data_dir))
     agent = Agent(config=cfg, app=app, engine=None, provider=None)
     app.answerer = agent
-    await app.on_message(user_message(text="сколько?"))
+    await app.on_message(user_message(text="/q сколько?"))
     await app.drain()
     assert (
         app.bot.texts() == [NO_AGENT_TEXT]
@@ -152,9 +153,9 @@ async def test_quota_is_per_local_day(rig, tmp_path):
     """REQ-TURN-8: over TURN_QUOTA question turns since local midnight, the fixed sentence and no turn."""
     app, agent, _ = rig
     agent.config = config(tmp_path, TURN_QUOTA="1")
-    await app.on_message(user_message(text="раз?"))
+    await app.on_message(user_message(text="/q раз?"))
     await app.drain()
-    await app.on_message(user_message(text="два?", message_id=11))
+    await app.on_message(user_message(text="/q два?", message_id=11))
     await app.drain()
     assert len(records(tmp_path)) == 1 and app.bot.texts()[-1] == QUOTA_TEXT.format(quota=1)
     assert agent.quota_left(7) == 0
@@ -240,11 +241,12 @@ def snapshot_media_at_turn(monkeypatch, app):
 
 
 async def test_a_question_on_a_photo_waits_for_its_download(rig, tmp_path, monkeypatch):
-    """REQ-MSG-2, REQ-TURN-1: a photo with a question caption: the turn starts after the file is stored."""
+    """REQ-MSG-2, REQ-TURN-1: a photo addressed with 🙏: the turn starts after the file is stored."""
     app, _, _ = rig
     app.bot, app.media = GatedBot(), MediaJobs(app)
     seen = snapshot_media_at_turn(monkeypatch, app)
     await app.on_message(user_message(photo=True, caption="сколько тут?"))
+    await app.on_reaction(reaction(emoji="🙏"))
     try:
         await asyncio.sleep(0.3)  # the download hangs; the answer must not have started its turn
         assert seen == [] and records(tmp_path) == []
@@ -263,6 +265,7 @@ async def test_a_question_on_a_photo_answers_without_it_after_the_wait(rig, tmp_
     monkeypatch.setattr(agent_module, "MEDIA_WAIT_S", 0.2)
     seen = snapshot_media_at_turn(monkeypatch, app)
     await app.on_message(user_message(photo=True, caption="сколько тут?"))
+    await app.on_reaction(reaction(emoji="🙏"))
     try:
         for _ in range(100):
             if records(tmp_path) and app.bot.texts():
@@ -297,7 +300,7 @@ async def test_pass_queued_behind_a_question_measures_from_its_own_start(rig, tm
     app.bot = SignalBot()
     agent.turn_env = turn_env(tmp_path, mode="pass", sleep=0.3)  # the question writes processed
     await app.on_message(user_message(text="4500 такси"))
-    await app.on_message(user_message(text="сколько такси?", message_id=11))
+    await app.on_message(user_message(text="/q сколько такси?", message_id=11))
     await app.bot.queued.wait()  # the question's env is taken before its task next yields
     agent.turn_env = turn_env(tmp_path)  # the pass is a plain replay: it changes nothing
     assert agent.start_pass(7) is True
@@ -321,7 +324,7 @@ async def test_usage_limit_on_a_question_names_the_reset_time_in_russian(rig, tm
     """REQ-TURN-6: the presenter's Russian Texts and the person's tz word the limit failure."""
     app, agent, _ = rig
     agent.turn_env = turn_env(tmp_path, turn="limit.jsonl", exit=1)
-    await app.on_message(user_message(text="сколько?"))
+    await app.on_message(user_message(text="/q сколько?"))
     await app.drain()
     assert any("Лимит" in t for t in app.bot.texts())
 
@@ -334,8 +337,8 @@ async def test_pass_and_question_of_one_person_never_overlap(rig, tmp_path):
     await asyncio.sleep(0.5)
     assert len(records(tmp_path)) == 1  # the pass is running
     agent.turn_env = turn_env(tmp_path)
-    await app.on_message(user_message(text="сколько?"))
-    await app.on_message(user_message(uid=8, text="сколько?"))
+    await app.on_message(user_message(text="/q сколько?"))
+    await app.on_message(user_message(uid=8, text="/q сколько?"))
     await asyncio.sleep(0.8)
     recs = records(tmp_path)
     assert len(recs) == 2 and recs[1]["cwd"] == str(app.layout.user_dir(8))  # 8 ran, 7's question waits
@@ -381,3 +384,70 @@ async def test_recover_forgets_stranded_turns(tmp_path, fake_path):
         assert await agent.recover() == 1
         assert list((state / "turns").glob("*.json")) == []
         app.close()
+
+
+def at(minutes: int) -> datetime:
+    return NOW - timedelta(hours=1) + timedelta(minutes=minutes)
+
+
+async def test_an_addressed_turn_carries_the_context_before_it(rig, tmp_path):
+    """REQ-TRIGGER-4, REQ-TRIGGER-5: 🙏 → a turn with the entry's text; the instructions say so, date the message
+    and list the entries before it with time and author, a deleted one marked; nothing after it."""
+    app, _, _ = rig
+    await app.on_message(user_message(text="кофе 1500", message_id=1, date=at(0)))
+    await app.on_message(user_message(text="курс 520", message_id=2, date=at(1), forward=("user", "Иван")))
+    await app.on_message(user_message(text="такси 500", message_id=3, date=at(2)))
+    await app.on_reaction(reaction(message_id=3, emoji="💔"))
+    await app.on_message(user_message(text="вчера было не 500, а 5000", message_id=4, date=at(3)))
+    await app.on_message(user_message(text="потом", message_id=5, date=at(4)))
+    await app.on_reaction(reaction(message_id=4, emoji="🙏"))
+    await app.drain()
+    rec = records(tmp_path)[0]
+    assert rec["prompt"] == "вчера было не 500, а 5000"
+    prompt = system_prompt(rec)
+    assert "🙏" in prompt and "2026-10-15" in prompt
+    lines = prompt[prompt.index("<<<") :]
+    assert lines.index("курс 520") < lines.index("кофе 1500") < lines.index("такси 500")  # a forward is dated by origin
+    assert "forward: Иван" in lines and "(удалено)" in lines and "потом" not in lines
+    assert "вчера было не 500" not in lines  # the message itself is the prompt, not its own context
+
+
+async def test_an_addressed_reply_takes_its_context_around_the_replied_entry(rig, tmp_path):
+    """REQ-TRIGGER-5: 🙏 on a reply → the context is the entries before the replied one, plus the replied text."""
+    app, _, _ = rig
+    await app.on_message(user_message(text="старое до", message_id=1, date=at(0)))
+    replied = user_message(text="такси 500", message_id=2, date=at(1))
+    await app.on_message(replied)
+    await app.on_message(user_message(text="новое", message_id=3, date=at(2)))
+    await app.on_message(user_message(text="это было 5000", message_id=4, date=at(3), reply_to=replied))
+    await app.on_reaction(reaction(message_id=4, emoji="🙏"))
+    await app.drain()
+    prompt = system_prompt(records(tmp_path)[0])
+    assert "Человек отвечает на свою запись:" in prompt and "такси 500" in prompt
+    assert "старое до" in prompt and "новое" not in prompt
+
+
+async def test_an_addressed_reply_to_an_answer_continues_its_chain(rig, tmp_path):
+    """REQ-TRIGGER-5, REQ-TURN-3: 🙏 on a message replying to the bot's answer resumes that answer's session."""
+    app, _, _ = rig
+    await app.on_message(user_message(text="/q сколько такси"))
+    await app.drain()
+    sent_id = app.log_for(7).conn.execute("SELECT message_id FROM entries WHERE author = 'bot'").fetchone()[0]
+    answer = bot_message(message_id=sent_id, text=ANSWER)
+    # A reply to the bot is a question at once (REQ-TRIGGER-1); 🙏 on it asks again in the same chain.
+    await app.on_message(user_message(text="а за сентябрь", message_id=11, reply_to=answer))
+    await app.drain()
+    await app.on_reaction(reaction(message_id=11, emoji="🙏"))
+    await app.drain()
+    first, _, third = records(tmp_path)
+    assert first["argv"][first["argv"].index("--session-id") + 1] == third["argv"][third["argv"].index("--resume") + 1]
+
+
+async def test_an_addressed_turn_gives_the_receipt_back(rig, tmp_path):
+    """REQ-RECEIPT-4: 👀 replaces the heart for the turn; the heart comes back after the answer."""
+    app, _, _ = rig
+    await app.on_message(user_message(text="вчера было 5000"))
+    await app.on_reaction(reaction(emoji="🙏"))
+    await app.drain()
+    assert [r[1] for r in app.bot.reactions()] == ["💔", "👀", "👨‍💻", None, "💔"]
+    assert app.log_for(7).entry(10).receipt == "💔" and ANSWER in app.bot.texts()[-1]

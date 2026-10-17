@@ -24,7 +24,7 @@ async def test_updates_reach_the_app(tmp_path):
     dp = build_dispatcher(app)
     await dp.feed_update(app.bot, Update(update_id=1, message=user_message(text="x")))
     await dp.feed_update(app.bot, Update(update_id=2, edited_message=user_message(text="y", edit_date=2)))
-    await dp.feed_update(app.bot, Update(update_id=3, message_reaction=reaction(emoji="👍")))
+    await dp.feed_update(app.bot, Update(update_id=3, message_reaction=reaction(emoji="💔")))
     entry = app.log_for(7).entry(10)
     assert entry.text == "y" and entry.deleted_at == 1 and entry.revision == 3
     app.close()

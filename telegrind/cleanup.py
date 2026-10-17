@@ -12,8 +12,8 @@ TIMEOUT_S = 180
 SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["text", "question"],
-    "properties": {"text": {"type": "string"}, "question": {"type": "boolean"}},
+    "required": ["text"],
+    "properties": {"text": {"type": "string"}},
 }
 
 SYSTEM = """\
@@ -30,9 +30,6 @@ SYSTEM = """\
 - слово, которое не разобрать, оставь как есть, не угадывай;
 - коротко: обычно один-три абзаца; без заголовков и жирного шрифта.
 
-question — true, только если говорящий спрашивает бота о чём-то или спрашивает о своих
-записях («сколько я потратил на такси», «что я ел вчера»). Запись о том, что случилось, — false.
-
 Словарь: {keyterms}
 """
 
@@ -44,7 +41,6 @@ class CleanupError(Exception):
 @dataclass(frozen=True, slots=True)
 class Cleaned:
     text: str
-    question: bool
 
 
 def prompt_for(raw: str) -> str:
@@ -70,7 +66,6 @@ async def clean(
     )
     data = answer.data
     text = data.get("text") if isinstance(data, dict) else None
-    question = data.get("question") if isinstance(data, dict) else None
-    if not isinstance(text, str) or not text.strip() or not isinstance(question, bool):
-        raise CleanupError("the answer is not {text, question}")
-    return Cleaned(text.strip(), question)
+    if not isinstance(text, str) or not text.strip():
+        raise CleanupError("the answer is not {text}")
+    return Cleaned(text.strip())
