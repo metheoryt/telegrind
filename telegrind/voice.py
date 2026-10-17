@@ -17,7 +17,7 @@ from telegrind.cleanup import Cleaned, CleanupError, clean
 from telegrind.facts import Facts, FactsUnavailable
 from telegrind.incoming import Incoming
 from telegrind.keyterms import filter_terms
-from telegrind.media import BACKOFF_S, MAX_ATTEMPTS, download
+from telegrind.media import BACKOFF_S, MAX_ATTEMPTS, Running, download
 from telegrind.scribe import ScribeError, transcribe
 
 log = logging.getLogger(__name__)
@@ -83,6 +83,11 @@ class VoiceJobs:
     ) -> None:
         self.app, self.agent, self.client, self.sleep, self.ask_env = app, agent, client, sleep, dict(ask_env)
         self._slots = asyncio.Semaphore(2)
+        self.running = Running(app)
+
+    async def wait(self, uid: int, message_id: int, timeout_s: float) -> bool:
+        """REQ-VOICE-7: ❤ put before the transcript waits for it here."""
+        return await self.running.wait(uid, message_id, timeout_s)
 
     def env(self) -> dict[str, str]:
         """The one-shot call's env, as Agent.env() builds a turn's: TURN_ENV, the extras, never the bot's secrets.
@@ -101,14 +106,14 @@ class VoiceJobs:
         if inc.voice.duration > MAX_SECONDS:
             store.voice_set(inc.message_id, "too_long", error=f"{inc.voice.duration} s")
             return
-        self.app.spawn(self.run(uid, inc.message_id, inc.voice.filename))
+        self.running.start(uid, inc.message_id, self.run(uid, inc.message_id, inc.voice.filename))
 
     def resume(self) -> None:
         for uid in self.app.layout.users():
             for row in self.app.log_for(uid).voice_pending():
                 entry = self.app.log_for(uid).entry(row["message_id"])
                 filename = "video_note.mp4" if entry is not None and entry.kind == "video_note" else "voice.ogg"
-                self.app.spawn(self.run(uid, row["message_id"], filename))
+                self.running.start(uid, row["message_id"], self.run(uid, row["message_id"], filename))
 
     async def run(self, uid: int, message_id: int, filename: str) -> None:
         store = self.app.log_for(uid)

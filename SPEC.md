@@ -305,8 +305,11 @@ in the chat as a quote, so the person sees what the bot heard.
   is a `bot_sent` event like any other.
 - **REQ-VOICE-7** — A voice note never starts a turn by itself. ❤ on the
   note, or on its transcript quote, addresses it (REQ-TRIGGER-4) with the
-  clean transcript as the text. ❤ on a note with no transcript yet starts no
-  turn and is answered with a fixed sentence saying so.
+  clean transcript as the text. ❤ put before the transcript exists waits for
+  the job, up to 10 minutes, and then asks with the transcript — only if the
+  ❤ is still there. A job that ended with no transcript, or one still running
+  after the wait, starts no turn and is answered with a fixed sentence saying
+  which.
 - **REQ-VOICE-8** — A Scribe failure is retried with backoff up to 5
   attempts; a failure that persists is recorded in `voice_jobs` with its
   reason, and the entry stays with no transcript. The person is told nothing

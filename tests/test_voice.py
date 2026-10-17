@@ -7,10 +7,10 @@ import httpx
 import pytest
 from conftest import FIXTURES, records, turn_env
 from televibe import Engine
-from tgkit import FakeBot, user_message
+from tgkit import FakeBot, reaction, user_message
 
 from telegrind.agent import Agent, make_provider
-from telegrind.app import App
+from telegrind.app import NO_TRANSCRIPT_TEXT, App
 from telegrind.config import Config
 from telegrind.facts import Facts, FactsUnavailable
 from telegrind.keyterms import filter_terms
@@ -150,6 +150,23 @@ async def test_a_spoken_question_starts_no_turn_by_itself(rig, tmp_path):
     assert [r for r in records(tmp_path) if "--json-schema" not in r["argv"]] == []
     schema = next(r for r in records(tmp_path) if "--json-schema" in r["argv"])["argv"]
     assert "question" not in schema[schema.index("--json-schema") + 1]
+
+
+async def test_heart_before_the_transcript_asks_once_it_arrives(rig, tmp_path):
+    """REQ-VOICE-7: ❤ put while the note is still being transcribed waits for the transcript and asks with it."""
+    app = rig
+    out = ask_text()
+    await app.on_message(user_message(voice=15))
+    await app.on_reaction(reaction(emoji="❤"))
+    await app.drain()
+    turns = [r for r in records(tmp_path) if "--json-schema" not in r["argv"]]
+    assert len(turns) == 1 and out["text"] in turns[0]["prompt"]
+    assert NO_TRANSCRIPT_TEXT not in app.bot.texts()
+
+
+async def test_wait_on_a_note_with_no_running_job_returns_at_once(rig):
+    """REQ-VOICE-7: nothing running for the note → nothing to wait for."""
+    assert await rig.voice.wait(7, 10, 0.01)
 
 
 async def test_cleanup_failure_posts_the_raw_text_and_asks_nothing(rig, tmp_path):

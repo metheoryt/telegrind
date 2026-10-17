@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import logging
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -39,14 +39,16 @@ async def download(bot: Any, file_id: str) -> bytes:
     return buf.getvalue()
 
 
-class MediaJobs:
-    def __init__(self, app: App, *, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
-        self.app, self.sleep = app, sleep
-        self.tasks: dict[tuple[int, int], asyncio.Task[Any]] = {}  # (uid, message_id) → its running download
+class Running:
+    """The background jobs still running, by (uid, message_id), so a turn can wait for the one it needs."""
 
-    def _start(self, uid: int, message_id: int) -> None:
+    def __init__(self, app: App) -> None:
+        self.app = app
+        self.tasks: dict[tuple[int, int], asyncio.Task[Any]] = {}
+
+    def start(self, uid: int, message_id: int, job: Coroutine[Any, Any, Any]) -> None:
         key = (uid, message_id)
-        task = self.app.spawn(self.run(uid, message_id))
+        task = self.app.spawn(job)
         self.tasks[key] = task
 
         def done(t: asyncio.Task[Any]) -> None:
@@ -56,14 +58,26 @@ class MediaJobs:
         task.add_done_callback(done)
 
     async def wait(self, uid: int, message_id: int, timeout_s: float) -> bool:
-        """Wait for this message's download, if one is running; False when it is still running after `timeout_s`.
+        """Wait for this message's job, if one is running; False when it is still running after `timeout_s`.
 
-        The download is not cancelled by a timeout: it goes on, and the file arrives for the next turn."""
+        The job is not cancelled by a timeout: it goes on, and its result arrives later."""
         task = self.tasks.get((uid, message_id))
         if task is None:
             return True
         done, _ = await asyncio.wait({task}, timeout=timeout_s)
         return bool(done)
+
+
+class MediaJobs:
+    def __init__(self, app: App, *, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
+        self.app, self.sleep = app, sleep
+        self.running = Running(app)
+
+    def _start(self, uid: int, message_id: int) -> None:
+        self.running.start(uid, message_id, self.run(uid, message_id))
+
+    async def wait(self, uid: int, message_id: int, timeout_s: float) -> bool:
+        return await self.running.wait(uid, message_id, timeout_s)
 
     def enqueue(self, uid: int, inc: Incoming) -> None:
         assert inc.media is not None

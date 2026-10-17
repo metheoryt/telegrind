@@ -3,7 +3,7 @@
 import pytest
 from tgkit import FakeBot, bot_message, reaction, user_message
 
-from telegrind.app import ADDRESSED_EMPTY, NO_TRANSCRIPT_TEXT, App
+from telegrind.app import ADDRESSED_EMPTY, NO_TRANSCRIPT_TEXT, SLOW_TRANSCRIPT_TEXT, App
 from telegrind.config import Config
 from telegrind.layout import Layout
 from telegrind.media import MediaJobs
@@ -283,12 +283,54 @@ async def test_another_emoji_on_the_quote_leaves_the_note_addressed(app):
     assert app.log_for(7).entry(10).addressed_at == 1_760_000_000
 
 
-async def test_heart_on_a_voice_note_without_a_transcript_says_so(app):
-    """REQ-VOICE-7: no transcript yet → the fixed sentence, no turn."""
+async def test_heart_before_the_transcript_waits_for_it(app):
+    """REQ-VOICE-7: ❤ on a note still being transcribed waits for the transcript, then asks with it."""
+    await app.on_message(user_message(voice=15))
+
+    async def finished(uid, message_id, timeout_s):
+        app.log_for(7).record_transcript(10, raw="raw", text="сколько я потратил", cleaned=True, at=1_760_000_001)
+        return True
+
+    app.voice_q.wait = finished
+    await app.on_reaction(reaction(emoji="❤"))
+    await app.drain()
+    assert app.rec.answers == [(7, 10, "сколько я потратил")] and app.bot.texts() == []
+
+
+async def test_heart_taken_off_while_the_transcript_is_awaited_starts_nothing(app):
+    """REQ-VOICE-7: the turn starts only if the note is still addressed when its transcript arrives."""
+    await app.on_message(user_message(voice=15))
+
+    async def finished(uid, message_id, timeout_s):
+        await app.on_reaction(reaction(emoji=None, old="❤"))
+        app.log_for(7).record_transcript(10, raw="raw", text="сколько я потратил", cleaned=True, at=1_760_000_001)
+        return True
+
+    app.voice_q.wait = finished
+    await app.on_reaction(reaction(emoji="❤"))
+    await app.drain()
+    assert app.rec.answers == [] and app.bot.texts() == []
+
+
+async def test_heart_on_a_voice_note_that_was_not_transcribed_says_so(app):
+    """REQ-VOICE-7: the job ended with no transcript → the fixed sentence, no turn."""
     await app.on_message(user_message(voice=15))
     await app.on_reaction(reaction(emoji="❤"))
     await app.drain()
     assert app.rec.answers == [] and app.bot.texts() == [NO_TRANSCRIPT_TEXT]
+
+
+async def test_heart_on_a_voice_note_still_transcribing_after_the_wait_says_so(app):
+    """REQ-VOICE-7: the transcript did not come in time → a sentence saying so, no turn."""
+    await app.on_message(user_message(voice=15))
+
+    async def running(uid, message_id, timeout_s):
+        return False
+
+    app.voice_q.wait = running
+    await app.on_reaction(reaction(emoji="❤"))
+    await app.drain()
+    assert app.rec.answers == [] and app.bot.texts() == [SLOW_TRANSCRIPT_TEXT]
 
 
 async def test_heart_on_a_bot_answer_is_ignored(app):

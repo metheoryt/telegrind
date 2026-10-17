@@ -22,7 +22,9 @@ log = logging.getLogger(__name__)
 
 VOICE_KINDS = ("voice", "video_note")
 ADDRESSED_EMPTY = "Человек отметил это сообщение ❤, в нём нет текста. Посмотри, что это, и ответь."
-NO_TRANSCRIPT_TEXT = "Голосовое ещё не расшифровано. Поставь ❤, когда появится расшифровка."
+NO_TRANSCRIPT_TEXT = "Это голосовое не получилось расшифровать."
+SLOW_TRANSCRIPT_TEXT = "Голосовое всё ещё расшифровывается. Сними ❤ и поставь снова, когда появится расшифровка."
+VOICE_WAIT_S = 600.0  # Scribe with its retries and the cleanup call; past this, the person is told
 
 
 class Answerer(Protocol):
@@ -50,7 +52,7 @@ class App:
         layout: Layout,
         answerer: Answerer | None = None,
         media: MediaQueue | None = None,
-        voice: JobQueue | None = None,
+        voice: MediaQueue | None = None,
         watcher: BacklogWatcher | None = None,
         clock: Callable[[], int] = now,
     ) -> None:
@@ -206,6 +208,17 @@ class App:
         elif question_text(entry.text, reply_to_author=store.author_of(entry.reply_to), author=entry.author) is None:
             await self.react(uid, message_id, FIRST)  # a question was never a log entry: no heart for it
 
+    async def _address_when_transcribed(self, uid: int, message_id: int) -> None:
+        """REQ-VOICE-7: ❤ came before the transcript. Wait for it, and ask only if the ❤ is still there."""
+        done = self.voice is None or await self.voice.wait(uid, message_id, VOICE_WAIT_S)
+        entry = self.log_for(uid).entry(message_id)
+        if entry is None or entry.addressed_at is None:
+            return
+        if entry.transcript:
+            await self.address(uid, entry)
+        else:
+            await self.say(uid, NO_TRANSCRIPT_TEXT if done else SLOW_TRANSCRIPT_TEXT, message_id)
+
     async def _quoted_voice(self, uid: int, message_id: int) -> Entry | None:
         """The voice note a bot message quotes: a bot message replying to one, outside every answer chain."""
         store = self.log_for(uid)
@@ -219,7 +232,7 @@ class App:
         """REQ-TRIGGER-4, REQ-VOICE-7: start an addressed turn on a stored entry."""
         if entry.kind in VOICE_KINDS:
             if not entry.transcript:
-                await self.say(uid, NO_TRANSCRIPT_TEXT, entry.message_id)
+                self.spawn(self._address_when_transcribed(uid, entry.message_id))
                 return
             text = entry.transcript
         else:
