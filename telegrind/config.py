@@ -91,6 +91,6 @@ class Config:
             backlog_limit=_int(env, "BACKLOG_LIMIT", 50, low=1, high=100_000),
             turn_quota=_int(env, "TURN_QUOTA", 50, low=0, high=100_000),
             max_concurrent=_int(env, "MAX_CONCURRENT", 2, low=1, high=64),
-            pass_timeout_s=_float(env, "PASS_TIMEOUT_S", 600.0),
-            question_timeout_s=_float(env, "QUESTION_TIMEOUT_S", 300.0),
+            pass_timeout_s=_float(env, "PASS_TIMEOUT_S", 1800.0),
+            question_timeout_s=_float(env, "QUESTION_TIMEOUT_S", 1800.0),
         )

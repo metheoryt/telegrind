@@ -13,7 +13,7 @@ from televibe import Engine
 from tgkit import NOW, FakeBot, bot_message, reaction, user_message
 
 from telegrind import agent as agent_module
-from telegrind.agent import ASIDE_EVERY, ASIDE_TEXT, NO_AGENT_TEXT, QUOTA_TEXT, Agent, make_provider
+from telegrind.agent import ASIDE_EVERY, ASIDE_TEXT, LONG_TURN_TEXT, NO_AGENT_TEXT, QUOTA_TEXT, Agent, make_provider
 from telegrind.app import App
 from telegrind.config import Config
 from telegrind.facts import Facts, FactsUnavailable
@@ -461,3 +461,25 @@ async def test_every_fifth_question_may_ask_an_aside(rig, tmp_path):
         await app.drain()
     asides = [ASIDE_TEXT in system_prompt(r) for r in records(tmp_path)]
     assert asides == [False] * (ASIDE_EVERY - 1) + [True]
+
+
+async def test_a_long_question_says_so_and_answers_when_done(rig, tmp_path, monkeypatch):
+    """REQ-TURN-11: a question still running after LONG_TURN_S is told it is long; the answer comes when it ends."""
+    app, agent, _ = rig
+    monkeypatch.setattr(agent_module, "LONG_TURN_S", 0.2)
+    agent.turn_env = turn_env(tmp_path, sleep=0.8)
+    await app.on_message(user_message(text="/q разбери выписки"))
+    await app.drain()
+    assert app.bot.texts() == [LONG_TURN_TEXT, ANSWER]
+    notice = app.bot.sends()[0][1]
+    assert notice["reply_parameters"].message_id == 10
+
+
+async def test_a_quick_question_says_nothing_about_time(rig, tmp_path, monkeypatch):
+    """REQ-TURN-11: a question that ends before LONG_TURN_S gets its answer alone, and no notice after it."""
+    app, _, _ = rig
+    monkeypatch.setattr(agent_module, "LONG_TURN_S", 0.3)
+    await app.on_message(user_message(text="/q сколько такси?"))
+    await app.drain()
+    await asyncio.sleep(0.5)
+    assert app.bot.texts() == [ANSWER]

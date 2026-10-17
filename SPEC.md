@@ -417,8 +417,13 @@ the person; by contract it runs a pass first (REQ-CONTRACT-6).
   stranded turn and forgets it. Nothing else: a pass is idempotent against
   `processed`, so an interrupted one is simply redone, and an interrupted
   question is not re-asked.
-- **REQ-TURN-10** — A turn's timeout is 600 seconds for a pass and 300 for a
-  question, configurable.
+- **REQ-TURN-10** — A turn's timeout is 1800 seconds for a pass and for a
+  question, configurable. A statement import is a long question, and a turn cut
+  short loses its answer.
+- **REQ-TURN-11** — A question turn still running 60 seconds after it started
+  gets one fixed sentence as a reply: it is long, the answer will come there,
+  and entries can be sent meanwhile. The answer then comes as usual. Entries
+  sent meanwhile are logged at once; another question waits in the lane.
 
 ---
 
@@ -506,7 +511,9 @@ The two files and three tables Python depends on.
   («записала», «посчитала»), and so do the bot's fixed sentences. The
   feminine is hers only: the person is spoken of as their «О человеке»
   section says, and without gender until it exists (REQ-CONTRACT-16). Answers are
-  short, in the person's language, without headings; a pass ends with one line saying what it derived («14 записей: 9
+  the way an assistant reports to a boss: the result in the first line, two
+  or three lines in all, no headings, tables or account of how she got it
+  unless asked, in the person's language; a pass ends with one line saying what it derived («14 записей: 9
   трат, 2 давления, новая категория „настроение“»), which is what REQ-TURN-7
   posts.
 - **REQ-CONTRACT-12** — The agent never writes outside `facts.sqlite` and the

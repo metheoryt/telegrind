@@ -38,6 +38,8 @@ TEXTS = Texts(
     seven_day="7д",
 )
 REACTIONS = Reactions(done=None, failed_when_sent=False)  # a reaction or a text, never both
+LONG_TURN_S = 60.0  # REQ-TURN-11: a question still running after this is told it is long
+LONG_TURN_TEXT = "Это надолго. Отвечу сюда, как закончу; записи можно слать дальше."
 MEDIA_WAIT_S = 30.0  # how long a question with a photo or document waits for its own download
 REPLY_INTRO = {AUTHOR_BOT: "Человек отвечает на это сообщение бота:", AUTHOR_ME: "Человек отвечает на свою запись:"}
 FORWARD_INTRO = "Человек отвечает на пересланное сообщение:"  # any other author is a forward
@@ -64,10 +66,13 @@ class _Watched:
         self._events = events
         self.end: Done | Failed | None = None
         self.limits: Limits | None = None
+        self.started = asyncio.Event()
 
     async def __aiter__(self) -> AsyncIterator[Event]:
         async for event in self._events:
-            if isinstance(event, Limits):
+            if isinstance(event, Started):
+                self.started.set()
+            elif isinstance(event, Limits):
                 self.limits = event
             elif isinstance(event, Done | Failed):
                 self.end = event
@@ -225,7 +230,11 @@ class Agent:
                 tag={"kind": "question", "user": uid},
             ) as turn:
                 watched = _Watched(turn)
-                sent = await presenter.show(watched)
+                notice = asyncio.create_task(self._say_if_long(uid, message.message_id, watched))
+                try:
+                    sent = await presenter.show(watched)
+                finally:
+                    notice.cancel()
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # entering the chain turn failed: 👀 is still on the question; say so
@@ -243,6 +252,13 @@ class Agent:
                 sent.model_dump(mode="json", exclude_none=True),
                 self.app.clock(),
             )
+
+    async def _say_if_long(self, uid: int, message_id: int, watched: _Watched) -> None:
+        """REQ-TURN-11: one notice, LONG_TURN_S after the turn started, if it has not ended by then."""
+        await watched.started.wait()
+        await asyncio.sleep(LONG_TURN_S)
+        if watched.end is None:
+            await self.app.say(uid, LONG_TURN_TEXT, message_id)
 
     # -- a pass ---------------------------------------------------------------------------
 

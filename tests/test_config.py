@@ -22,7 +22,7 @@ def test_defaults():
         50,
         2,
     )
-    assert (cfg.pass_timeout_s, cfg.question_timeout_s) == (600.0, 300.0)
+    assert (cfg.pass_timeout_s, cfg.question_timeout_s) == (1800.0, 1800.0)
 
 
 def test_every_variable_is_read():
