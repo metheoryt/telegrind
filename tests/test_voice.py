@@ -139,7 +139,7 @@ async def test_bot_secrets_never_reach_the_cleanup_call(rig, tmp_path):
 
 
 async def test_a_spoken_question_starts_no_turn_by_itself(rig, tmp_path):
-    """REQ-VOICE-4, REQ-VOICE-7: a note asking «сколько я потратил» is transcribed and posted; only 🙏 asks it."""
+    """REQ-VOICE-4, REQ-VOICE-7: a note asking «сколько я потратил» is transcribed and posted; only ❤ asks it."""
     app = rig
     out = ask_text("ask_question.jsonl")  # a recorded answer that still carries the old `question: true`
     app.scribe.text = QUESTION_RAW

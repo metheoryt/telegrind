@@ -41,7 +41,7 @@ REACTIONS = Reactions(done=None, failed_when_sent=False)  # a reaction or a text
 MEDIA_WAIT_S = 30.0  # how long a question with a photo or document waits for its own download
 REPLY_INTRO = {AUTHOR_BOT: "Человек отвечает на это сообщение бота:", AUTHOR_ME: "Человек отвечает на свою запись:"}
 FORWARD_INTRO = "Человек отвечает на пересланное сообщение:"  # any other author is a forward
-ADDRESSED_INTRO = "Человек отметил это сообщение 🙏: оно обращено к тебе. Оно написано {when}."
+ADDRESSED_INTRO = "Человек отметил это сообщение ❤: оно обращено к тебе. Оно написано {when}."
 CONTEXT_INTRO = "Записи журнала перед ним (время, автор, текст):"
 CONTEXT_SIZE = 10  # REQ-TRIGGER-5: about ten entries, as a pass reads (REQ-CONTRACT-2)
 DELETED_MARK = " (удалено)"
@@ -134,7 +134,7 @@ class Agent:
         addressed: Message | None = None,
     ) -> str:
         """REQ-TURN-2: the current time in the person's zone, and the replied text, introduced by who wrote it.
-        REQ-TRIGGER-5: for a message addressed with 🙏, when it was written and the entries before it."""
+        REQ-TRIGGER-5: for a message addressed with ❤, when it was written and the entries before it."""
         local = self.local_now(uid)
         lines = [f"Сейчас {local:%Y-%m-%d %H:%M}, {WEEKDAYS[local.weekday()]}, зона {self.tz_of(uid).key}."]
         if addressed is not None:

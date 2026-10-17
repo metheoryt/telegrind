@@ -241,12 +241,12 @@ def snapshot_media_at_turn(monkeypatch, app):
 
 
 async def test_a_question_on_a_photo_waits_for_its_download(rig, tmp_path, monkeypatch):
-    """REQ-MSG-2, REQ-TURN-1: a photo addressed with 🙏: the turn starts after the file is stored."""
+    """REQ-MSG-2, REQ-TURN-1: a photo addressed with ❤: the turn starts after the file is stored."""
     app, _, _ = rig
     app.bot, app.media = GatedBot(), MediaJobs(app)
     seen = snapshot_media_at_turn(monkeypatch, app)
     await app.on_message(user_message(photo=True, caption="сколько тут?"))
-    await app.on_reaction(reaction(emoji="🙏"))
+    await app.on_reaction(reaction(emoji="❤"))
     try:
         await asyncio.sleep(0.3)  # the download hangs; the answer must not have started its turn
         assert seen == [] and records(tmp_path) == []
@@ -265,7 +265,7 @@ async def test_a_question_on_a_photo_answers_without_it_after_the_wait(rig, tmp_
     monkeypatch.setattr(agent_module, "MEDIA_WAIT_S", 0.2)
     seen = snapshot_media_at_turn(monkeypatch, app)
     await app.on_message(user_message(photo=True, caption="сколько тут?"))
-    await app.on_reaction(reaction(emoji="🙏"))
+    await app.on_reaction(reaction(emoji="❤"))
     try:
         for _ in range(100):
             if records(tmp_path) and app.bot.texts():
@@ -391,7 +391,7 @@ def at(minutes: int) -> datetime:
 
 
 async def test_an_addressed_turn_carries_the_context_before_it(rig, tmp_path):
-    """REQ-TRIGGER-4, REQ-TRIGGER-5: 🙏 → a turn with the entry's text; the instructions say so, date the message
+    """REQ-TRIGGER-4, REQ-TRIGGER-5: ❤ → a turn with the entry's text; the instructions say so, date the message
     and list the entries before it with time and author, a deleted one marked; nothing after it."""
     app, _, _ = rig
     await app.on_message(user_message(text="кофе 1500", message_id=1, date=at(0)))
@@ -400,12 +400,12 @@ async def test_an_addressed_turn_carries_the_context_before_it(rig, tmp_path):
     await app.on_reaction(reaction(message_id=3, emoji="💔"))
     await app.on_message(user_message(text="вчера было не 500, а 5000", message_id=4, date=at(3)))
     await app.on_message(user_message(text="потом", message_id=5, date=at(4)))
-    await app.on_reaction(reaction(message_id=4, emoji="🙏"))
+    await app.on_reaction(reaction(message_id=4, emoji="❤"))
     await app.drain()
     rec = records(tmp_path)[0]
     assert rec["prompt"] == "вчера было не 500, а 5000"
     prompt = system_prompt(rec)
-    assert "🙏" in prompt and "2026-10-15" in prompt
+    assert "❤" in prompt and "2026-10-15" in prompt
     lines = prompt[prompt.index("<<<") :]
     assert lines.index("курс 520") < lines.index("кофе 1500") < lines.index("такси 500")  # a forward is dated by origin
     assert "forward: Иван" in lines and "(удалено)" in lines and "потом" not in lines
@@ -413,14 +413,14 @@ async def test_an_addressed_turn_carries_the_context_before_it(rig, tmp_path):
 
 
 async def test_an_addressed_reply_takes_its_context_around_the_replied_entry(rig, tmp_path):
-    """REQ-TRIGGER-5: 🙏 on a reply → the context is the entries before the replied one, plus the replied text."""
+    """REQ-TRIGGER-5: ❤ on a reply → the context is the entries before the replied one, plus the replied text."""
     app, _, _ = rig
     await app.on_message(user_message(text="старое до", message_id=1, date=at(0)))
     replied = user_message(text="такси 500", message_id=2, date=at(1))
     await app.on_message(replied)
     await app.on_message(user_message(text="новое", message_id=3, date=at(2)))
     await app.on_message(user_message(text="это было 5000", message_id=4, date=at(3), reply_to=replied))
-    await app.on_reaction(reaction(message_id=4, emoji="🙏"))
+    await app.on_reaction(reaction(message_id=4, emoji="❤"))
     await app.drain()
     prompt = system_prompt(records(tmp_path)[0])
     assert "Человек отвечает на свою запись:" in prompt and "такси 500" in prompt
@@ -428,16 +428,16 @@ async def test_an_addressed_reply_takes_its_context_around_the_replied_entry(rig
 
 
 async def test_an_addressed_reply_to_an_answer_continues_its_chain(rig, tmp_path):
-    """REQ-TRIGGER-5, REQ-TURN-3: 🙏 on a message replying to the bot's answer resumes that answer's session."""
+    """REQ-TRIGGER-5, REQ-TURN-3: ❤ on a message replying to the bot's answer resumes that answer's session."""
     app, _, _ = rig
     await app.on_message(user_message(text="/q сколько такси"))
     await app.drain()
     sent_id = app.log_for(7).conn.execute("SELECT message_id FROM entries WHERE author = 'bot'").fetchone()[0]
     answer = bot_message(message_id=sent_id, text=ANSWER)
-    # A reply to the bot is a question at once (REQ-TRIGGER-1); 🙏 on it asks again in the same chain.
+    # A reply to the bot is a question at once (REQ-TRIGGER-1); ❤ on it asks again in the same chain.
     await app.on_message(user_message(text="а за сентябрь", message_id=11, reply_to=answer))
     await app.drain()
-    await app.on_reaction(reaction(message_id=11, emoji="🙏"))
+    await app.on_reaction(reaction(message_id=11, emoji="❤"))
     await app.drain()
     first, _, third = records(tmp_path)
     assert first["argv"][first["argv"].index("--session-id") + 1] == third["argv"][third["argv"].index("--resume") + 1]
@@ -447,7 +447,7 @@ async def test_an_addressed_turn_gives_the_receipt_back(rig, tmp_path):
     """REQ-RECEIPT-4: 👀 replaces the heart for the turn; the heart comes back after the answer."""
     app, _, _ = rig
     await app.on_message(user_message(text="вчера было 5000"))
-    await app.on_reaction(reaction(emoji="🙏"))
+    await app.on_reaction(reaction(emoji="❤"))
     await app.drain()
     assert [r[1] for r in app.bot.reactions()] == ["💔", "👀", "👨‍💻", None, "💔"]
     assert app.log_for(7).entry(10).receipt == "💔" and ANSWER in app.bot.texts()[-1]

@@ -894,7 +894,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
-    { name = "televibe", extras = ["telegram"], specifier = ">=0.4,<0.5" },
+    { name = "televibe", extras = ["telegram"], specifier = ">=0.5,<0.6" },
 ]
 
 [package.metadata.requires-dev]
@@ -909,11 +909,11 @@ dev = [
 
 [[package]]
 name = "televibe"
-version = "0.4.0"
+version = "0.5.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/f4/fc/8717ad78f30af494d3f23a8fffb86d47bc538533ee4975839fa2f081368b/televibe-0.4.0.tar.gz", hash = "sha256:c84ac71e1ae4769bac209a2463119c37b4ac22d27db13cd9f4b9c5067a5a6a2e", size = 79458, upload-time = "2026-10-16T15:47:07.11Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/de/97/f59fd2e1edbf97c885b07548674e70f64d2ef70e618e65653a5519440897/televibe-0.5.0.tar.gz", hash = "sha256:b3c26a6772892f7f416fcd5058501fd1d8c74bcd030373af29d868919b1734af", size = 81196, upload-time = "2026-10-17T06:16:59.743Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/36/a4/80814a49a0fb9999bd40cb094e4c9db9953219918259c8704dd7d64ec390/televibe-0.4.0-py3-none-any.whl", hash = "sha256:254165fbc568642c5fce6a944e9cb8c0c04cad919bf68d5945a11a5550ed2080", size = 36838, upload-time = "2026-10-16T15:47:05.881Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/7c/24d21216a345bf56fa2a6399fc3e27a0cbbb62813128f0e1880845c6045c/televibe-0.5.0-py3-none-any.whl", hash = "sha256:2569da9639a8320b766f46035869a47f91be4f34a6ef06af8915ee5d0289077c", size = 37595, upload-time = "2026-10-17T06:16:58.218Z" },
 ]
 
 [package.optional-dependencies]

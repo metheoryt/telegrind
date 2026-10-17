@@ -11,7 +11,7 @@ telegrind is a multi-user Telegram log: Python stores every message in SQLite th
 - `incoming.py` — what a Telegram message is, lifted into the log's columns.
 - `log.py` — the log (`log.sqlite`): what Telegram sent, nothing derived.
 - `receipts.py` — the heart reaction: «stored; tap to delete».
-- `triggers.py` — what is a question by its text (a reply to the bot, a `/command`); 🙏 on any entry addresses it (`App.on_reaction`); a trailing `?` means nothing and no model decides.
+- `triggers.py` — what is a question by its text (a reply to the bot, a `/command`); ❤ on any entry addresses it (`App.on_reaction`); a trailing `?` means nothing and no model decides.
 - `facts.py` — read-only reads of the agent's `facts.sqlite`.
 - `app.py` — the message path: store first, then react, enqueue or ask.
 - `agent.py` — agent turns (a pass over the tail, or an answer) through televibe.

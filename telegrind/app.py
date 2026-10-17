@@ -21,8 +21,8 @@ from telegrind.triggers import ADDRESS, BARE_Q, BARE_Q_TEXT, question_text
 log = logging.getLogger(__name__)
 
 VOICE_KINDS = ("voice", "video_note")
-ADDRESSED_EMPTY = "Человек отметил это сообщение 🙏, в нём нет текста. Посмотри, что это, и ответь."
-NO_TRANSCRIPT_TEXT = "Голосовое ещё не расшифровано. Поставь 🙏, когда появится расшифровка."
+ADDRESSED_EMPTY = "Человек отметил это сообщение ❤, в нём нет текста. Посмотри, что это, и ответь."
+NO_TRANSCRIPT_TEXT = "Голосовое ещё не расшифровано. Поставь ❤, когда появится расшифровка."
 
 
 class Answerer(Protocol):
@@ -174,7 +174,7 @@ class App:
         author = store.author_of(update.message_id)
         if author is None:
             return  # a message the log never saw
-        if author == AUTHOR_BOT:  # REQ-REACT-1: ignored, but 🙏 on a transcript quote addresses its voice note
+        if author == AUTHOR_BOT:  # REQ-REACT-1: ignored, but ❤ on a transcript quote addresses its voice note
             if reaction_added(update, ADDRESS) and (voice := await self._quoted_voice(uid, update.message_id)):
                 await self.address(uid, voice)
             return

@@ -133,11 +133,11 @@ async def test_photo_and_voice_are_enqueued_once_committed(app):
 
 
 async def test_photo_with_a_question_caption_is_a_log_entry_until_addressed(app):
-    """REQ-MSG-2, REQ-TRIGGER-4: «сколько тут?» on a photo is stored and downloaded; 🙏 then asks with the caption."""
+    """REQ-MSG-2, REQ-TRIGGER-4: «сколько тут?» on a photo is stored and downloaded; ❤ then asks with the caption."""
     await app.on_message(user_message(photo=True, caption="сколько тут?"))
     await app.drain()
     assert app.media_q.jobs == [(7, 10)] and app.rec.answers == [] and app.bot.reactions() == [(10, "💔")]
-    await app.on_reaction(reaction(emoji="🙏"))
+    await app.on_reaction(reaction(emoji="❤"))
     await app.drain()
     assert app.rec.answers == [(7, 10, "сколько тут?")] and app.rec.addressed == [True]
 
@@ -172,9 +172,9 @@ async def test_reaction_deletes_then_restores(app):
     assert app.rec.answers == []
 
 
-@pytest.mark.parametrize("emoji", ["👍", "❤", "❤️", "🔥"])
+@pytest.mark.parametrize("emoji", ["👍", "🔥", "🙏"])
 async def test_other_emoji_delete_nothing_and_ask_nothing(app, emoji):
-    """REQ-REACT-1: only a receipt heart deletes; the default double-tap ❤ and the rest change nothing."""
+    """REQ-REACT-1: only a receipt heart deletes; other emoji change nothing."""
     await app.on_message(user_message(text="x"))
     await app.on_reaction(reaction(emoji=emoji))
     await app.drain()
@@ -182,68 +182,76 @@ async def test_other_emoji_delete_nothing_and_ask_nothing(app, emoji):
     assert app.rec.answers == []
 
 
-async def test_pray_addresses_an_entry_and_keeps_it_a_log_entry(app):
-    """REQ-TRIGGER-4: 🙏 on the person's entry starts an addressed turn with its text; the entry is unchanged."""
+async def test_heart_addresses_an_entry_and_keeps_it_a_log_entry(app):
+    """REQ-TRIGGER-4: ❤ on the person's entry starts an addressed turn with its text; the entry is unchanged."""
     await app.on_message(user_message(text="вчера было не 500, а 5000"))
-    await app.on_reaction(reaction(emoji="🙏"))
+    await app.on_reaction(reaction(emoji="❤"))
     await app.drain()
     entry = app.log_for(7).entry(10)
     assert app.rec.answers == [(7, 10, "вчера было не 500, а 5000")] and app.rec.addressed == [True]
     assert entry.receipt == "💔" and entry.deleted_at is None and entry.revision == 1
 
 
-async def test_pray_kept_or_removed_starts_nothing(app):
-    """REQ-TRIGGER-4: only putting 🙏 counts."""
+async def test_heart_with_a_variation_selector_addresses_too(app):
+    """REQ-TRIGGER-4: ❤️ (U+2764 U+FE0F) is the same reaction as ❤."""
     await app.on_message(user_message(text="x"))
-    await app.on_reaction(reaction(emoji="🙏", old="🙏"))
-    await app.on_reaction(reaction(emoji=None, old="🙏"))
+    await app.on_reaction(reaction(emoji="\u2764\ufe0f"))
+    await app.drain()
+    assert app.rec.addressed == [True]
+
+
+async def test_heart_kept_or_removed_starts_nothing(app):
+    """REQ-TRIGGER-4: only putting ❤ counts."""
+    await app.on_message(user_message(text="x"))
+    await app.on_reaction(reaction(emoji="❤", old="❤"))
+    await app.on_reaction(reaction(emoji=None, old="❤"))
     await app.drain()
     assert app.rec.answers == []
 
 
-async def test_pray_on_a_deleted_entry_restores_and_addresses_it(app):
-    """REQ-REACT-1, REQ-TRIGGER-4: 🙏 replacing the person's 💔 restores the entry and asks."""
+async def test_heart_on_a_deleted_entry_restores_and_addresses_it(app):
+    """REQ-REACT-1, REQ-TRIGGER-4: ❤ replacing the person's 💔 restores the entry and asks."""
     await app.on_message(user_message(text="x"))
     await app.on_reaction(reaction(emoji="💔"))
-    await app.on_reaction(reaction(emoji="🙏", old="💔"))
+    await app.on_reaction(reaction(emoji="❤", old="💔"))
     await app.drain()
     assert app.log_for(7).entry(10).deleted_at is None and app.rec.answers == [(7, 10, "x")]
 
 
-async def test_pray_on_a_forward_and_on_a_bare_photo(app):
+async def test_heart_on_a_forward_and_on_a_bare_photo(app):
     """REQ-TRIGGER-4: a forward is addressable; an entry with no text is asked with the fixed sentence."""
     await app.on_message(user_message(text="курс 520", forward=("user", "Иван")))
     await app.on_message(user_message(photo=True, message_id=11))
-    await app.on_reaction(reaction(emoji="🙏"))
-    await app.on_reaction(reaction(message_id=11, emoji="🙏"))
+    await app.on_reaction(reaction(emoji="❤"))
+    await app.on_reaction(reaction(message_id=11, emoji="❤"))
     await app.drain()
     assert app.rec.answers == [(7, 10, "курс 520"), (7, 11, ADDRESSED_EMPTY)]
 
 
-async def test_pray_on_a_voice_note_and_on_its_transcript_quote(app):
-    """REQ-VOICE-7, REQ-TRIGGER-4: 🙏 on the note or on the bot's quote of it asks with the clean transcript."""
+async def test_heart_on_a_voice_note_and_on_its_transcript_quote(app):
+    """REQ-VOICE-7, REQ-TRIGGER-4: ❤ on the note or on the bot's quote of it asks with the clean transcript."""
     await app.on_message(user_message(voice=15))
     app.log_for(7).record_transcript(10, raw="raw", text="сколько я потратил", cleaned=True, at=1_760_000_001)
     quote = await app.say(7, "🎙 сколько я потратил", reply_to=10)
-    await app.on_reaction(reaction(emoji="🙏"))
-    await app.on_reaction(reaction(message_id=quote.message_id, emoji="🙏"))
+    await app.on_reaction(reaction(emoji="❤"))
+    await app.on_reaction(reaction(message_id=quote.message_id, emoji="❤"))
     await app.drain()
     assert app.rec.answers == [(7, 10, "сколько я потратил"), (7, 10, "сколько я потратил")]
 
 
-async def test_pray_on_a_voice_note_without_a_transcript_says_so(app):
+async def test_heart_on_a_voice_note_without_a_transcript_says_so(app):
     """REQ-VOICE-7: no transcript yet → the fixed sentence, no turn."""
     await app.on_message(user_message(voice=15))
-    await app.on_reaction(reaction(emoji="🙏"))
+    await app.on_reaction(reaction(emoji="❤"))
     await app.drain()
     assert app.rec.answers == [] and app.bot.texts() == [NO_TRANSCRIPT_TEXT]
 
 
-async def test_pray_on_a_bot_answer_is_ignored(app):
-    """REQ-TRIGGER-4: 🙏 on a bot message that is not a transcript quote does nothing."""
+async def test_heart_on_a_bot_answer_is_ignored(app):
+    """REQ-TRIGGER-4: ❤ on a bot message that is not a transcript quote does nothing."""
     await app.on_message(user_message(text="/q x"))
     sent = await app.say(7, "answer", reply_to=10)
-    await app.on_reaction(reaction(message_id=sent.message_id, emoji="🙏"))
+    await app.on_reaction(reaction(message_id=sent.message_id, emoji="❤"))
     await app.drain()
     assert app.rec.answers == [(7, 10, "x")]
 
