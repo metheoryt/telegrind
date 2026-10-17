@@ -15,7 +15,7 @@ from typing import TextIO
 import httpx
 
 from telegrind.config import Config, ConfigError
-from telegrind.facts import Facts
+from telegrind.facts import Facts, FactsUnavailable
 from telegrind.layout import Layout
 from telegrind.log import Log
 
@@ -63,7 +63,10 @@ def doctor(config: Config, out: TextIO) -> int:
         store = Log(layout.log_path(uid))
         try:
             facts = Facts(layout.facts_path(uid))
-            unprocessed = len(store.unprocessed(facts.processed()))
+            try:
+                unprocessed = str(len(store.unprocessed(facts.processed())))
+            except FactsUnavailable as exc:
+                unprocessed = f"unknown, facts.sqlite unavailable ({exc.reason})"
             out.write(
                 f"user {uid}: entries {store.count_entries()}, unprocessed {unprocessed}; "
                 f"media: {_fmt(store.media_counts())}; voice: {_fmt(store.voice_counts())}; "
@@ -111,8 +114,10 @@ async def run(config: Config) -> None:
         app.voice.resume()
         ticker = asyncio.get_running_loop().create_task(scheduler.run(), name="scheduler")
         try:
+            # handle_signals=False: aiogram's own handler would replace _exit_on_sigterm's with a graceful stop and
+            # a drain that can outlast the container's grace period (REQ-TURN-9: exit, keep the markers).
             await build_dispatcher(app).start_polling(
-                bot, allowed_updates=["message", "edited_message", "message_reaction"]
+                bot, allowed_updates=["message", "edited_message", "message_reaction"], handle_signals=False
             )
         finally:
             ticker.cancel()

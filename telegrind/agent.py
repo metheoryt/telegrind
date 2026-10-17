@@ -15,7 +15,8 @@ from televibe.telegram import Chains, Presenter, Reactions, Texts
 
 from telegrind.app import App
 from telegrind.config import Config
-from telegrind.facts import Facts
+from telegrind.facts import Facts, FactsUnavailable
+from telegrind.incoming import AUTHOR_BOT, AUTHOR_ME, author_of, media_of
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +38,9 @@ TEXTS = Texts(
     seven_day="7д",
 )
 REACTIONS = Reactions(done=None, failed_when_sent=False)  # a reaction or a text, never both
+MEDIA_WAIT_S = 30.0  # how long a question with a photo or document waits for its own download
+REPLY_INTRO = {AUTHOR_BOT: "Человек отвечает на это сообщение бота:", AUTHOR_ME: "Человек отвечает на свою запись:"}
+FORWARD_INTRO = "Человек отвечает на пересланное сообщение:"  # any other author is a forward
 WEEKDAYS = ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")
 
 
@@ -100,7 +104,11 @@ class Agent:
         return Facts(self.app.layout.facts_path(uid))
 
     def tz_of(self, uid: int) -> ZoneInfo:
-        name = self.facts(uid).tz() or self.config.default_tz
+        try:
+            name = self.facts(uid).tz() or self.config.default_tz
+        except FactsUnavailable as exc:
+            log.warning("user %d: facts.sqlite unavailable (%s); using %s", uid, exc.reason, self.config.default_tz)
+            name = self.config.default_tz
         try:
             return ZoneInfo(name)
         except (ZoneInfoNotFoundError, ValueError):
@@ -114,12 +122,12 @@ class Agent:
         local = self.local_now(uid)
         return int(local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
 
-    def instructions(self, uid: int, reply_text: str | None = None) -> str:
-        """REQ-TURN-2: the current time in the person's zone, and the replied text when there is one."""
+    def instructions(self, uid: int, reply_text: str | None = None, reply_author: str = AUTHOR_BOT) -> str:
+        """REQ-TURN-2: the current time in the person's zone, and the replied text, introduced by who wrote it."""
         local = self.local_now(uid)
         lines = [f"Сейчас {local:%Y-%m-%d %H:%M}, {WEEKDAYS[local.weekday()]}, зона {self.tz_of(uid).key}."]
         if reply_text:
-            lines += ["Человек отвечает на это сообщение бота:", "<<<", reply_text, ">>>"]
+            lines += [REPLY_INTRO.get(reply_author, FORWARD_INTRO), "<<<", reply_text, ">>>"]
         return "\n".join(lines)
 
     def quota_left(self, uid: int) -> int:
@@ -141,17 +149,24 @@ class Agent:
         if self.quota_left(uid) <= 0:
             await self.app.say(uid, QUOTA_TEXT.format(quota=self.config.turn_quota), message.message_id)
             return
-        reply_text = None
+        reply_text, reply_author = None, AUTHOR_BOT
         if message.reply_to_message is not None:
             replied = store.entry(message.reply_to_message.message_id)
             if replied is not None:
-                reply_text = replied.transcript or replied.text
+                reply_text, reply_author = replied.transcript or replied.text, replied.author
             else:
                 reply_text = message.reply_to_message.text or message.reply_to_message.caption
+                reply_author = author_of(message.reply_to_message)
         tz = self.tz_of(uid)
         chains = self.chains_for(uid)
         presenter = Presenter(self.app.bot, message, reactions=REACTIONS, texts=TEXTS, tz=tz)
         await presenter.accepted()
+        # A question about its own photo or document waits for that file, bounded; the download is not cancelled.
+        media = self.app.media if media_of(message) is not None else None
+        if media is not None and not await media.wait(uid, message.message_id, MEDIA_WAIT_S):
+            log.warning(
+                "user %d: media of %d not stored in %s s; answering without it", uid, message.message_id, MEDIA_WAIT_S
+            )
         store.turn_add("question", self.app.clock())
         try:
             chain = await chains.find(message) or chains.new()
@@ -164,7 +179,7 @@ class Agent:
                 prompt=text,
                 access=Access.FULL,
                 lane=str(uid),
-                instructions=self.instructions(uid, reply_text),
+                instructions=self.instructions(uid, reply_text, reply_author),
                 env=self.env(),
                 timeout_s=self.config.question_timeout_s,
                 tag={"kind": "question", "user": uid},
@@ -208,13 +223,22 @@ class Agent:
         task.add_done_callback(done)
         return True
 
+    @staticmethod
+    def _mark(uid: int, facts: Facts, when: str) -> tuple[int, int] | None:
+        """facts.mark(), or None when facts.sqlite cannot be read now: the change is then unknown."""
+        try:
+            return facts.mark()
+        except FactsUnavailable as exc:
+            log.warning("user %d: facts.sqlite unavailable (%s) %s; change unknown", uid, exc.reason, when)
+            return None
+
     async def run_pass(self, uid: int) -> None:
         if self.engine is None or self.provider is None:
             return
         store, facts = self.app.log_for(uid), self.facts(uid)
         # Entering only queues the turn behind the lane; a question ahead of it runs a pass of its own and
         # writes processed. So `before` is measured at Started, and at entry only if no Started ever came.
-        at_entry, before = facts.mark(), None
+        at_entry, before, started = self._mark(uid, facts, "at entry"), None, False
         store.turn_add("pass", self.app.clock())
         session = self.provider.new_session(self.app.layout.user_dir(uid))
         end: Done | Failed | None = None
@@ -229,8 +253,8 @@ class Agent:
             tag={"kind": "pass", "user": uid},
         ) as turn:
             async for event in turn:
-                if isinstance(event, Started) and before is None:
-                    before = facts.mark()
+                if isinstance(event, Started) and not started:
+                    started, before = True, self._mark(uid, facts, "at start")
                 elif isinstance(event, Done | Failed):
                     end = event
         if not isinstance(end, Done):
@@ -238,7 +262,11 @@ class Agent:
             log.warning("user %d: pass failed: %s", uid, reason)
             return
         digest = end.text.strip()
-        if facts.mark() != (at_entry if before is None else before) and digest:  # REQ-TURN-7
+        baseline, after = (before if started else at_entry), self._mark(uid, facts, "after")
+        if baseline is None or after is None:  # REQ-TURN-7 cannot be decided: post nothing rather than guess
+            log.warning("user %d: pass done, change unknown; digest not posted", uid)
+            return
+        if after != baseline and digest:  # REQ-TURN-7
             await self.app.say(uid, digest, None)
 
     # -- start-up -------------------------------------------------------------------------

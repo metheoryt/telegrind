@@ -8,6 +8,8 @@ from tgkit import FakeBot, user_message
 from telegrind.agent import Agent
 from telegrind.app import App
 from telegrind.config import Config
+from telegrind.facts import Facts, FactsUnavailable
+from telegrind.incoming import incoming
 from telegrind.layout import Layout
 from telegrind.scheduler import Scheduler
 
@@ -128,3 +130,29 @@ async def test_one_failing_user_does_not_stop_the_tick(rig, monkeypatch):
 
     monkeypatch.setattr(sched, "due", due)
     assert await sched.tick() == [8]
+
+
+def _unavailable(*_a, **_kw):
+    raise FactsUnavailable("OperationalError")
+
+
+async def test_unreadable_facts_skip_the_backlog_check(rig, monkeypatch, caplog):
+    """A locked or hot-journalled facts.sqlite is not an empty `processed`: no pass on a guess, one log line."""
+    app, agent, sched, *_ = rig
+    for i in range(3):
+        app.log_for(7).record_received(incoming(user_message(text=f"{i} x", message_id=10 + i), now=1))
+    monkeypatch.setattr(Facts, "processed", _unavailable)
+    sched.on_entry(7)
+    assert agent.started == []
+    lines = [r.getMessage() for r in caplog.records if "7" in r.getMessage() and "OperationalError" in r.getMessage()]
+    assert len(lines) == 1
+
+
+async def test_unreadable_facts_skip_the_quiet_hour(rig, monkeypatch, caplog):
+    """due() says no, and logs, when facts.sqlite cannot be read; the tick goes on."""
+    app, agent, sched, clock, _ = rig
+    app.log_for(7).record_received(incoming(user_message(text="x"), now=1))
+    at_local_hour(clock, agent, 7, 4)
+    monkeypatch.setattr(Facts, "processed", _unavailable)
+    assert sched.due(7) is False
+    assert any("7" in r.getMessage() and "OperationalError" in r.getMessage() for r in caplog.records)

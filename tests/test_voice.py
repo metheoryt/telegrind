@@ -12,6 +12,7 @@ from tgkit import FakeBot, user_message
 from telegrind.agent import Agent, make_provider
 from telegrind.app import App
 from telegrind.config import Config
+from telegrind.facts import Facts, FactsUnavailable
 from telegrind.keyterms import filter_terms
 from telegrind.layout import Layout
 from telegrind.voice import MAX_SECONDS, PREFIX, VoiceJobs, chunks, quote
@@ -221,6 +222,20 @@ async def test_keyterms_come_from_facts(rig):
     await app.drain()
     body = app.scribe.requests[0].content.decode("utf-8", "replace")
     assert "такси" in body and "Kaspi" in body and "bad<x>" not in body
+
+
+async def test_unreadable_facts_mean_no_keyterms_and_a_log_line(rig, monkeypatch, caplog):
+    """A facts.sqlite that cannot be read now costs the keyterms, not the transcript."""
+    app = rig
+
+    def unavailable(self):
+        raise FactsUnavailable("OperationalError")
+
+    monkeypatch.setattr(Facts, "keyterms", unavailable)
+    await app.on_message(user_message(voice=15))
+    await app.drain()
+    assert b"keyterms" not in app.scribe.requests[0].content and app.log_for(7).entry(10).transcript_raw == RAW
+    assert any("7" in r.getMessage() and "OperationalError" in r.getMessage() for r in caplog.records)
 
 
 async def test_resume_runs_pending_jobs(rig):

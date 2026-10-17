@@ -42,6 +42,28 @@ async def download(bot: Any, file_id: str) -> bytes:
 class MediaJobs:
     def __init__(self, app: App, *, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
         self.app, self.sleep = app, sleep
+        self.tasks: dict[tuple[int, int], asyncio.Task[Any]] = {}  # (uid, message_id) → its running download
+
+    def _start(self, uid: int, message_id: int) -> None:
+        key = (uid, message_id)
+        task = self.app.spawn(self.run(uid, message_id))
+        self.tasks[key] = task
+
+        def done(t: asyncio.Task[Any]) -> None:
+            if self.tasks.get(key) is t:
+                del self.tasks[key]
+
+        task.add_done_callback(done)
+
+    async def wait(self, uid: int, message_id: int, timeout_s: float) -> bool:
+        """Wait for this message's download, if one is running; False when it is still running after `timeout_s`.
+
+        The download is not cancelled by a timeout: it goes on, and the file arrives for the next turn."""
+        task = self.tasks.get((uid, message_id))
+        if task is None:
+            return True
+        done, _ = await asyncio.wait({task}, timeout=timeout_s)
+        return bool(done)
 
     def enqueue(self, uid: int, inc: Incoming) -> None:
         assert inc.media is not None
@@ -50,12 +72,12 @@ class MediaJobs:
         if inc.media.size is not None and inc.media.size > MAX_BYTES:
             store.media_set(inc.message_id, "too_large", error=f"{inc.media.size} bytes")
             return
-        self.app.spawn(self.run(uid, inc.message_id))
+        self._start(uid, inc.message_id)
 
     def resume(self) -> None:
         for uid in self.app.layout.users():
             for row in self.app.log_for(uid).media_pending():
-                self.app.spawn(self.run(uid, row["message_id"]))
+                self._start(uid, row["message_id"])
 
     async def run(self, uid: int, message_id: int) -> None:
         store = self.app.log_for(uid)

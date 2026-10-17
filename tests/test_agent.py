@@ -11,10 +11,14 @@ from conftest import records, turn_env
 from televibe import Engine
 from tgkit import NOW, FakeBot, bot_message, user_message
 
+from telegrind import agent as agent_module
 from telegrind.agent import NO_AGENT_TEXT, QUOTA_TEXT, Agent, make_provider
 from telegrind.app import App
 from telegrind.config import Config
+from telegrind.facts import Facts, FactsUnavailable
 from telegrind.layout import Layout
+from telegrind.log import Log
+from telegrind.media import MediaJobs
 
 ANSWER = "televibe fixture"  # the `result` text of tests/fixtures/claude/turn.jsonl
 
@@ -90,7 +94,31 @@ async def test_reply_to_the_answer_resumes_the_session_with_the_quoted_text(rig,
     assert (
         first["argv"][first["argv"].index("--session-id") + 1] == second["argv"][second["argv"].index("--resume") + 1]
     )
-    assert ANSWER in second["argv"][second["argv"].index("--append-system-prompt") + 1]
+    prompt = second["argv"][second["argv"].index("--append-system-prompt") + 1]
+    assert ANSWER in prompt and "Человек отвечает на это сообщение бота:" in prompt
+
+
+def system_prompt(rec):
+    return rec["argv"][rec["argv"].index("--append-system-prompt") + 1]
+
+
+@pytest.mark.parametrize(
+    ("first", "wording"),
+    [
+        ({}, "Человек отвечает на свою запись:"),
+        ({"forward": ("user", "Иван Петров")}, "Человек отвечает на пересланное сообщение:"),
+    ],
+    ids=["own", "forward"],
+)
+async def test_reply_quote_is_worded_by_who_wrote_the_replied_entry(rig, tmp_path, first, wording):
+    """REQ-TURN-2: the quoted text is introduced as the person's own entry, or a forward — not as the bot's."""
+    app, _, _ = rig
+    replied = user_message(text="перевёл 5000", **first)
+    await app.on_message(replied)
+    await app.on_message(user_message(text="это много?", message_id=11, reply_to=replied))
+    await app.drain()
+    prompt = system_prompt(records(tmp_path)[0])
+    assert wording in prompt and "перевёл 5000" in prompt and "сообщение бота" not in prompt
 
 
 async def test_new_question_is_a_new_session(rig, tmp_path):
@@ -147,6 +175,105 @@ async def test_pass_posts_the_digest_only_when_processed_changed(rig, tmp_path):
     agent.turn_env = turn_env(tmp_path)  # a plain replay changes no table
     await agent.run_pass(7)
     assert len(app.bot.texts()) == 1
+
+
+@pytest.mark.parametrize("failing", ["every", "at_start", "after"])
+async def test_pass_with_unreadable_facts_posts_nothing(rig, tmp_path, monkeypatch, caplog, failing):
+    """REQ-TURN-7 without a reading: a pass whose before or after mark cannot be read posts no digest and logs.
+
+    `at_start` fails only the Started mark: falling back to the entry mark would see a change and post."""
+    app, agent, _ = rig
+    await app.on_message(user_message(text="4500 такси"))
+    agent.turn_env = turn_env(tmp_path, mode="pass", sleep=0.2)  # the pass does change processed
+    real_mark, calls = Facts.mark, []
+
+    def mark(self):
+        calls.append(1)
+        n = len(calls)
+        if failing == "every" or (failing == "at_start" and n == 2) or (failing == "after" and n == 3):
+            raise FactsUnavailable("OperationalError")
+        return real_mark(self)
+
+    monkeypatch.setattr(Facts, "mark", mark)
+    await agent.run_pass(7)
+    assert len(calls) == 3  # entry, Started, after: the turn ran
+    assert app.bot.texts() == []
+    assert any("7" in r.getMessage() and "OperationalError" in r.getMessage() for r in caplog.records)
+
+
+async def test_unreadable_tz_falls_back_to_the_default_zone(rig, monkeypatch, caplog):
+    """settings.tz that cannot be read now is the default zone, with a log line."""
+    _, agent, _ = rig
+
+    def tz(self):
+        raise FactsUnavailable("OperationalError")
+
+    monkeypatch.setattr(Facts, "tz", tz)
+    assert agent.tz_of(7).key == agent.config.default_tz
+    assert any("7" in r.getMessage() and "OperationalError" in r.getMessage() for r in caplog.records)
+
+
+class GatedBot(FakeBot):
+    """A FakeBot whose download_file waits for `gate`: a slow getFile."""
+
+    def __init__(self):
+        super().__init__()
+        self.gate = asyncio.Event()
+
+    async def download_file(self, file_path, destination=None, **kwargs):
+        await self.gate.wait()
+        return await super().download_file(file_path, destination, **kwargs)
+
+
+def snapshot_media_at_turn(monkeypatch, app):
+    """What the entry's media_sha256 was when the question's turn was booked (turn_add runs just before it)."""
+    seen = []
+    real = Log.turn_add
+
+    def turn_add(self, kind, at):
+        if kind == "question":
+            seen.append(app.log_for(7).entry(10).media_sha256)
+        return real(self, kind, at)
+
+    monkeypatch.setattr(Log, "turn_add", turn_add)
+    return seen
+
+
+async def test_a_question_on_a_photo_waits_for_its_download(rig, tmp_path, monkeypatch):
+    """REQ-MSG-2, REQ-TURN-1: a photo with a question caption: the turn starts after the file is stored."""
+    app, _, _ = rig
+    app.bot, app.media = GatedBot(), MediaJobs(app)
+    seen = snapshot_media_at_turn(monkeypatch, app)
+    await app.on_message(user_message(photo=True, caption="сколько тут?"))
+    try:
+        await asyncio.sleep(0.3)  # the download hangs; the answer must not have started its turn
+        assert seen == [] and records(tmp_path) == []
+    finally:
+        app.bot.gate.set()  # or the rig's drain waits on the download forever
+    await app.drain()
+    stored = app.log_for(7).entry(10).media_sha256
+    assert stored is not None and seen == [stored]
+    assert len(records(tmp_path)) == 1 and ANSWER in app.bot.texts()[-1]
+
+
+async def test_a_question_on_a_photo_answers_without_it_after_the_wait(rig, tmp_path, monkeypatch, caplog):
+    """The wait is bounded: past MEDIA_WAIT_S the turn runs without the file, and says so in the log."""
+    app, _, _ = rig
+    app.bot, app.media = GatedBot(), MediaJobs(app)
+    monkeypatch.setattr(agent_module, "MEDIA_WAIT_S", 0.2)
+    seen = snapshot_media_at_turn(monkeypatch, app)
+    await app.on_message(user_message(photo=True, caption="сколько тут?"))
+    try:
+        for _ in range(100):
+            if records(tmp_path) and app.bot.texts():
+                break
+            await asyncio.sleep(0.05)
+        assert seen == [None] and ANSWER in app.bot.texts()[-1]
+        assert any("10" in r.getMessage() and "without" in r.getMessage() for r in caplog.records)
+    finally:
+        app.bot.gate.set()
+    await app.drain()
+    assert app.log_for(7).entry(10).media_sha256 is not None  # the download itself was not cancelled
 
 
 class SignalBot(FakeBot):

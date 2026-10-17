@@ -14,7 +14,7 @@ from televibe import TelevibeError
 from telegrind.agent import NEVER_IN_A_TURN, TURN_ENV, Agent
 from telegrind.app import App
 from telegrind.cleanup import Cleaned, CleanupError, clean
-from telegrind.facts import Facts
+from telegrind.facts import Facts, FactsUnavailable
 from telegrind.incoming import Incoming
 from telegrind.keyterms import filter_terms
 from telegrind.media import BACKOFF_S, MAX_ATTEMPTS, download
@@ -118,7 +118,11 @@ class VoiceJobs:
         ).fetchone()
         if row is None or not key:
             return
-        terms = filter_terms(Facts(self.app.layout.facts_path(uid)).keyterms())
+        try:
+            terms = filter_terms(Facts(self.app.layout.facts_path(uid)).keyterms())
+        except FactsUnavailable as exc:  # the transcript is worth more than the hints
+            log.warning("user %d: facts.sqlite unavailable (%s); transcribing without keyterms", uid, exc.reason)
+            terms = []
         raw: str | None = None
         attempts = int(row["attempts"])
         async with self._slots:

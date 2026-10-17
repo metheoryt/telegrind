@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 
 from telegrind.agent import Agent
 from telegrind.app import App
+from telegrind.facts import FactsUnavailable
 
 log = logging.getLogger(__name__)
 
@@ -33,11 +34,20 @@ class Scheduler:
             return False
         if self.app.log_for(uid).turns_since("pass", self.agent.day_start(uid)) > 0:
             return False
-        return self.unprocessed_count(uid) > 0
+        try:
+            return self.unprocessed_count(uid) > 0
+        except FactsUnavailable as exc:  # unknown is not empty: skip this tick, the next one asks again
+            log.warning("user %d: facts.sqlite unavailable (%s); quiet-hour check skipped", uid, exc.reason)
+            return False
 
     def on_entry(self, uid: int) -> None:
         """REQ-SCHED-2: a backlog over the limit starts a pass; start_pass keeps it to one pending."""
-        if self.unprocessed_count(uid) > self.app.config.backlog_limit and self.agent.start_pass(uid):
+        try:
+            over = self.unprocessed_count(uid) > self.app.config.backlog_limit
+        except FactsUnavailable as exc:  # unknown is not empty: no pass on a guess
+            log.warning("user %d: facts.sqlite unavailable (%s); backlog check skipped", uid, exc.reason)
+            return
+        if over and self.agent.start_pass(uid):
             log.info("user %d: backlog pass started", uid)
 
     async def tick(self) -> list[int]:

@@ -6,24 +6,43 @@ import sqlite3
 from pathlib import Path
 
 
+class FactsUnavailable(Exception):  # noqa: N818 - the name says what a caller must handle
+    """facts.sqlite exists but cannot be read now (a hot journal, a lock): skip the decision, never act on {}."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 class Facts:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, timeout: float = 5.0) -> None:
         self.path = Path(path)
+        self.timeout = timeout
 
     def exists(self) -> bool:
         return self.path.is_file()
 
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(f"file:{self.path}?mode=ro", uri=True, timeout=5.0)
+        return sqlite3.connect(f"file:{self.path}?mode=ro", uri=True, timeout=self.timeout)
 
     def _rows(self, sql: str) -> list[tuple]:
+        """Rows, or [] when the file or the table is not there yet. Anything else is FactsUnavailable: a hot
+        journal or a lock must not read as an empty table, or a caller acts on nothing (a needless pass,
+        no keyterms, the default zone)."""
         if not self.exists():
             return []
-        conn = self._connect()
+        try:
+            conn = self._connect()
+        except sqlite3.Error as exc:
+            raise FactsUnavailable(type(exc).__name__) from exc
         try:
             return conn.execute(sql).fetchall()
-        except sqlite3.OperationalError:  # no such table: the agent has not made it yet
-            return []
+        except sqlite3.OperationalError as exc:
+            if str(exc).startswith("no such table"):  # the agent has not made it yet
+                return []
+            raise FactsUnavailable(type(exc).__name__) from exc
+        except sqlite3.Error as exc:
+            raise FactsUnavailable(type(exc).__name__) from exc
         finally:
             conn.close()
 

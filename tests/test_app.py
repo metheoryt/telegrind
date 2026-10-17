@@ -6,6 +6,7 @@ from tgkit import FakeBot, bot_message, reaction, user_message
 from telegrind.app import App
 from telegrind.config import Config
 from telegrind.layout import Layout
+from telegrind.media import MediaJobs
 from telegrind.triggers import BARE_Q_TEXT
 
 
@@ -26,6 +27,9 @@ class Queue:
 
     def enqueue(self, uid, inc):
         self.jobs.append((uid, inc.message_id))
+
+    async def wait(self, uid, message_id, timeout_s):
+        return True
 
 
 @pytest.fixture
@@ -111,8 +115,8 @@ async def test_start_command_reaches_the_agent(app):
     assert app.rec.answers == [(7, 10, "/start")]
 
 
-async def test_photo_and_voice_are_enqueued_after_the_receipt(app):
-    """REQ-MSG-2, REQ-VOICE-1: media and voice jobs are enqueued once the entry is committed and receipted."""
+async def test_photo_and_voice_are_enqueued_once_committed(app):
+    """REQ-MSG-2, REQ-VOICE-1: media and voice jobs are enqueued once the entry is committed."""
     await app.on_message(user_message(photo=True))
     await app.on_message(user_message(voice=15, message_id=11))
     assert app.media_q.jobs == [(7, 10)] and app.voice_q.jobs == [(7, 11)]
@@ -212,3 +216,40 @@ async def test_a_failing_spawned_task_is_logged_and_drain_survives(app, caplog):
     errors = [r for r in caplog.records if r.levelname == "ERROR"]
     assert len(errors) == 1 and "ValueError" in errors[0].getMessage() and "kaput" in errors[0].getMessage()
     assert done == [1]
+
+
+def media_status(app, message_id=10):
+    row = app.log_for(7).conn.execute("SELECT status FROM media WHERE message_id = ?", (message_id,)).fetchone()
+    return None if row is None else row["status"]
+
+
+async def test_a_crash_in_the_reaction_does_not_lose_the_media_job(app, monkeypatch):
+    """REQ-LOG-1, REQ-MSG-2: the job row is written before any await, so resume() finds it whatever happens next."""
+    app.media = MediaJobs(app)
+
+    async def boom(**kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(app.bot, "set_message_reaction", boom)
+    with pytest.raises(RuntimeError):
+        await app.on_message(user_message(photo=True))
+    assert media_status(app) == "pending"
+    await app.drain()
+
+
+class BrokenWatcher:
+    def on_entry(self, uid):
+        raise TypeError("int() argument must be a string, not 'NoneType'")
+
+
+async def test_a_failing_backlog_check_does_not_lose_the_message_or_its_job(app, caplog):
+    """Agent-owned data that breaks the backlog check (a NULL revision) is logged; the entry, receipt, job stand."""
+    app.media, app.watcher = MediaJobs(app), BrokenWatcher()
+    await app.on_message(user_message(photo=True))
+    entry = app.log_for(7).entry(10)
+    assert entry is not None and entry.receipt == "💔" and media_status(app) == "pending"
+    assert any(
+        r.levelname in ("WARNING", "ERROR") and "TypeError" in r.getMessage() and "7" in r.getMessage()
+        for r in caplog.records
+    )
+    await app.drain()

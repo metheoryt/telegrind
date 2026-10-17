@@ -28,6 +28,10 @@ class JobQueue(Protocol):
     def enqueue(self, uid: int, inc: Incoming) -> None: ...
 
 
+class MediaQueue(JobQueue, Protocol):
+    async def wait(self, uid: int, message_id: int, timeout_s: float) -> bool: ...
+
+
 class BacklogWatcher(Protocol):
     def on_entry(self, uid: int) -> None: ...
 
@@ -40,7 +44,7 @@ class App:
         bot: Any,
         layout: Layout,
         answerer: Answerer | None = None,
-        media: JobQueue | None = None,
+        media: MediaQueue | None = None,
         voice: JobQueue | None = None,
         watcher: BacklogWatcher | None = None,
         clock: Callable[[], int] = now,
@@ -84,6 +88,16 @@ class App:
             store.close()
         self.logs.clear()
 
+    def entry_changed(self, uid: int) -> None:
+        """Tell the backlog watcher. It reads the agent's facts.sqlite, which the agent owns and may have left in
+        any shape; a failure there costs this check, never the message (the next entry asks again)."""
+        if self.watcher is None:
+            return
+        try:
+            self.watcher.on_entry(uid)
+        except Exception as exc:
+            log.error("user %d: backlog check failed: %s", uid, type(exc).__name__)
+
     async def react(self, uid: int, message_id: int, emoji: str | None) -> None:
         """Set or clear the receipt; a failure costs the cue and nothing else (REQ-RECEIPT-1)."""
         try:
@@ -119,15 +133,16 @@ class App:
         store = self.log_for(uid)
         inc = incoming(msg, now=self.clock())
         store.record_received(inc)  # REQ-LOG-1: committed before anything else
-        question = question_text(inc.text, reply_to_author=store.author_of(inc.reply_to), author=inc.author)
-        if question is None:
-            await self.react(uid, inc.message_id, FIRST)
-            if self.watcher is not None:
-                self.watcher.on_entry(uid)
+        # The job rows too, before any await: a crash in the reaction or the backlog check must not lose them,
+        # since resume() finds a job by its row. The runners spawned here start at the next await.
         if inc.media is not None and self.media is not None:
             self.media.enqueue(uid, inc)
         if inc.voice is not None and self.voice is not None:
             self.voice.enqueue(uid, inc)
+        question = question_text(inc.text, reply_to_author=store.author_of(inc.reply_to), author=inc.author)
+        if question is None:
+            await self.react(uid, inc.message_id, FIRST)
+            self.entry_changed(uid)
         if question is BARE_Q:
             await self.say(uid, BARE_Q_TEXT, inc.message_id)
         elif isinstance(question, str) and self.answerer is not None:
@@ -144,8 +159,7 @@ class App:
             return
         if before.receipt is not None:  # REQ-RECEIPT-2: only a receipted message moves its heart
             await self.react(uid, entry.message_id, next_receipt(before.receipt))
-        if self.watcher is not None:
-            self.watcher.on_entry(uid)
+        self.entry_changed(uid)
 
     async def on_reaction(self, update: MessageReactionUpdated) -> None:
         uid = self.allowed(update.chat, update.user)
@@ -158,5 +172,5 @@ class App:
         entry = store.record_reaction(
             update.message_id, deleted=bool(update.new_reaction), payload=payload, at=self.clock()
         )
-        if entry is not None and self.watcher is not None:
-            self.watcher.on_entry(uid)
+        if entry is not None:
+            self.entry_changed(uid)
