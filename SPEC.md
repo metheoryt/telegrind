@@ -589,29 +589,28 @@ A table the person keeps elsewhere — the v1 workbook, a list of the things
 they own — comes in once, the way a statement does: a document in the chat,
 read by the agent in the pass that processes its entry. After that the log
 is the source of truth and the table is not read again. Settled with the
-owner on 2026-10-18 over a 39-row list of things.
+owner on 2026-10-18 over a 39-row list of things; what that list's columns
+mean was the owner's to say, and is in their `CLAUDE.md`, not here.
 
 - **REQ-CONTRACT-18** — A table the person drops in is a CSV document (the
   image has no reader for XLSX). Each row becomes a fact row with `entry_id`
-  = the document's entry and `at` = the row's own date of the thing (bought,
-  weighed, paid), never the import's. Amounts written in the sheet's locale
-  («₸1 194 991,00», «33,33%») are stored as numbers. Not stored: columns
-  computed from other columns (an age, a discount, a ratio), error cells
-  («#DIV/0!»), a price with no date of its own (a shop's current price),
-  which is a reading of today, not a fact, and an estimate the person made
-  for themselves (what a thing might fetch on resale), which is set again
-  per lot when it is actually put up. A row the person says is already
-  recorded elsewhere is not recorded there twice: a list of things bought,
-  whose purchases are already expenses, goes into a table of its own
-  (`items`) that no sum of expenses reads. The pass's closing line says how
-  many rows were imported and what was left out. The same table dropped
-  again is not imported again unless the person asks.
-- **REQ-CONTRACT-19** — What later happens to an imported row — an item sold,
-  given away, put up for sale — is a row of its own, with the `entry_id` of
-  the message that says so and a column naming the imported row, never an
+  = the document's entry and `at` = the row's own date of the thing, never
+  the import's. Only facts are stored: not a column computed from others, an
+  error cell, a value with no date of its own (a current price), or an
+  estimate the person made for themselves. What is already recorded
+  elsewhere is not recorded twice. Which columns of one particular table to
+  take, which table they go to and what to leave out is the person's call,
+  said with the import; the agent asks when it is unclear and writes the
+  answer into the person's `CLAUDE.md` (REQ-CONTRACT-8). The contract names
+  no table's columns: the fact tables are the agent's (section 1). The pass's
+  closing line says how many rows were imported and what was left out. The
+  same table dropped again is not imported again unless the person asks.
+- **REQ-CONTRACT-19** — What later happens to an imported row («продал»,
+  «отдал», «выставил») is a row of its own, with the `entry_id` of the
+  message that says so and a column naming the imported row, never an
   `UPDATE` of the imported row: re-deriving the document's entry
-  (REQ-CONTRACT-3) would put the old values back. The current state of a
-  thing is a query over both.
+  (REQ-CONTRACT-3) would put the old values back. The current state is a
+  query over both.
 
 ---
 
