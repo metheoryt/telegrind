@@ -597,8 +597,10 @@ owner on 2026-10-18 over a 39-row list of things.
   weighed, paid), never the import's. Amounts written in the sheet's locale
   («₸1 194 991,00», «33,33%») are stored as numbers. Not stored: columns
   computed from other columns (an age, a discount, a ratio), error cells
-  («#DIV/0!»), and a price with no date of its own (a shop's current price),
-  which is a reading of today, not a fact. A row the person says is already
+  («#DIV/0!»), a price with no date of its own (a shop's current price),
+  which is a reading of today, not a fact, and an estimate the person made
+  for themselves (what a thing might fetch on resale), which is set again
+  per lot when it is actually put up. A row the person says is already
   recorded elsewhere is not recorded there twice: a list of things bought,
   whose purchases are already expenses, goes into a table of its own
   (`items`) that no sum of expenses reads. The pass's closing line says how
