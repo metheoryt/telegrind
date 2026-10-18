@@ -102,9 +102,11 @@ class VoiceJobs:
         store.voice_enqueue(inc.message_id, inc.voice.file_id)
         if not self.app.config.elevenlabs_key:
             store.voice_set(inc.message_id, "skipped", error="no ELEVENLABS_API_KEY")
+            self.app.spawn(self.app.on_transcript(uid, inc.message_id))  # REQ-VOICE-8: a question is told
             return
         if inc.voice.duration > MAX_SECONDS:
             store.voice_set(inc.message_id, "too_long", error=f"{inc.voice.duration} s")
+            self.app.spawn(self.app.on_transcript(uid, inc.message_id))
             return
         self.running.start(uid, inc.message_id, self.run(uid, inc.message_id, inc.voice.filename))
 
@@ -149,6 +151,7 @@ class VoiceJobs:
                     store.voice_set(message_id, "failed" if final else "pending", error=reason, attempt=True)
                     if final:
                         log.warning("user %d: voice %d not transcribed: %s", uid, message_id, reason)
+                        self.app.spawn(self.app.on_transcript(uid, message_id))  # REQ-VOICE-8: a question is told
                         return
                     await self.sleep(BACKOFF_S[attempts - 1])
             cleaned, ok = await self._clean(uid, raw, terms)

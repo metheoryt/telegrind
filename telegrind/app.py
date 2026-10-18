@@ -12,7 +12,7 @@ from aiogram.types import Chat, Message, MessageReactionUpdated, ReactionTypeEmo
 from televibe.telegram import reaction_added
 
 from telegrind.config import Config
-from telegrind.incoming import AUTHOR_BOT, Incoming, incoming
+from telegrind.incoming import AUTHOR_BOT, AUTHOR_ME, Incoming, incoming
 from telegrind.layout import Layout
 from telegrind.log import Entry, Log, now
 from telegrind.receipts import FIRST, holds_heart, next_receipt
@@ -215,9 +215,17 @@ class App:
 
     async def on_transcript(self, uid: int, message_id: int) -> None:
         """REQ-VOICE-7: a transcribed note that would be a question as text is asked now; its heart comes off,
-        as a question was never a log entry. A note under ❤ is already asked by the ❤ path."""
-        entry = self.log_for(uid).entry(message_id)
-        if entry is None or entry.addressed_at is not None or (question := self._question_of(uid, entry)) is None:
+        as a question was never a log entry. A note under ❤ is already asked by the ❤ path. REQ-VOICE-8: a job
+        that ended with no transcript tells a note replying to the bot so, as the ❤ path does."""
+        store = self.log_for(uid)
+        entry = store.entry(message_id)
+        if entry is None or entry.addressed_at is not None:
+            return
+        if not entry.transcript:
+            if entry.author == AUTHOR_ME and store.author_of(entry.reply_to) == AUTHOR_BOT:
+                await self.say(uid, NO_TRANSCRIPT_TEXT, message_id)
+            return
+        if (question := self._question_of(uid, entry)) is None:
             return
         if entry.receipt is not None:
             await self.react(uid, message_id, None)

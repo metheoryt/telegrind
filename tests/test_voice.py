@@ -188,6 +188,44 @@ async def test_a_note_replying_to_the_bot_under_heart_is_asked_once(rig, tmp_pat
     assert len([r for r in records(tmp_path) if "--json-schema" not in r["argv"]]) == 1
 
 
+async def test_a_note_replying_to_an_answer_continues_its_session(rig, tmp_path):
+    """REQ-VOICE-7, REQ-TURN-3: a note replying to an answer resumes that answer's chain, as a text reply does."""
+    app = rig
+    await app.on_message(user_message(text="/q сколько такси?"))
+    await app.drain()
+    sent_id = app.log_for(7).conn.execute("SELECT message_id FROM entries WHERE author = 'bot'").fetchone()[0]
+    await app.on_message(user_message(voice=15, message_id=11, reply_to=bot_message(message_id=sent_id)))
+    await app.drain()
+    first, second = [r for r in records(tmp_path) if "--json-schema" not in r["argv"]]
+    session = first["argv"][first["argv"].index("--session-id") + 1]
+    assert second["argv"][second["argv"].index("--resume") + 1] == session
+    assert ask_text()["text"] in second["prompt"]
+
+
+@pytest.mark.parametrize("how", ["failed", "too_long"])
+async def test_a_note_replying_to_the_bot_with_no_transcript_is_told_so(rig, tmp_path, how):
+    """REQ-VOICE-8: a note that would have been a question and got no transcript is answered with the fixed
+    sentence, as under ❤; it starts no turn."""
+    app = rig
+    if how == "failed":
+        app.scribe.fail = 99
+    sent = await app.say(7, "12 000 тенге", reply_to=None)
+    duration = MAX_SECONDS + 1 if how == "too_long" else 15
+    await app.on_message(user_message(voice=duration, reply_to=bot_message(message_id=sent.message_id)))
+    await app.drain()
+    assert app.bot.texts()[-1] == NO_TRANSCRIPT_TEXT
+    assert [r for r in records(tmp_path) if "--json-schema" not in r["argv"]] == []
+
+
+async def test_a_note_with_no_transcript_outside_a_reply_is_told_nothing(rig):
+    """REQ-VOICE-8: a log note that failed says nothing; the missing quote says it."""
+    app = rig
+    app.scribe.fail = 99
+    await app.on_message(user_message(voice=15))
+    await app.drain()
+    assert NO_TRANSCRIPT_TEXT not in app.bot.texts()
+
+
 async def test_wait_on_a_note_with_no_running_job_returns_at_once(rig):
     """REQ-VOICE-7: nothing running for the note → nothing to wait for."""
     assert await rig.voice.wait(7, 10, 0.01)

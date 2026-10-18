@@ -318,7 +318,10 @@ in the chat as a quote, so the person sees what the bot heard.
 - **REQ-VOICE-8** — A Scribe failure is retried with backoff up to 5
   attempts; a failure that persists is recorded in `voice_jobs` with its
   reason, and the entry stays with no transcript. The person is told nothing
-  — the missing quote says it.
+  — the missing quote says it — unless the note would have been a question
+  (it replies to a bot message, REQ-VOICE-7): a note that ends with no
+  transcript (failed, too long, no key) is then answered with the same fixed
+  sentence as under ❤.
 
 ---
 
