@@ -226,7 +226,17 @@ class Log:
             self._append(message_id, "transcribed", {"raw": raw, "text": text, "cleaned": cleaned}, at)
         return self._entry(message_id)
 
-    def record_bot_sent(self, message_id: int, text: str, reply_to: int | None, raw: dict[str, Any], at: int) -> Entry:
+    def record_bot_sent(
+        self,
+        message_id: int,
+        text: str,
+        reply_to: int | None,
+        raw: dict[str, Any],
+        at: int,
+        *,
+        draft: str | None = None,
+    ) -> Entry:
+        """REQ-LOG-7; an answer the editor rewrote (REQ-TURN-12) keeps the full text in a `drafted` event."""
         with self._tx():
             self.conn.execute(
                 "INSERT INTO entries(message_id, author, kind, occurred_at, received_at, text, reply_to, raw, revision)"
@@ -234,6 +244,8 @@ class Log:
                 (message_id, AUTHOR_BOT, at, at, text, reply_to, json.dumps(raw, ensure_ascii=False)),
             )
             self._append(message_id, "bot_sent", raw, at)
+            if draft is not None:
+                self._append(message_id, "drafted", {"text": draft}, at)
         return self._entry(message_id)
 
     def set_receipt(self, message_id: int, emoji: str | None) -> None:

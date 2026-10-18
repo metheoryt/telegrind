@@ -435,6 +435,19 @@ the person; by contract it runs a pass first (REQ-CONTRACT-6).
   replaces: it is long, the answer will come there, and entries can be sent
   meanwhile. No second message is sent; the answer comes as usual. Entries
   sent meanwhile are logged at once; another question waits in the lane.
+- **REQ-TURN-12** — A question's answer passes an editor before it is sent.
+  The agent's `Done.text` is the full answer; a one-shot call
+  (`provider.ask`, `sonnet`, no tools, `editor.SYSTEM`) rewrites it, given the
+  question and the text it replies to, the way Aicha would tell her boss:
+  the result in a line, then only what needs him (a question, a decision, a
+  doubt, an assumption he can refute), warm, no lists or table names. It
+  keeps every question and numbered proposal word for word and adds no
+  number, fact or reason the full answer lacks. The agent's messages never
+  reach the live draft while the editor is on, so the full answer is never
+  shown. A failed or malformed edit sends the full answer. The entry stores
+  the edited text; the full one is a `drafted` event on the same entry, and
+  the chain's session still holds it, so «подробнее» is answered from it.
+  `EDIT_ANSWERS=0` turns the editor off. Pass digests are not edited.
 
 ---
 
@@ -683,7 +696,7 @@ deploys automatically.
 - **REQ-DEPLOY-3** — Configuration is environment only: `BOT_TOKEN`,
   `ALLOWED_USER_IDS`, `CLAUDE_CODE_OAUTH_TOKEN`, `ELEVENLABS_API_KEY`,
   `DATA_DIR`, `ACCOUNT_HOME`, `DEFAULT_TZ`, `QUIET_HOUR`, `REMIND_HOUR`, `BACKLOG_LIMIT`,
-  `TURN_QUOTA`, `MAX_CONCURRENT`. `.env` next to `compose.yml` is gitignored. No secret is
+  `TURN_QUOTA`, `MAX_CONCURRENT`, `EDIT_ANSWERS`. `.env` next to `compose.yml` is gitignored. No secret is
   ever logged; `ELEVENLABS_API_KEY` and `BOT_TOKEN` never enter a turn's
   environment.
 - **REQ-DEPLOY-4** — The container runs as an unprivileged user that owns

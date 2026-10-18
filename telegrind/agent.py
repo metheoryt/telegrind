@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
-from collections.abc import AsyncIterable, AsyncIterator, Mapping
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiogram.types import Message
-from televibe import Access, Account, ClaudeCode, Done, Engine, Failed, Limits, Started
+from televibe import Access, Account, ClaudeCode, Done, Engine, Failed, Limits, Started, TelevibeError
 from televibe.events import Event
+from televibe.events import Message as AgentMessage
 from televibe.telegram import Chains, Presenter, Reactions, Texts
 
 from telegrind.app import App
 from telegrind.config import Config
+from telegrind.editor import EditorError, edit
 from telegrind.facts import Facts, FactsUnavailable
 from telegrind.incoming import AUTHOR_BOT, AUTHOR_ME, author_of, media_of
 
@@ -60,12 +63,16 @@ def make_provider(config: Config) -> ClaudeCode | None:
 
 
 class _Watched:
-    """A turn's events, passed through unchanged, remembering what the presenter will have sent."""
+    """A turn's events, remembering what the presenter will have sent.
 
-    def __init__(self, events: AsyncIterable[Event]) -> None:
-        self._events = events
+    With an editor (REQ-TURN-12) the agent's messages never reach the draft, and `Done` carries the edited text;
+    `draft` keeps the agent's own. Without one, the events pass through unchanged."""
+
+    def __init__(self, events: AsyncIterable[Event], editor: Callable[[str], Awaitable[str]] | None = None) -> None:
+        self._events, self._editor = events, editor
         self.end: Done | Failed | None = None
         self.limits: Limits | None = None
+        self.draft: str | None = None
         self.started = asyncio.Event()
 
     async def __aiter__(self) -> AsyncIterator[Event]:
@@ -74,9 +81,23 @@ class _Watched:
                 self.started.set()
             elif isinstance(event, Limits):
                 self.limits = event
-            elif isinstance(event, Done | Failed):
+            elif isinstance(event, AgentMessage) and self._editor is not None:
+                continue
+            elif isinstance(event, Done) and self._editor is not None and event.text.strip():
+                self.draft = event.text
+                event = dataclasses.replace(event, text=await self._edited(event.text))
+            if isinstance(event, Done | Failed):
                 self.end = event
             yield event
+
+    async def _edited(self, text: str) -> str:
+        """The editor's text, or the agent's own when the editor fails: an answer is never lost to it."""
+        assert self._editor is not None
+        try:
+            return await self._editor(text)
+        except (TelevibeError, EditorError) as exc:
+            log.warning("answer editor failed (%s); sending the agent's own text", type(exc).__name__)
+            return text
 
     def shown(self, tz: ZoneInfo) -> str:
         """The text the presenter built from the terminal event (presenter._finish), for the log."""
@@ -229,7 +250,7 @@ class Agent:
                 timeout_s=self.config.question_timeout_s,
                 tag={"kind": "question", "user": uid},
             ) as turn:
-                watched = _Watched(turn)
+                watched = _Watched(turn, self._editor(text, reply_text) if self.config.edit_answers else None)
                 notice = asyncio.create_task(self._note_if_long(presenter, watched))
                 try:
                     sent = await presenter.show(watched)
@@ -251,7 +272,18 @@ class Agent:
                 message.message_id,
                 sent.model_dump(mode="json", exclude_none=True),
                 self.app.clock(),
+                draft=watched.draft if watched.draft != watched.shown(tz) else None,
             )
+
+    def _editor(self, question: str, replied: str | None) -> Callable[[str], Awaitable[str]]:
+        """REQ-TURN-12: the full answer rewritten for the person, with the question it answers."""
+        provider = self.provider
+        assert provider is not None
+
+        async def run(draft: str) -> str:
+            return await edit(draft, question=question, replied=replied, provider=provider, env=self.env())
+
+        return run
 
     @staticmethod
     async def _note_if_long(presenter: Presenter, watched: _Watched) -> None:

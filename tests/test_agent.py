@@ -14,7 +14,17 @@ from televibe.telegram import Presenter
 from tgkit import NOW, FakeBot, bot_message, reaction, user_message
 
 from telegrind import agent as agent_module
-from telegrind.agent import ASIDE_EVERY, ASIDE_TEXT, LONG_TURN_TEXT, NO_AGENT_TEXT, QUOTA_TEXT, Agent, make_provider
+from telegrind import editor
+from telegrind.agent import (
+    ASIDE_EVERY,
+    ASIDE_TEXT,
+    LONG_TURN_TEXT,
+    NO_AGENT_TEXT,
+    QUOTA_TEXT,
+    Agent,
+    _Watched,
+    make_provider,
+)
 from telegrind.app import App
 from telegrind.config import Config
 from telegrind.facts import Facts, FactsUnavailable
@@ -33,6 +43,7 @@ def config(tmp_path, **env):
             "DATA_DIR": str(tmp_path / "data"),
             "ACCOUNT_HOME": str(tmp_path / "acc"),
             "CLAUDE_CODE_OAUTH_TOKEN": "tok",
+            "EDIT_ANSWERS": "0",  # the editor's own tests turn it on (REQ-TURN-12)
             **env,
         }
     )
@@ -499,3 +510,59 @@ async def test_a_quick_question_says_nothing_about_time(rig, tmp_path, monkeypat
     await app.drain()
     await asyncio.sleep(0.5)
     assert app.bot.texts() == [ANSWER] and notes == []
+
+
+EDITED = "В сентябре на такси ушло 12 400 ₸, 9 поездок."  # structured_output of tests/fixtures/claude/ask_edit.jsonl
+
+
+async def test_the_answer_is_edited_before_it_is_sent(rig, tmp_path):
+    """REQ-TURN-12: the full answer goes through the one-shot editor with the question; the edited text is sent and
+    stored, the full one kept as a `drafted` event."""
+    app, agent, _ = rig
+    agent.config = config(tmp_path, EDIT_ANSWERS="1")
+    agent.turn_env = turn_env(tmp_path, ask="ask_edit.jsonl")
+    await app.on_message(user_message(text="/q сколько такси?"))
+    await app.drain()
+    assert app.bot.texts() == [EDITED]
+    store = app.log_for(7)
+    sent_id = store.conn.execute("SELECT message_id FROM entries WHERE author = 'bot'").fetchone()[0]
+    assert store.entry(sent_id).text == EDITED
+    drafted = [e.payload for e in store.events(sent_id) if e.kind == "drafted"]
+    assert drafted == [{"text": ANSWER}]
+    turn, ask = records(tmp_path)
+    assert "--json-schema" not in turn["argv"] and "--json-schema" in ask["argv"]
+    argv = ask["argv"]
+    assert argv[argv.index("--model") + 1] == editor.MODEL and argv[argv.index("--system-prompt") + 1] == editor.SYSTEM
+    assert ask["prompt"] == editor.prompt_for(ANSWER, "/q сколько такси?")
+    assert "ELEVENLABS_API_KEY" not in ask["env"] and "BOT_TOKEN" not in ask["env"]
+
+
+async def test_a_failed_edit_sends_the_full_answer(rig, tmp_path, caplog):
+    """REQ-TURN-12: an editor answer not in the schema never loses the answer: the agent's own text is sent."""
+    app, agent, _ = rig
+    agent.config = config(tmp_path, EDIT_ANSWERS="1")
+    agent.turn_env = turn_env(tmp_path, ask="turn.jsonl")  # a result with no structured_output
+    await app.on_message(user_message(text="/q сколько такси?"))
+    await app.drain()
+    assert app.bot.texts() == [ANSWER] and "answer editor failed" in caplog.text
+    store = app.log_for(7)
+    sent_id = store.conn.execute("SELECT message_id FROM entries WHERE author = 'bot'").fetchone()[0]
+    assert [e.kind for e in store.events(sent_id)] == ["bot_sent"]
+
+
+async def test_with_the_editor_the_draft_never_shows_the_agents_text():
+    """REQ-TURN-12: the agent's messages are held back from the presenter; Done carries the edited text."""
+    from televibe.events import Done
+    from televibe.events import Message as AgentMessage
+
+    async def events():
+        yield AgentMessage(text="полный ответ")
+        yield Done(session=None, text="полный ответ", usage={})
+
+    async def shorten(text):
+        return "коротко"
+
+    seen = [e async for e in _Watched(events(), shorten)]
+    assert len(seen) == 1 and seen[0].text == "коротко"
+    plain = [e async for e in _Watched(events())]
+    assert [type(e).__name__ for e in plain] == ["Message", "Done"] and plain[1].text == "полный ответ"

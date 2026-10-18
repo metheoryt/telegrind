@@ -8,6 +8,7 @@
 | `claude/limit.jsonl` | `limit.jsonl` | Claude Code 2.1.294 | New session refused at the five-hour usage limit (`usage_limit_reached`), exit code 1. |
 | `claude/ask.jsonl` | recorded for telegrind | Claude Code 2.1.301 | The voice cleanup call (`cleanup.SCHEMA`, `cleanup.SYSTEM` with no keyterms) on «четыре пятьсот такси вчера ну вечером»; `structured_output: {"text": "Вчера вечером потратил 4500 на такси.", "question": false}`. |
 | `claude/ask_question.jsonl` | recorded for telegrind | Claude Code 2.1.301 | The same call on «сколько я потратил на такси в сентябре»; `structured_output: {"text": "Сколько я потратил на такси в сентябре?", "question": true}`. |
+| `claude/ask_edit.jsonl` | recorded for telegrind | Claude Code 2.1.302 | The answer editor (`editor.SCHEMA`, `editor.SYSTEM`, `editor.prompt_for`) on a taxi answer that names its table; `structured_output: {"text": "В сентябре на такси ушло 12 400 ₸, 9 поездок."}`. Recorded 2026-10-18 the same way as the two above. |
 
 The two `ask*` files were recorded on 2026-10-16 with a real call on the subscription. The argv is televibe's own
 (`check_ask_args` + `ClaudeCode.ask_argv`, prompt `cleanup.prompt_for(raw)`, system `cleanup.system_for([])`, model
