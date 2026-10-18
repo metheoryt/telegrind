@@ -209,7 +209,7 @@ the cycle is a heart, because every one of them means the same thing.
   Telegram has no call to read a message's reactions back, so the receipt has
   to remember itself.
 - **REQ-RECEIPT-4** — A question gets no receipt. Its reactions belong to
-  `televibe`'s `Presenter` (REQ-TURN-6): 👀 when accepted, 👨‍💻 while running,
+  `televibe`'s `Presenter` (REQ-TURN-6): 👀 when accepted and while running,
   cleared when the answer is sent, 🤷 only when nothing could be sent. A
   message addressed with ❤ (REQ-TRIGGER-4) stops being a log entry, so it
   loses its receipt when ❤ is put and gets 💔 back when ❤ is taken off; a
@@ -410,9 +410,10 @@ the person; by contract it runs a pass first (REQ-CONTRACT-6).
   `facts.sqlite` concurrently. `max_concurrent` is configurable (default 2),
   so two people's turns may overlap.
 - **REQ-TURN-6** — A question turn is shown by `televibe.telegram.Presenter`
-  with `Reactions(done=None, failed_when_sent=False)` and Russian `Texts`,
+  with `Reactions(working="👀", done=None, failed_when_sent=False)` and Russian `Texts`,
   `tz` set to the person's zone, so a usage-limit failure names the reset
-  time in their clock. The sent answer is stored (REQ-LOG-7).
+  time in their clock. The sent answer is stored (REQ-LOG-7). No fixed sentence
+  the bot sends, and no posted pass digest, ends in a period (the owner's word).
 - **REQ-TURN-7** — A pass turn is shown by nothing while it runs. When it
   ends in `Done`, `Done.text` is posted to the chat only if the pass changed
   `processed` (its row count or its greatest `revision`), measured by Python

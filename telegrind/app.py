@@ -22,8 +22,8 @@ log = logging.getLogger(__name__)
 
 VOICE_KINDS = ("voice", "video_note")
 ADDRESSED_EMPTY = "Человек отметил это сообщение ❤, в нём нет текста. Посмотри, что это, и ответь."
-NO_TRANSCRIPT_TEXT = "Это голосовое не получилось расшифровать."
-SLOW_TRANSCRIPT_TEXT = "Голосовое всё ещё расшифровывается. Сними ❤ и поставь снова, когда появится расшифровка."
+NO_TRANSCRIPT_TEXT = "Это голосовое не получилось расшифровать"
+SLOW_TRANSCRIPT_TEXT = "Голосовое всё ещё расшифровывается. Сними ❤ и поставь снова, когда появится расшифровка"
 VOICE_WAIT_S = 600.0  # Scribe with its retries and the cleanup call; past this, the person is told
 
 

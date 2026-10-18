@@ -64,13 +64,13 @@ async def rig(tmp_path, fake_path):
 async def test_question_turn_answers_links_and_stores(rig, tmp_path):
     """REQ-TURN-1, REQ-TURN-2, REQ-TURN-3, REQ-TURN-6, REQ-TURN-8, REQ-LOG-7.
 
-    The fake's answer is sent, linked to the chain, stored; reactions 👀 → 👨‍💻 → cleared."""
+    The fake's answer is sent, linked to the chain, stored; reactions 👀 → 👀 → cleared."""
     app, agent, _ = rig
     agent.turn_env = {**turn_env(tmp_path), "BOT_TOKEN": "x", "ELEVENLABS_API_KEY": "y"}  # never reach the child
     await app.on_message(user_message(text="/q сколько такси?"))
     await app.drain()
     bot, store = app.bot, app.log_for(7)
-    assert [r[1] for r in bot.reactions()] == ["👀", "👨‍💻", None]
+    assert [r[1] for r in bot.reactions()] == ["👀", "👀", None]
     texts = bot.texts()
     assert len(texts) == 1 and ANSWER in texts[0]
     sent_id = store.conn.execute("SELECT message_id FROM entries WHERE author = 'bot'").fetchone()[0]
@@ -461,7 +461,7 @@ async def test_an_addressed_turn_leaves_no_receipt(rig, tmp_path):
     await app.on_message(user_message(text="вчера было 5000"))
     await app.on_reaction(reaction(emoji="❤"))
     await app.drain()
-    assert [r[1] for r in app.bot.reactions()] == ["💔", None, "👀", "👨‍💻", None]
+    assert [r[1] for r in app.bot.reactions()] == ["💔", None, "👀", "👀", None]
     assert app.log_for(7).entry(10).receipt is None and ANSWER in app.bot.texts()[-1]
 
 
@@ -581,3 +581,21 @@ async def test_with_the_editor_the_draft_never_shows_the_agents_text():
 def test_an_edited_answer_never_ends_in_a_period(text, shown):
     """REQ-TURN-12: the final period goes; an ellipsis and other marks stay."""
     assert editor.without_final_period(text) == shown
+
+
+def test_no_fixed_sentence_ends_in_a_period():
+    """REQ-TURN-6: what the bot says in its own words never ends in a period."""
+    from telegrind import app as app_module
+
+    fixed = [
+        agent_module.NO_AGENT_TEXT,
+        agent_module.QUOTA_TEXT,
+        agent_module.FAILED_TEXT,
+        agent_module.LONG_TURN_TEXT,
+        app_module.NO_TRANSCRIPT_TEXT,
+        app_module.SLOW_TRANSCRIPT_TEXT,
+        *(getattr(agent_module.TEXTS, f) for f in ("timeout", "cancelled", "session_lost", "provider_error")),
+        *(getattr(agent_module.TEXTS, f) for f in ("spawn_error", "usage_limit")),
+    ]
+    assert [t for t in fixed if t.endswith(".")] == []
+    assert agent_module.REACTIONS.queued == agent_module.REACTIONS.working == "👀"

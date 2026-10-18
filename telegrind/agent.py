@@ -17,7 +17,7 @@ from televibe.telegram import Chains, Presenter, Reactions, Texts
 
 from telegrind.app import App
 from telegrind.config import Config
-from telegrind.editor import EditorError, edit
+from telegrind.editor import EditorError, edit, without_final_period
 from telegrind.facts import Facts, FactsUnavailable
 from telegrind.incoming import AUTHOR_BOT, AUTHOR_ME, author_of, media_of
 
@@ -27,22 +27,24 @@ TURN_ENV: Mapping[str, str] = {"DISABLE_AUTOUPDATER": "1", "CLAUDE_CODE_DISABLE_
 NEVER_IN_A_TURN = frozenset({"BOT_TOKEN", "ELEVENLABS_API_KEY"})
 # A prompt, not a password: ruff reads the "PASS" in the name as one.
 PASS_PROMPT = "Разбери необработанные записи журнала по правилам CLAUDE.md. Закончи одной строкой: что извлечено."  # noqa: S105
-NO_AGENT_TEXT = "Сейчас не могу ответить: агент не подключён. Запись сохранена."
-QUOTA_TEXT = "На сегодня вопросы закончились (лимит {quota}). Запись сохранена; спроси завтра."
-FAILED_TEXT = "Не получилось ответить. Запись сохранена, попробуй ещё раз."
+NO_AGENT_TEXT = "Сейчас не могу ответить: агент не подключён. Запись сохранена"
+QUOTA_TEXT = "На сегодня вопросы закончились (лимит {quota}). Запись сохранена; спроси завтра"
+FAILED_TEXT = "Не получилось ответить. Запись сохранена, попробуй ещё раз"
 TEXTS = Texts(
-    timeout="Не успела ответить за отведённое время.",
-    cancelled="Ответ отменён.",
-    session_lost="Потеряла нить разговора. Спроси новым сообщением, не ответом.",
-    provider_error="Не получилось ответить.",
-    spawn_error="Не смогла начать ответ.",
-    usage_limit="Лимит подписки исчерпан, сброс в {resets_at:%H:%M}.",
+    timeout="Не успела ответить за отведённое время",
+    cancelled="Ответ отменён",
+    session_lost="Потеряла нить разговора. Спроси новым сообщением, не ответом",
+    provider_error="Не получилось ответить",
+    spawn_error="Не смогла начать ответ",
+    usage_limit="Лимит подписки исчерпан, сброс в {resets_at:%H:%M}",
     five_hour="5ч",
     seven_day="7д",
 )
-REACTIONS = Reactions(done=None, failed_when_sent=False)  # a reaction or a text, never both
+REACTIONS = Reactions(
+    working="👀", done=None, failed_when_sent=False
+)  # a reaction or a text, never both; 👀 throughout
 LONG_TURN_S = 60.0  # REQ-TURN-11: a question still running after this is told it is long
-LONG_TURN_TEXT = "Это надолго. Отвечу сюда, как закончу; записи можно слать дальше."
+LONG_TURN_TEXT = "Это надолго. Отвечу сюда, как закончу; записи можно слать дальше"
 MEDIA_WAIT_S = 30.0  # how long a question with a photo or document waits for its own download
 REPLY_INTRO = {AUTHOR_BOT: "Человек отвечает на это сообщение бота:", AUTHOR_ME: "Человек отвечает на свою запись:"}
 FORWARD_INTRO = "Человек отвечает на пересланное сообщение:"  # any other author is a forward
@@ -349,7 +351,7 @@ class Agent:
             reason = end.reason if isinstance(end, Failed) else "no terminal event"
             log.warning("user %d: pass failed: %s", uid, reason)
             return
-        digest = end.text.strip()
+        digest = without_final_period(end.text.strip())
         baseline, after = (before if started else at_entry), self._mark(uid, facts, "after")
         if baseline is None or after is None:  # REQ-TURN-7 cannot be decided: post nothing rather than guess
             log.warning("user %d: pass done, change unknown; digest not posted", uid)
