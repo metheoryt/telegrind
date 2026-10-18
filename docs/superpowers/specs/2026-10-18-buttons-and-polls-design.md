@@ -204,8 +204,11 @@ string, holding either an offer or a poll. The exact syntax is the builder's
     multiple-choice poll. The editor keeps a question and the control intact.
   - The aside every fifth turn (REQ-CONTRACT-17) is skipped when the answer
     already asks something.
-  - Acquaintance (REQ-CONTRACT-16): the first round asks the name as text;
-    «он / она» is a poll on the next turn.
+  - Acquaintance (REQ-CONTRACT-16) is one free-text question, «Как к вам
+    обращаться?» (the owner's wording, 2026-10-18): the person answers in their
+    own words with a name, a name and patronymic or a nickname, plus a pronoun
+    and «ты/вы» where it applies. No poll; Aicha uses «вы» until told
+    otherwise, and takes what was not said as not stated.
 - **Opt-in in televibe.** `Presenter` parses controls only when the bot turns
   it on, so 0.7 changes nothing for a bot that does not; telegrind turns it on.
 
