@@ -718,7 +718,7 @@ becomes one.
 - Forking a chain, streaming answers word by word.
 - Deletion of a Telegram message: the Bot API does not report it to a plain
   bot; the reaction gesture is the deletion.
-- Rollups, exports. Calendars: reminders go out as Telegram messages only.
+- Rollups, exports. A calendar is not built yet: reminders go out as Telegram messages.
 
 ## 14. Tests
 
