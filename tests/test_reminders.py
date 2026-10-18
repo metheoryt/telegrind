@@ -19,7 +19,7 @@ from telegrind.triggers import question_text
 TZ = ZoneInfo("Asia/Almaty")
 TABLE = (
     "CREATE TABLE reminders(entry_id INTEGER NOT NULL, what TEXT NOT NULL, due TEXT, monthly_day INTEGER,"
-    " time TEXT, done INTEGER NOT NULL DEFAULT 0);"
+    " time TEXT, done INTEGER NOT NULL DEFAULT 0, proposed INTEGER NOT NULL DEFAULT 0);"
 )
 
 
@@ -71,13 +71,15 @@ def test_the_text_is_the_persons_words_and_a_late_one_says_when():
 
 
 def test_facts_reads_only_open_reminders(tmp_path):
-    """REQ-REMIND-1, REQ-FACTS-2: rows with done = 1 are closed; no table yet means none."""
+    """REQ-REMIND-1, REQ-REMIND-5, REQ-FACTS-2: a closed row (done = 1) and an offered one the person has not
+    accepted (proposed = 1) are not read; no table yet means none."""
     path = tmp_path / "facts.sqlite"
     assert Facts(path).reminders() == []
     with sqlite3.connect(path) as conn:
         conn.executescript(
-            TABLE + "INSERT INTO reminders VALUES (5, 'a', '2026-10-22', NULL, '15:00', 0),"
-            " (6, 'b', NULL, 22, NULL, 0), (7, 'c', '2026-10-22', NULL, NULL, 1);"
+            TABLE + "INSERT INTO reminders VALUES (5, 'a', '2026-10-22', NULL, '15:00', 0, 0),"
+            " (6, 'b', NULL, 22, NULL, 0, 0), (7, 'c', '2026-10-22', NULL, NULL, 1, 0),"
+            " (8, 'd', '2026-10-22', NULL, NULL, 0, 1);"
         )
     assert sorted(Facts(path).reminders(), key=lambda r: r.entry_id) == [
         Reminder(5, "a", "2026-10-22", None, "15:00"),
@@ -94,8 +96,8 @@ def rig(tmp_path):
     app.log_for(7)
     with sqlite3.connect(app.layout.facts_path(7)) as conn:
         conn.executescript(
-            TABLE + "INSERT INTO reminders VALUES (12, 'позвонить Арману', '2026-10-21', NULL, '15:30', 0),"
-            " (13, 'рассрочка Eurodent', NULL, 21, NULL, 0);"
+            TABLE + "INSERT INTO reminders VALUES (12, 'позвонить Арману', '2026-10-21', NULL, '15:30', 0, 0),"
+            " (13, 'рассрочка Eurodent', NULL, 21, NULL, 0, 0), (14, 'только предложено', NULL, 21, NULL, 0, 1);"
         )
 
     async def sleep(_):
@@ -127,6 +129,7 @@ async def test_each_reminder_goes_out_once_at_its_time(rig):
     at(clock, 22, 10)
     await sched.tick()
     assert len(app.bot.texts()) == 2
+    assert "только предложено" not in "".join(app.bot.texts())  # REQ-REMIND-5: an offer is never sent
 
 
 async def test_a_failed_send_is_retried_on_the_next_tick(rig):

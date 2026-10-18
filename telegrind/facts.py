@@ -76,7 +76,9 @@ class Facts:
         return str(rows[0][0]) if rows else None
 
     def reminders(self) -> list[Reminder]:
-        rows = self._rows("SELECT entry_id, what, due, monthly_day, time FROM reminders WHERE done = 0")
+        rows = self._rows(
+            "SELECT entry_id, what, due, monthly_day, time FROM reminders WHERE done = 0 AND proposed = 0"
+        )
         return [
             Reminder(int(e), str(w), d and str(d), None if m is None else int(m), t and str(t))
             for e, w, d, m, t in rows

@@ -463,8 +463,8 @@ The two files and four tables Python depends on.
   INTEGER NOT NULL, at INTEGER NOT NULL)`, `keyterms(term TEXT PRIMARY KEY)`,
   `settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)` and
   `reminders(entry_id INTEGER NOT NULL, what TEXT NOT NULL, due TEXT,
-  monthly_day INTEGER, time TEXT, done INTEGER NOT NULL DEFAULT 0)`
-  (REQ-REMIND-1). The
+  monthly_day INTEGER, time TEXT, done INTEGER NOT NULL DEFAULT 0,
+  proposed INTEGER NOT NULL DEFAULT 0)` (REQ-REMIND-1, REQ-REMIND-5). The
   agent creates them on its first pass. `settings` may hold `tz`, an IANA zone name; Python
   reads it for the quiet hour and the presenter, defaulting to
   `DEFAULT_TZ` (default `Asia/Almaty`).
@@ -600,8 +600,9 @@ file formats are measured, not specified (section 12).
 ### REMIND
 
 - **REQ-REMIND-1** — A reminder exists only because the person asked for one
-  («напомни 22-го заплатить рассрочку», «напоминай каждый месяц 22-го»);
-  the agent never makes one from a debt, a bill or a date it merely read.
+  («напомни 22-го заплатить рассрочку», «напоминай каждый месяц 22-го»)
+  or accepted the agent's offer (REQ-REMIND-5); the agent never turns on one
+  by itself from a debt, a bill or a date it read.
   The agent keeps them in `reminders` (REQ-FACTS-2), a row per request:
   `what` in the person's words, `due` a local date `YYYY-MM-DD` for a
   one-off or `monthly_day` (1–31) for a monthly one, which falls on the
@@ -626,6 +627,13 @@ file formats are measured, not specified (section 12).
 - **REQ-REMIND-4** — A reply to a reminder is a question like any reply to
   the bot (REQ-TRIGGER-1): «перенеси на завтра», «отмени», «оплатил» reach
   the agent, which updates the row in that turn.
+- **REQ-REMIND-5** — The agent may offer a reminder where one would help —
+  a payment, a return or a deadline with a date still ahead — at the end of
+  an answer or in a pass's digest (REQ-TURN-7), numbered, one line each. An
+  offer is a row with `proposed = 1`, which Python never sends. The
+  person's reply («да», «1 и 3», «нет») is a question (REQ-TRIGGER-1): an
+  accepted offer becomes `proposed = 0`, a declined one `done = 1`. Nothing
+  is offered twice: an entry with any row in `reminders` gets no new offer.
 
 ---
 
