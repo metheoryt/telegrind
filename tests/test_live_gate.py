@@ -52,7 +52,7 @@ UID = 7
 FIRST_ID = 10
 QUESTION_ID = 900
 FRESH_ID = 800
-PYTHON_TABLES = {"processed", "keyterms", "settings", "accounts", "sqlite_sequence"}
+PYTHON_TABLES = {"processed", "keyterms", "settings", "reminders", "accounts", "sqlite_sequence"}
 NOT_A_QUANTITY = {"id", "at", "due", "revision"}  # and every *_at / *_id column: times and references
 # What the agent may leave in the person's directory (REQ-CONTRACT-12).
 ALLOWED_FILES = re.compile(r"(log|facts)\.sqlite(-wal|-shm|-journal)?|CLAUDE\.md|media")

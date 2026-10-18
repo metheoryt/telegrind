@@ -52,6 +52,7 @@ class Config:
     account_home: Path
     default_tz: str
     quiet_hour: int
+    remind_hour: int
     backlog_limit: int
     turn_quota: int
     max_concurrent: int
@@ -88,6 +89,7 @@ class Config:
             account_home=Path(env.get("ACCOUNT_HOME", "").strip() or "/claude"),
             default_tz=tz,
             quiet_hour=_int(env, "QUIET_HOUR", 4, low=0, high=23),
+            remind_hour=_int(env, "REMIND_HOUR", 10, low=0, high=23),
             backlog_limit=_int(env, "BACKLOG_LIMIT", 50, low=1, high=100_000),
             turn_quota=_int(env, "TURN_QUOTA", 50, low=0, high=100_000),
             max_concurrent=_int(env, "MAX_CONCURRENT", 2, low=1, high=64),

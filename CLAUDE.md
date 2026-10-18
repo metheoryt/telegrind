@@ -18,6 +18,7 @@ telegrind is a multi-user Telegram log: Python stores every message in SQLite th
 - `media.py` — photos and documents into `media/<sha256>`, after the commit.
 - `voice.py`, `scribe.py`, `cleanup.py`, `keyterms.py` — voice notes: ElevenLabs Scribe, cleanup, transcript post.
 - `scheduler.py` — when a pass runs: the quiet hour, or a backlog over the limit.
+- `reminders.py` — the day's reminders from the agent's `reminders` table, one message, no model.
 - `bot.py` — aiogram wiring: three handlers, each a line.
 - `cli.py` — `telegrind run` and `telegrind doctor`.
 

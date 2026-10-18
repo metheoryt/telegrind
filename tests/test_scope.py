@@ -83,5 +83,5 @@ def test_facts_sqlite_is_opened_read_only_only():
     assert facts.count("sqlite3.connect") == 1
     assert re.search(r"sqlite3\.connect\(f\"file:\{self\.path\}\?mode=ro\", uri=True", facts)
     tables = set(re.findall(r"\bFROM\s+(\w+)", facts))
-    assert tables == {"processed", "keyterms", "settings"}, tables
+    assert tables == {"processed", "keyterms", "settings", "reminders"}, tables
     assert not re.search(r"\b(INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|REPLACE)\b", facts)

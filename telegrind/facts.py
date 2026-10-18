@@ -1,8 +1,9 @@
-"""Read-only reads of the agent's facts.sqlite: the three tables Python depends on (SPEC REQ-FACTS-2, REQ-SCOPE-2)."""
+"""Read-only reads of the agent's facts.sqlite: the four tables Python depends on (SPEC REQ-FACTS-2, REQ-SCOPE-2)."""
 
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -12,6 +13,16 @@ class FactsUnavailable(Exception):  # noqa: N818 - the name says what a caller m
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+@dataclass(frozen=True)
+class Reminder:
+    """REQ-REMIND-1: one open obligation with a date — a one-off `due` (local YYYY-MM-DD) or a `monthly_day`."""
+
+    entry_id: int
+    what: str
+    due: str | None
+    monthly_day: int | None
 
 
 class Facts:
@@ -61,3 +72,7 @@ class Facts:
     def tz(self) -> str | None:
         rows = self._rows("SELECT value FROM settings WHERE key = 'tz'")
         return str(rows[0][0]) if rows else None
+
+    def reminders(self) -> list[Reminder]:
+        rows = self._rows("SELECT entry_id, what, due, monthly_day FROM reminders WHERE done = 0")
+        return [Reminder(int(e), str(w), d and str(d), None if m is None else int(m)) for e, w, d, m in rows]

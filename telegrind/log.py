@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS voice_jobs(
 CREATE TABLE IF NOT EXISTS chain_links(message_id INTEGER PRIMARY KEY, chain_id TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS chain_sessions(chain_id TEXT PRIMARY KEY, session TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS turns(id INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS reminded(day TEXT PRIMARY KEY, at INTEGER NOT NULL);
 """
 
 ENTRY_COLUMNS = (
@@ -327,6 +328,14 @@ class Log:
 
     def turns_since(self, kind: str, since: int) -> int:
         return self.conn.execute("SELECT count(*) FROM turns WHERE kind = ? AND at >= ?", (kind, since)).fetchone()[0]
+
+    def reminded_on(self, day: str) -> bool:
+        """REQ-REMIND-3: whether the day's reminders went out (a local YYYY-MM-DD)."""
+        return self.conn.execute("SELECT 1 FROM reminded WHERE day = ?", (day,)).fetchone() is not None
+
+    def mark_reminded(self, day: str, at: int) -> None:
+        with self._tx():
+            self.conn.execute("INSERT OR IGNORE INTO reminded(day, at) VALUES (?, ?)", (day, at))
 
     def unprocessed(self, processed: dict[int, int]) -> list[Entry]:
         """Entries a pass would process (REQ-CONTRACT-2), as Python judges it from `processed`."""

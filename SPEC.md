@@ -59,10 +59,10 @@ and the import of bank statements the person drops in (section 8, STATEMENTS).
   SDK. The agent is reached only through `televibe`. A test fails the build
   otherwise.
 - **REQ-SCOPE-2** — No Python module in `telegrind/` opens `facts.sqlite` for
-  writing. The only reads of it are the three tables of REQ-FACTS-2. A test
+  writing. The only reads of it are the four tables of REQ-FACTS-2. A test
   inspects the sources' AST: the file name is a path literal in the layout
   module alone, every use of that path goes to the read-only reader, which
-  opens it `mode=ro` and reads only those three tables.
+  opens it `mode=ro` and reads only those four tables.
 
 ---
 
@@ -448,7 +448,7 @@ unit tests; a requirement that no live check can see does not belong here.
 
 ### FACTS
 
-The two files and three tables Python depends on.
+The two files and four tables Python depends on.
 
 - **REQ-FACTS-1** — The agent treats `log.sqlite` as read-only: it attaches it
   with `?mode=ro` and never writes it. The gate compares the log's content
@@ -458,17 +458,19 @@ The two files and three tables Python depends on.
   in those turns, and none gains a row for an entry seeded before them. (A
   byte hash cannot see a write: the log is in WAL mode and Python's connection
   stays open, so writes land in `log.sqlite-wal`.)
-- **REQ-FACTS-2** — `facts.sqlite` holds, besides the fact tables, three
+- **REQ-FACTS-2** — `facts.sqlite` holds, besides the fact tables, four
   tables Python reads: `processed(entry_id INTEGER PRIMARY KEY, revision
-  INTEGER NOT NULL, at INTEGER NOT NULL)`, `keyterms(term TEXT PRIMARY KEY)`
-  and `settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)`. The agent creates
-  them on its first pass. `settings` may hold `tz`, an IANA zone name; Python
+  INTEGER NOT NULL, at INTEGER NOT NULL)`, `keyterms(term TEXT PRIMARY KEY)`,
+  `settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)` and
+  `reminders(entry_id INTEGER NOT NULL, what TEXT NOT NULL, due TEXT,
+  monthly_day INTEGER, done INTEGER NOT NULL DEFAULT 0)` (REQ-REMIND-1). The
+  agent creates them on its first pass. `settings` may hold `tz`, an IANA zone name; Python
   reads it for the quiet hour and the presenter, defaulting to
   `DEFAULT_TZ` (default `Asia/Almaty`).
 - **REQ-FACTS-3** — Every fact table has an `entry_id INTEGER NOT NULL`
   column naming the entry the row was derived from, and an `at INTEGER NOT
   NULL` column saying when the thing happened. The gate checks every table in
-  `sqlite_master` other than the three above.
+  `sqlite_master` other than the four above.
 
 ### CONTRACT
 
@@ -594,6 +596,32 @@ file formats are measured, not specified (section 12).
 - **REQ-SCHED-3** — The schedule survives a restart without state: it is
   recomputed from the clock and the tables at start-up.
 
+### REMIND
+
+- **REQ-REMIND-1** — The agent keeps `reminders` (REQ-FACTS-2): a row per
+  open obligation that has a date — a payment the person owes, a bill, money
+  lent that is due back. `what` is one line in the person's words with the
+  amount; `due` is a local date `YYYY-MM-DD` for a one-off, `monthly_day`
+  (1–31) for a monthly payment such as an instalment, which falls on the
+  month's last day when the month is shorter. `done = 1` closes the row once
+  the log says it was paid or returned. A row is derived from an entry like a
+  fact (its `entry_id`) and is replaced when that entry is re-derived.
+- **REQ-REMIND-2** — Once a person's local time is at or past `REMIND_HOUR`
+  (default 10), Python sends one message a day listing every open row due
+  tomorrow («завтра»), today («сегодня»), and every one-off overdue by one to
+  seven days («просрочено на N дн.»), oldest first. A monthly row is never
+  overdue. Nothing due means no message. No model is called.
+- **REQ-REMIND-3** — The message goes out through the bot's `say`, a
+  `bot_sent` entry with `parse_mode=None`: its text comes from a table the
+  model wrote. The day is recorded in `log.sqlite` (`reminded`) only once the
+  message is out, so a failed send, an unreadable `facts.sqlite` or a bot that
+  was down at the hour retries on the next tick and loses no day.
+- **REQ-REMIND-4** — The message closes by asking the person to write the
+  payment or the return as an ordinary message: that entry is the fact, and
+  the pass that derives it closes the row. A row exists only after the turn
+  that derives it, so an obligation written today and due today waits for the
+  night pass (or a backlog pass).
+
 ---
 
 ## 10. Deploy
@@ -611,7 +639,7 @@ deploys automatically.
   changed path is a documented decision (REQ-LAYOUT-4).
 - **REQ-DEPLOY-3** — Configuration is environment only: `BOT_TOKEN`,
   `ALLOWED_USER_IDS`, `CLAUDE_CODE_OAUTH_TOKEN`, `ELEVENLABS_API_KEY`,
-  `DATA_DIR`, `ACCOUNT_HOME`, `DEFAULT_TZ`, `QUIET_HOUR`, `BACKLOG_LIMIT`,
+  `DATA_DIR`, `ACCOUNT_HOME`, `DEFAULT_TZ`, `QUIET_HOUR`, `REMIND_HOUR`, `BACKLOG_LIMIT`,
   `TURN_QUOTA`, `MAX_CONCURRENT`. `.env` next to `compose.yml` is gitignored. No secret is
   ever logged; `ELEVENLABS_API_KEY` and `BOT_TOKEN` never enter a turn's
   environment.
@@ -690,7 +718,7 @@ becomes one.
 - Forking a chain, streaming answers word by word.
 - Deletion of a Telegram message: the Bot API does not report it to a plain
   bot; the reaction gesture is the deletion.
-- Rollups, reminders, exports.
+- Rollups, exports. Calendars: reminders go out as Telegram messages only.
 
 ## 14. Tests
 

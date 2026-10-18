@@ -21,6 +21,7 @@ def test_compose_mounts_and_env():
         "ACCOUNT_HOME",
         "DEFAULT_TZ",
         "QUIET_HOUR",
+        "REMIND_HOUR",
         "BACKLOG_LIMIT",
         "TURN_QUOTA",
         "MAX_CONCURRENT",

@@ -1,4 +1,4 @@
-"""When a pass runs: the quiet hour, and a backlog over the limit (SPEC section 9)."""
+"""When a pass runs: the quiet hour, and a backlog over the limit; and the day's reminders (SPEC section 9)."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from telegrind.agent import Agent
 from telegrind.app import App
 from telegrind.facts import FactsUnavailable
+from telegrind.reminders import Reminders
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ class Scheduler:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self.app, self.agent, self.tick_s, self.spread_s, self.sleep = app, agent, tick_s, spread_s, sleep
+        self.reminders = Reminders(app, agent)
 
     def unprocessed_count(self, uid: int) -> int:
         return len(self.app.log_for(uid).unprocessed(self.agent.facts(uid).processed()))
@@ -53,8 +55,14 @@ class Scheduler:
     async def tick(self) -> list[int]:
         started: list[int] = []
         for uid in self.app.layout.users():
+            if uid not in self.app.config.allowed_user_ids:
+                continue
             try:
-                if uid not in self.app.config.allowed_user_ids or not self.due(uid):
+                await self.reminders.tick(uid)
+            except Exception as exc:  # a broken reminders table must not stop the pass
+                log.exception("user %d: reminders failed (%s)", uid, type(exc).__name__)
+            try:
+                if not self.due(uid):
                     continue
                 if started:
                     await self.sleep(self.spread_s)

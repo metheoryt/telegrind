@@ -70,7 +70,7 @@ def test_opens_read_only(tmp_path):
 
 
 def _all_reads(facts: Facts) -> list:
-    return [facts.processed, facts.mark, facts.keyterms, facts.tz]
+    return [facts.processed, facts.mark, facts.keyterms, facts.tz, facts.reminders]
 
 
 def test_a_hot_journal_is_unavailable_not_empty(tmp_path):
