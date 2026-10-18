@@ -512,7 +512,7 @@ async def test_a_quick_question_says_nothing_about_time(rig, tmp_path, monkeypat
     assert app.bot.texts() == [ANSWER] and notes == []
 
 
-EDITED = "В сентябре на такси ушло 12 400 ₸, 9 поездок."  # structured_output of tests/fixtures/claude/ask_edit.jsonl
+EDITED = "В сентябре на такси ушло 12 400 ₸, 9 поездок"  # ask_edit.jsonl's structured_output, final period dropped
 
 
 async def test_the_answer_is_edited_before_it_is_sent(rig, tmp_path):
@@ -566,3 +566,18 @@ async def test_with_the_editor_the_draft_never_shows_the_agents_text():
     assert len(seen) == 1 and seen[0].text == "коротко"
     plain = [e async for e in _Watched(events())]
     assert [type(e).__name__ for e in plain] == ["Message", "Done"] and plain[1].text == "полный ответ"
+
+
+@pytest.mark.parametrize(
+    ("text", "shown"),
+    [
+        ("Готово.", "Готово"),
+        ("Готово 🫶", "Готово 🫶"),
+        ("Ну...", "Ну..."),
+        ("Сколько?", "Сколько?"),
+        ("1. да\n2. нет.", "1. да\n2. нет"),
+    ],
+)
+def test_an_edited_answer_never_ends_in_a_period(text, shown):
+    """REQ-TURN-12: the final period goes; an ellipsis and other marks stay."""
+    assert editor.without_final_period(text) == shown

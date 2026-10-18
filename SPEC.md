@@ -442,7 +442,8 @@ the person; by contract it runs a pass first (REQ-CONTRACT-6).
   the result in a line, then only what needs him (a question, a decision, a
   doubt, an assumption he can refute), warm, no lists or table names. It
   keeps every question and numbered proposal word for word and adds no
-  number, fact or reason the full answer lacks. The agent's messages never
+  number, fact or reason the full answer lacks. The edited text never ends in a period
+  (an ellipsis stays): the code drops it, whatever the model wrote. The agent's messages never
   reach the live draft while the editor is on, so the full answer is never
   shown. A failed or malformed edit sends the full answer. The entry stores
   the edited text; the full one is a `drafted` event on the same entry, and
