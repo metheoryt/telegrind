@@ -1,10 +1,10 @@
-"""Reminders: dates the agent keeps in facts.sqlite, sent once a day without a model call (SPEC REQ-REMIND-1..4)."""
+"""Reminders the person asked for: kept by the agent in facts.sqlite, sent by Python on time (SPEC REQ-REMIND-1..4)."""
 
 from __future__ import annotations
 
 import calendar
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING
 
 from telegrind.facts import FactsUnavailable, Reminder
@@ -15,18 +15,13 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-OVERDUE_DAYS = 7  # a one-off past its date is repeated this many days, then left to the person
-HEADER = "Напоминания:"
-FOOTER = "Когда оплатишь или тебе вернут — напиши об этом обычным сообщением, и напоминание закроется."
+LATE_DAYS = 1  # a one-off missed while the bot was down still goes out, marked late, for this long
+PREFIX = "⏰ "
 
 
-def _on_day(year: int, month: int, day: int) -> date:
-    """A monthly day past the month's end falls on its last day: the 31st is 30 November."""
-    return date(year, month, min(day, calendar.monthrange(year, month)[1]))
-
-
-def next_date(r: Reminder, today: date) -> date | None:
-    """The date that matters today: a one-off's own date; a monthly payment's this month, or next once it passed."""
+def occurrence(r: Reminder, today: date) -> date | None:
+    """The date the row fires on near today: a one-off's own date, a monthly day in today's month (the 31st is
+    30 November), or None for a row that names neither."""
     if r.due is not None:
         try:
             return date.fromisoformat(r.due)
@@ -34,58 +29,61 @@ def next_date(r: Reminder, today: date) -> date | None:
             return None
     if r.monthly_day is None or not 1 <= r.monthly_day <= 31:
         return None
-    this = _on_day(today.year, today.month, r.monthly_day)
-    if this >= today:
-        return this
-    nxt = today.replace(day=1) + timedelta(days=32)
-    return _on_day(nxt.year, nxt.month, r.monthly_day)
+    return today.replace(day=min(r.monthly_day, calendar.monthrange(today.year, today.month)[1]))
 
 
-def label(r: Reminder, today: date) -> str | None:
-    """REQ-REMIND-2: tomorrow, today, or a one-off overdue up to OVERDUE_DAYS; anything else says nothing today."""
-    when = next_date(r, today)
-    if when is None:
+def clock_time(r: Reminder, default_hour: int) -> time:
+    """The row's HH:MM, or the remind hour when it names none (or names it badly)."""
+    if r.time:
+        try:
+            return time.fromisoformat(r.time)
+        except ValueError:
+            pass
+    return time(default_hour)
+
+
+def due_now(r: Reminder, now: datetime, default_hour: int) -> tuple[date, datetime] | None:
+    """REQ-REMIND-2: (occurrence, fire time) when the row should go out at `now`, else None."""
+    day = occurrence(r, now.date())
+    if day is None:
         return None
-    days = (when - today).days
-    if days == 1:
-        return "завтра"
-    if days == 0:
-        return "сегодня"
-    if r.due is not None and -OVERDUE_DAYS <= days < 0:
-        return f"просрочено на {-days} дн."
-    return None
-
-
-def digest(reminders: list[Reminder], today: date) -> str | None:
-    """One message for the day, overdue first, or None when nothing is due."""
-    items = [(next_date(r, today), lab, r.what) for r in reminders if (lab := label(r, today)) is not None]
-    if not items:
+    fire = datetime.combine(day, clock_time(r, default_hour), now.tzinfo)
+    if now < fire:
         return None
-    lines = [f"• {lab} — {what}" for _, lab, what in sorted(items, key=lambda i: (i[0], i[2]))]
-    return "\n".join([HEADER, *lines, "", FOOTER])
+    if r.due is not None and now.date() - day > timedelta(days=LATE_DAYS):
+        return None
+    if r.due is None and day != now.date():
+        return None
+    return day, fire
+
+
+def text_of(r: Reminder, fire: datetime, now: datetime) -> str:
+    """The message: the person's own words; a late one says when it was due."""
+    late = now - fire > timedelta(hours=1)
+    return PREFIX + r.what + (f"\n(было на {fire:%d.%m %H:%M})" if late else "")
 
 
 class Reminders:
     def __init__(self, app: App, agent: Agent) -> None:
         self.app, self.agent = app, agent
 
-    async def tick(self, uid: int) -> bool:
-        """REQ-REMIND-2, REQ-REMIND-3: at or past the remind hour, once per local day, recorded only once sent."""
-        local = self.agent.local_now(uid)
-        if local.hour < self.app.config.remind_hour:
-            return False
-        day = local.date().isoformat()
-        store = self.app.log_for(uid)
-        if store.reminded_on(day):
-            return False
+    async def tick(self, uid: int) -> int:
+        """REQ-REMIND-2, REQ-REMIND-3: every row due by now and not yet sent goes out, each once."""
+        now = self.agent.local_now(uid)
         try:
-            text = digest(self.agent.facts(uid).reminders(), local.date())
+            rows = self.agent.facts(uid).reminders()
         except FactsUnavailable as exc:  # unknown is not empty: the next tick asks again
             log.warning("user %d: facts.sqlite unavailable (%s); reminders skipped", uid, exc.reason)
-            return False
-        if text is None:
-            return False
-        if await self.app.say(uid, text, None) is None:
-            return False  # the next tick tries again
-        store.mark_reminded(day, self.app.clock())
-        return True
+            return 0
+        store, sent = self.app.log_for(uid), 0
+        for r in rows:
+            if (hit := due_now(r, now, self.app.config.remind_hour)) is None:
+                continue
+            day, fire = hit
+            if store.reminder_sent(r.entry_id, r.what, day.isoformat()):
+                continue
+            if await self.app.say(uid, text_of(r, fire, now), r.entry_id) is None:
+                continue  # the next tick tries again
+            store.mark_reminder_sent(r.entry_id, r.what, day.isoformat(), self.app.clock())
+            sent += 1
+        return sent

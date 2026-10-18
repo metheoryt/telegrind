@@ -17,12 +17,14 @@ class FactsUnavailable(Exception):  # noqa: N818 - the name says what a caller m
 
 @dataclass(frozen=True)
 class Reminder:
-    """REQ-REMIND-1: one open obligation with a date — a one-off `due` (local YYYY-MM-DD) or a `monthly_day`."""
+    """REQ-REMIND-1: a reminder the person asked for — a one-off `due` (local YYYY-MM-DD) or a `monthly_day`,
+    at `time` (HH:MM) or the remind hour."""
 
     entry_id: int
     what: str
     due: str | None
     monthly_day: int | None
+    time: str | None
 
 
 class Facts:
@@ -74,5 +76,8 @@ class Facts:
         return str(rows[0][0]) if rows else None
 
     def reminders(self) -> list[Reminder]:
-        rows = self._rows("SELECT entry_id, what, due, monthly_day FROM reminders WHERE done = 0")
-        return [Reminder(int(e), str(w), d and str(d), None if m is None else int(m)) for e, w, d, m in rows]
+        rows = self._rows("SELECT entry_id, what, due, monthly_day, time FROM reminders WHERE done = 0")
+        return [
+            Reminder(int(e), str(w), d and str(d), None if m is None else int(m), t and str(t))
+            for e, w, d, m, t in rows
+        ]

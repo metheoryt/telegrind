@@ -463,7 +463,8 @@ The two files and four tables Python depends on.
   INTEGER NOT NULL, at INTEGER NOT NULL)`, `keyterms(term TEXT PRIMARY KEY)`,
   `settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)` and
   `reminders(entry_id INTEGER NOT NULL, what TEXT NOT NULL, due TEXT,
-  monthly_day INTEGER, done INTEGER NOT NULL DEFAULT 0)` (REQ-REMIND-1). The
+  monthly_day INTEGER, time TEXT, done INTEGER NOT NULL DEFAULT 0)`
+  (REQ-REMIND-1). The
   agent creates them on its first pass. `settings` may hold `tz`, an IANA zone name; Python
   reads it for the quiet hour and the presenter, defaulting to
   `DEFAULT_TZ` (default `Asia/Almaty`).
@@ -598,29 +599,33 @@ file formats are measured, not specified (section 12).
 
 ### REMIND
 
-- **REQ-REMIND-1** — The agent keeps `reminders` (REQ-FACTS-2): a row per
-  open obligation that has a date — a payment the person owes, a bill, money
-  lent that is due back. `what` is one line in the person's words with the
-  amount; `due` is a local date `YYYY-MM-DD` for a one-off, `monthly_day`
-  (1–31) for a monthly payment such as an instalment, which falls on the
-  month's last day when the month is shorter. `done = 1` closes the row once
-  the log says it was paid or returned. A row is derived from an entry like a
-  fact (its `entry_id`) and is replaced when that entry is re-derived.
-- **REQ-REMIND-2** — Once a person's local time is at or past `REMIND_HOUR`
-  (default 10), Python sends one message a day listing every open row due
-  tomorrow («завтра»), today («сегодня»), and every one-off overdue by one to
-  seven days («просрочено на N дн.»), oldest first. A monthly row is never
-  overdue. Nothing due means no message. No model is called.
+- **REQ-REMIND-1** — A reminder exists only because the person asked for one
+  («напомни 22-го заплатить рассрочку», «напоминай каждый месяц 22-го»);
+  the agent never makes one from a debt, a bill or a date it merely read.
+  The agent keeps them in `reminders` (REQ-FACTS-2), a row per request:
+  `what` in the person's words, `due` a local date `YYYY-MM-DD` for a
+  one-off or `monthly_day` (1–31) for a monthly one, which falls on the
+  month's last day when the month is shorter, and `time` `HH:MM` when the
+  person named one. `entry_id` is the entry that asked. A cancelled or
+  finished reminder gets `done = 1`. An addressed request (❤, a reply to the
+  bot) is written in that turn and confirmed; an unaddressed one is written
+  by the next pass. `reminders` is not a fact table: rules that clear fact
+  rows of an addressed entry leave it alone.
+- **REQ-REMIND-2** — Python checks every tick. An open row fires on its day
+  at its `time`, or at `REMIND_HOUR` (default 10) when it names none or
+  names it badly. A one-off missed while the bot was down still goes out up
+  to a day late, saying when it was due; a monthly row fires only on its
+  day. The message is «⏰ » and `what`, replying to the entry that asked.
+  No model is called.
 - **REQ-REMIND-3** — The message goes out through the bot's `say`, a
   `bot_sent` entry with `parse_mode=None`: its text comes from a table the
-  model wrote. The day is recorded in `log.sqlite` (`reminded`) only once the
-  message is out, so a failed send, an unreadable `facts.sqlite` or a bot that
-  was down at the hour retries on the next tick and loses no day.
-- **REQ-REMIND-4** — The message closes by asking the person to write the
-  payment or the return as an ordinary message: that entry is the fact, and
-  the pass that derives it closes the row. A row exists only after the turn
-  that derives it, so an obligation written today and due today waits for the
-  night pass (or a backlog pass).
+  model wrote. Each occurrence is recorded in `log.sqlite`
+  (`reminders_sent`, keyed by entry, text and day) only once the message is
+  out, so a failed send or an unreadable `facts.sqlite` retries on the next
+  tick and nothing goes out twice.
+- **REQ-REMIND-4** — A reply to a reminder is a question like any reply to
+  the bot (REQ-TRIGGER-1): «перенеси на завтра», «отмени», «оплатил» reach
+  the agent, which updates the row in that turn.
 
 ---
 
