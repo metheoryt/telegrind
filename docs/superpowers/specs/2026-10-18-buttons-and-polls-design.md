@@ -42,6 +42,13 @@ the mechanism in `televibe` so every bot built on it gets it.
 5. **Text always works.** Any typed or spoken reply to a message with a button
    or a poll is an ordinary reply, handled as today («дай больше контекста»,
    2728).
+6. **A small form: rows of tick buttons.** For a question with several
+   independent choices (the owner's example: «Как к вам обращаться?» with «ты |
+   вы» and «он | она», the name typed), each row is a single choice. A press
+   only moves the tick (✓) and wakes nobody; a text reply to the message, or a
+   [Готово] button, sends the ticks (and the text) to the agent as one answer.
+   The owner chose this over a multiple-choice poll on 2026-10-18; it also fits
+   «category + necessity» for an uncategorized expense.
 
 ## Non-goals
 
@@ -118,6 +125,8 @@ string, holding either an offer or a poll. The exact syntax is the builder's
 - At most one block per answer. A second block, or a block anywhere but the end,
   is a malformed control.
 - An **offer** names the button's label; the default is «Да».
+- A **form** has rows, each a label-less row of two or more single-choice
+  options, optionally one option ticked in advance. [Готово] is always added.
 - A **poll** has a question, two or more options, whether several may be chosen,
   and an optional description.
 - The block is provider-agnostic text: it works for Codex as for Claude.
@@ -132,7 +141,14 @@ string, holding either an offer or a poll. The exact syntax is the builder's
 - Parsing: a function that splits an answer into its text and its control
   (none, an offer, a poll). Public, so a bot with an editor can split before
   editing.
-- Sending: `Presenter` sends an offer as an inline keyboard on the answer
+- Forms: a press on a form row edits the keyboard to move the tick and starts
+  no turn. The ticks are not kept in televibe: the bot derives them from its
+  own record of presses (in telegrind, the `pressed` events on the entry) and
+  televibe gives a function that renders a form's keyboard from the form and
+  its current ticks. [Готово] or a text reply to the form message submits it;
+  the receive helper gives the answer text with every row's tick (a row left
+  unticked is said so), plus the typed text if any.
+- Sending: `Presenter` sends an offer or a form as an inline keyboard on the answer
   message, and a poll as a separate non-anonymous message replying to the
   answer. `show()` must still return the answer message; the builder decides
   how the poll message is returned as well (the bot needs it for its poll
@@ -158,7 +174,7 @@ string, holding either an offer or a poll. The exact syntax is the builder's
 
 - Wiring: `callback_query` and `poll_answer` handlers in `bot.py` (one line each,
   like the others) and in `allowed_updates`.
-- Log: a press is a `pressed` event and a vote a `voted` event on the **bot's**
+- Log: a press (an offer, a form tick, [Готово]) is a `pressed` event and a vote a `voted` event on the **bot's**
   entry that carries the button or the poll, payload the update verbatim,
   committed before the callback is answered or a turn is queued (REQ-LOG-1).
   The poll message the bot sends is stored like any bot message (REQ-LOG-7),
@@ -204,11 +220,11 @@ string, holding either an offer or a poll. The exact syntax is the builder's
     multiple-choice poll. The editor keeps a question and the control intact.
   - The aside every fifth turn (REQ-CONTRACT-17) is skipped when the answer
     already asks something.
-  - Acquaintance (REQ-CONTRACT-16) is one free-text question, «Как к вам
-    обращаться?» (the owner's wording, 2026-10-18): the person answers in their
-    own words with a name, a name and patronymic or a nickname, plus a pronoun
-    and «ты/вы» where it applies. No poll; Aicha uses «вы» until told
-    otherwise, and takes what was not said as not stated.
+  - Acquaintance (REQ-CONTRACT-16) is one question, «Как к вам обращаться?»
+    (the owner's wording, 2026-10-18), sent as a form: a row «ты | вы», a row
+    «он | она», and the name — a name, a name and patronymic, or a nickname —
+    typed as a reply. Aicha uses «вы» until told otherwise, and takes an
+    unticked row or a missing name as not stated.
 - **Opt-in in televibe.** `Presenter` parses controls only when the bot turns
   it on, so 0.7 changes nothing for a bot that does not; telegrind turns it on.
 
