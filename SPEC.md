@@ -50,7 +50,8 @@ What telegrind owns:
   under, and the live gate that measures whether the agent keeps them.
 
 What the agent owns: the fact tables, their schema, the person's own rules,
-and the import of bank statements the person drops in (section 8, STATEMENTS).
+and the import of bank statements and tables the person drops in (section 8,
+STATEMENTS and TABLES).
 
 ### SCOPE
 
@@ -582,6 +583,34 @@ file formats are measured, not specified (section 12).
   meant. The agent asks nothing it already knows, and nothing when it has
   nothing to ask.
 
+### TABLES
+
+A table the person keeps elsewhere — the v1 workbook, a list of the things
+they own — comes in once, the way a statement does: a document in the chat,
+read by the agent in the pass that processes its entry. After that the log
+is the source of truth and the table is not read again. Settled with the
+owner on 2026-10-18 over a 39-row list of things.
+
+- **REQ-CONTRACT-18** — A table the person drops in is a CSV document (the
+  image has no reader for XLSX). Each row becomes a fact row with `entry_id`
+  = the document's entry and `at` = the row's own date of the thing (bought,
+  weighed, paid), never the import's. Amounts written in the sheet's locale
+  («₸1 194 991,00», «33,33%») are stored as numbers. Not stored: columns
+  computed from other columns (an age, a discount, a ratio), error cells
+  («#DIV/0!»), and a price with no date of its own (a shop's current price),
+  which is a reading of today, not a fact. A row the person says is already
+  recorded elsewhere is not recorded there twice: a list of things bought,
+  whose purchases are already expenses, goes into a table of its own
+  (`items`) that no sum of expenses reads. The pass's closing line says how
+  many rows were imported and what was left out. The same table dropped
+  again is not imported again unless the person asks.
+- **REQ-CONTRACT-19** — What later happens to an imported row — an item sold,
+  given away, put up for sale — is a row of its own, with the `entry_id` of
+  the message that says so and a column naming the imported row, never an
+  `UPDATE` of the imported row: re-deriving the document's entry
+  (REQ-CONTRACT-3) would put the old values back. The current state of a
+  thing is a query over both.
+
 ---
 
 ## 9. Schedule
@@ -660,9 +689,11 @@ deploys automatically.
   `DATA_DIR` and the account directory. `telegrind doctor` reports ownership
   and the counts per person: entries, unprocessed, media by status, voice
   jobs by status.
-- **REQ-DEPLOY-5** — Importing the v1 workbook is not code. The owner puts the
-  CSV in their directory and asks the agent to import it; the contract
-  (REQ-CONTRACT-4, REQ-CONTRACT-7) governs the result.
+- **REQ-DEPLOY-5** — Importing the v1 workbook, or any other table, is not
+  code. The owner drops the CSV in the chat as a plain document — no ❤ and
+  no `/` caption, which would make it a request and leave it with no facts
+  (REQ-CONTRACT-5) — and the pass imports it; the contract (REQ-CONTRACT-4,
+  REQ-CONTRACT-7, REQ-CONTRACT-18, REQ-CONTRACT-19) governs the result.
 
 ---
 
