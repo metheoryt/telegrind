@@ -36,7 +36,7 @@ the mechanism in `televibe` so every bot built on it gets it.
    the next question is chosen in the light of it. A batch becomes a series
    by itself. The owner chose this over a prepared queue: «чтобы учитывала
    каждый ответ, пауза не страшна» — a 10–40 s turn per step is accepted.
-4. **A press or a vote is the person's reply** to that bot message, as if they
+4. **A press on [Да] or [Готово], or a vote, is the person's reply** to that bot message, as if they
    had typed it: it is logged, and it starts a question turn that continues
    the message's chain.
 5. **Text always works.** Any typed or spoken reply to a message with a button
