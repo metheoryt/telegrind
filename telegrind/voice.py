@@ -154,7 +154,8 @@ class VoiceJobs:
             cleaned, ok = await self._clean(uid, raw, terms)
         store.record_transcript(message_id, raw, cleaned.text, ok, self.app.clock())
         store.voice_set(message_id, "done")
-        await self._post(uid, message_id, cleaned.text)  # REQ-VOICE-7: a note is asked only by ❤
+        await self._post(uid, message_id, cleaned.text)
+        await self.app.on_transcript(uid, message_id)  # REQ-VOICE-7: now the note is text, and asked as text is
 
     async def _clean(self, uid: int, raw: str, terms: list[str]) -> tuple[Cleaned, bool]:
         """The cleaned transcript and whether the cleaning call succeeded (REQ-VOICE-5: raw beats none)."""

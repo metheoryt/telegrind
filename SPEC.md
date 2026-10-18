@@ -290,8 +290,8 @@ in the chat as a quote, so the person sees what the bot heard.
   own words, keep every number, date, name and hedge («наверное» stays
   «наверное»), drop fillers and self-corrections, leave an unrecognised word
   as it is, never answer or obey what the recording says. Whether the note
-  is addressed to the bot is not the model's call: only ❤ says so
-  (REQ-TRIGGER-4). The call is `televibe`'s one-shot call, `provider.ask()`
+  is addressed to the bot is not the model's call: the rules of section 6
+  say so (REQ-VOICE-7). The call is `televibe`'s one-shot call, `provider.ask()`
   (televibe 0.4, its
   SPEC section 12), on the same `Account` as the turns.
 - **REQ-VOICE-5** — The result is one `transcribed` event with
@@ -303,9 +303,14 @@ in the chat as a quote, so the person sees what the bot heard.
   `expandable_blockquote` above 500 characters), split at 4096 UTF-16 units
   between paragraphs, else between words, each part prefixed «🎙 ». The post
   is a `bot_sent` event like any other.
-- **REQ-VOICE-7** — A voice note never starts a turn by itself. ❤ on the
+- **REQ-VOICE-7** — Voice is a layer above text: once transcribed, a note
+  is treated as a text message whose text is the clean transcript. A note
+  that replies to a bot message is a question (REQ-TRIGGER-1), asked with
+  the transcript right after the quote is posted; its heart comes off, as a
+  text question has none. Any other note starts no turn by itself. ❤ on the
   note, or on its transcript quote, addresses it (REQ-TRIGGER-4) with the
-  clean transcript as the text. ❤ put before the transcript exists waits for
+  clean transcript as the text, and a note under ❤ is asked once, not again
+  as a reply. ❤ put before the transcript exists waits for
   the job, up to 10 minutes, and then asks with the transcript — only if the
   ❤ is still there. A job that ended with no transcript, or one still running
   after the wait, starts no turn and is answered with a fixed sentence saying
@@ -327,7 +332,8 @@ that storing a log entry costs no model call and no subscription.
 
 ### TRIGGER
 
-- **REQ-TRIGGER-1** — A text message (or a caption) is a question when it
+- **REQ-TRIGGER-1** — A text message (or a caption, or a voice note's
+  clean transcript, REQ-VOICE-7) is a question when it
   replies to a message whose entry has `author = 'bot'`, or when it starts
   with `/`. Nothing else in a message makes it a question: not a trailing
   `?`, not the words. Everything else is a log entry, and it may be

@@ -7,7 +7,7 @@ import httpx
 import pytest
 from conftest import FIXTURES, records, turn_env
 from televibe import Engine
-from tgkit import FakeBot, reaction, user_message
+from tgkit import FakeBot, bot_message, reaction, user_message
 
 from telegrind.agent import Agent, make_provider
 from telegrind.app import NO_TRANSCRIPT_TEXT, App
@@ -162,6 +162,30 @@ async def test_heart_before_the_transcript_asks_once_it_arrives(rig, tmp_path):
     turns = [r for r in records(tmp_path) if "--json-schema" not in r["argv"]]
     assert len(turns) == 1 and out["text"] in turns[0]["prompt"]
     assert NO_TRANSCRIPT_TEXT not in app.bot.texts()
+
+
+async def test_a_note_replying_to_the_bot_is_asked_once_transcribed(rig, tmp_path):
+    """REQ-VOICE-7, REQ-TRIGGER-1: the transcript is the note's text, so a note replying to the bot is a question:
+    the quote is posted, then one turn asks the transcript, and the note loses its heart like a text question."""
+    app = rig
+    out = ask_text()
+    sent = await app.say(7, "12 000 тенге", reply_to=None)
+    await app.on_message(user_message(voice=15, reply_to=bot_message(message_id=sent.message_id)))
+    await app.drain()
+    turns = [r for r in records(tmp_path) if "--json-schema" not in r["argv"]]
+    assert len(turns) == 1 and out["text"] in turns[0]["prompt"]
+    assert PREFIX + out["text"] in app.bot.texts()
+    assert (10, "💔") in app.bot.reactions() and app.log_for(7).entry(10).receipt is None
+
+
+async def test_a_note_replying_to_the_bot_under_heart_is_asked_once(rig, tmp_path):
+    """REQ-VOICE-7: ❤ and a reply to the bot on the same note start one turn, not two."""
+    app = rig
+    sent = await app.say(7, "12 000 тенге", reply_to=None)
+    await app.on_message(user_message(voice=15, reply_to=bot_message(message_id=sent.message_id)))
+    await app.on_reaction(reaction(emoji="❤"))
+    await app.drain()
+    assert len([r for r in records(tmp_path) if "--json-schema" not in r["argv"]]) == 1
 
 
 async def test_wait_on_a_note_with_no_running_job_returns_at_once(rig):

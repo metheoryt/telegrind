@@ -205,8 +205,26 @@ class App:
         if entry.addressed_at is not None:
             if entry.receipt is not None:
                 await self.react(uid, message_id, None)
-        elif question_text(entry.text, reply_to_author=store.author_of(entry.reply_to), author=entry.author) is None:
+        elif self._question_of(uid, entry) is None:
             await self.react(uid, message_id, FIRST)  # a question was never a log entry: no heart for it
+
+    def _question_of(self, uid: int, entry: Entry) -> str | None:
+        """REQ-TRIGGER-1, REQ-VOICE-7: an entry is a question by its text, and a voice note's text is its transcript."""
+        text = entry.transcript if entry.kind in VOICE_KINDS else entry.text
+        return question_text(text, reply_to_author=self.log_for(uid).author_of(entry.reply_to), author=entry.author)
+
+    async def on_transcript(self, uid: int, message_id: int) -> None:
+        """REQ-VOICE-7: a transcribed note that would be a question as text is asked now; its heart comes off,
+        as a question was never a log entry. A note under ❤ is already asked by the ❤ path."""
+        entry = self.log_for(uid).entry(message_id)
+        if entry is None or entry.addressed_at is not None or (question := self._question_of(uid, entry)) is None:
+            return
+        if entry.receipt is not None:
+            await self.react(uid, message_id, None)
+        self.entry_changed(uid)
+        if self.answerer is not None:
+            message = Message.model_validate_json(entry.raw)
+            self.spawn(self.answerer.answer(uid, message, question))
 
     async def _address_when_transcribed(self, uid: int, message_id: int) -> None:
         """REQ-VOICE-7: ❤ came before the transcript. Wait for it, and ask only if the ❤ is still there."""
