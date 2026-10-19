@@ -1,6 +1,8 @@
 """Agent turns through televibe against the fake claude (SPEC section 7, REQ-TEST-3)."""
 
 import asyncio
+import dataclasses
+import json
 import os
 import subprocess
 import sys
@@ -8,9 +10,10 @@ import textwrap
 from datetime import datetime, timedelta
 
 import pytest
-from conftest import records, turn_env
+from conftest import FIXTURES, records, turn_env
 from televibe import Engine
 from televibe.telegram import Presenter
+from televibe.telegram.controls import Form, Offer, Poll, control_block, poll_fallback_text
 from tgkit import NOW, FakeBot, bot_message, reaction, user_message
 
 from telegrind import agent as agent_module
@@ -596,6 +599,216 @@ def test_no_fixed_sentence_ends_in_a_period():
         app_module.SLOW_TRANSCRIPT_TEXT,
         *(getattr(agent_module.TEXTS, f) for f in ("timeout", "cancelled", "session_lost", "provider_error")),
         *(getattr(agent_module.TEXTS, f) for f in ("spawn_error", "usage_limit")),
+        *(getattr(agent_module.CONTROL_TEXTS, f.name) for f in dataclasses.fields(agent_module.CONTROL_TEXTS)),
     ]
     assert [t for t in fixed if t.endswith(".")] == []
     assert agent_module.REACTIONS.queued == agent_module.REACTIONS.working == "👀"
+
+
+# -- controls (REQ-TURN-13, REQ-TURN-14) -----------------------------------------------------------------------------
+
+OFFER_ANSWER = "Слить 31 пару?\n\n" + control_block(Offer())
+POLL = Poll("Что из этого займы?", ("Арман 20 000", "ничего"))
+POLL_ANSWER = "Нашла два перевода\n\n" + control_block(POLL)
+FORM = Form((("да", "нет"), ("такси", "еда")), (None, 1))
+FORM_ANSWER = "Проверь\n\n" + control_block(FORM)
+
+
+def scripted(tmp_path, text: str) -> dict[str, str]:
+    """A turn env whose fake claude answers `text`: turn.jsonl with its final text and result replaced."""
+    lines = []
+    for line in (FIXTURES / "turn.jsonl").read_text().splitlines():
+        rec = json.loads(line)
+        if rec.get("type") == "result":
+            rec["result"] = text
+        elif rec.get("type") == "assistant" and rec["message"]["content"][0].get("text") == ANSWER:
+            rec["message"]["content"][0]["text"] = text
+        lines.append(json.dumps(rec, ensure_ascii=False))
+    path = tmp_path / f"scripted-{len(list(tmp_path.glob('scripted-*')))}.jsonl"
+    path.write_text("\n".join(lines) + "\n")
+    return turn_env(tmp_path, turn=str(path))
+
+
+def bot_ids(store) -> list[int]:
+    return [r[0] for r in store.conn.execute("SELECT message_id FROM entries WHERE author = 'bot' ORDER BY message_id")]
+
+
+async def test_offer_block_becomes_a_button_and_a_control_event(rig, tmp_path):
+    """REQ-TURN-13: the answer goes out without the block, with [Да]; the entry holds the visible text; a control."""
+    app, agent, _ = rig
+    agent.turn_env = scripted(tmp_path, OFFER_ANSWER)
+    await app.on_message(user_message(text="/q разбери выписку"))
+    await app.drain()
+    [(_, kw)] = app.bot.sends()
+    assert kw["reply_markup"].inline_keyboard[0][0].text == "Да"
+    assert "```" not in app.bot.texts()[0]
+    store = app.log_for(7)
+    [sent_id] = bot_ids(store)
+    assert store.entry(sent_id).text == "Слить 31 пару?"
+    rec = store.control(sent_id)
+    assert rec.open and rec.block == control_block(Offer()) and rec.poll_id is None
+
+
+async def test_form_block_becomes_tick_buttons_and_a_control_event(rig, tmp_path):
+    """REQ-TURN-13: a form goes out as rows of tick buttons and [Готово]; its block is recorded on the answer."""
+    app, agent, _ = rig
+    agent.turn_env = scripted(tmp_path, FORM_ANSWER)
+    await app.on_message(user_message(text="/q разбери"))
+    await app.drain()
+    [(_, kw)] = app.bot.sends()
+    rows = [[b.text for b in row] for row in kw["reply_markup"].inline_keyboard]
+    assert rows == [["да", "нет"], ["такси", "✓ еда"], ["Готово"]]
+    store = app.log_for(7)
+    [sent_id] = bot_ids(store)
+    assert store.entry(sent_id).text == "Проверь" and store.control(sent_id).block == control_block(FORM)
+
+
+async def test_a_block_alone_is_stored_as_what_was_sent(rig, tmp_path):
+    """REQ-TURN-13: an answer that is only an offer block is sent as «…» with [Да], and stored as «…»."""
+    app, agent, _ = rig
+    agent.turn_env = scripted(tmp_path, control_block(Offer()))
+    await app.on_message(user_message(text="/q сливаем?"))
+    await app.drain()
+    store = app.log_for(7)
+    [sent_id] = bot_ids(store)
+    assert store.entry(sent_id).text == "…" and store.control(sent_id).open
+
+
+async def test_editor_never_sees_the_block(rig, tmp_path, monkeypatch):
+    """REQ-TURN-12, REQ-TURN-13: the editor's input has no control fence; the drafted event keeps it."""
+    app, agent, _ = rig
+    agent.config = config(tmp_path, EDIT_ANSWERS="1")
+    agent.turn_env = scripted(tmp_path, OFFER_ANSWER)
+    drafts: list[str] = []
+
+    async def fake_edit(draft, **_):
+        drafts.append(draft)
+        return "Сливаю 31 пару?"
+
+    monkeypatch.setattr(agent_module, "edit", fake_edit)
+    await app.on_message(user_message(text="/q разбери выписку"))
+    await app.drain()
+    assert drafts == ["Слить 31 пару?"]
+    [(_, kw)] = app.bot.sends()
+    assert kw["reply_markup"].inline_keyboard[0][0].text == "Да"
+    store = app.log_for(7)
+    [sent_id] = bot_ids(store)
+    assert store.entry(sent_id).text == "Сливаю 31 пару?" and store.control(sent_id).open
+    drafted = [e.payload for e in store.events(sent_id) if e.kind == "drafted"]
+    assert drafted == [{"text": OFFER_ANSWER}]
+
+
+async def test_a_failed_edit_keeps_the_control(rig, tmp_path, monkeypatch):
+    """REQ-TURN-12, REQ-TURN-13: the editor failing sends the agent's visible text, the block still re-attached."""
+    app, agent, _ = rig
+    agent.config = config(tmp_path, EDIT_ANSWERS="1")
+    agent.turn_env = scripted(tmp_path, OFFER_ANSWER)
+
+    async def failing_edit(draft, **_):
+        raise editor.EditorError("bad shape")
+
+    monkeypatch.setattr(agent_module, "edit", failing_edit)
+    await app.on_message(user_message(text="/q разбери выписку"))
+    await app.drain()
+    store = app.log_for(7)
+    [sent_id] = bot_ids(store)
+    assert store.entry(sent_id).text == "Слить 31 пару?" and store.control(sent_id).open
+
+
+async def test_poll_message_is_stored_linked_and_mapped(rig, tmp_path):
+    """REQ-TURN-13: the poll message is a bot entry replying to the answer, in the chain, and in polls."""
+    app, agent, _ = rig
+    agent.turn_env = scripted(tmp_path, POLL_ANSWER)
+    await app.on_message(user_message(text="/q что из этого займы?"))
+    await app.drain()
+    [(_, poll_kw)] = [(n, kw) for n, kw in app.bot.calls if n == "send_poll"]
+    assert poll_kw["question"] == POLL.question and poll_kw["is_anonymous"] is False
+    store = app.log_for(7)
+    sent_id, poll_msg = bot_ids(store)
+    assert store.entry(sent_id).text == "Нашла два перевода" and store.control(sent_id) is None
+    assert store.entry(poll_msg).reply_to == sent_id and store.entry(poll_msg).text == poll_fallback_text(POLL)
+    assert await store.chain_of(7, poll_msg) == await store.chain_of(7, sent_id) is not None
+    rec = store.control(poll_msg)
+    assert rec.open and rec.poll_id == f"poll-{poll_msg}" and rec.block == control_block(POLL)
+    assert store.record_vote(f"poll-{poll_msg}", {"option_ids": [0]}, 2, closes=True) == (poll_msg, True)
+
+
+async def test_a_refused_poll_is_stored_as_its_text_in_the_chain(rig, tmp_path):
+    """REQ-TURN-13: a poll Telegram refuses goes out as numbered text; that message is stored and linked, no control."""
+    app, agent, _ = rig
+    app.bot = FakeBot(fail={"send_poll": 1})
+    agent.turn_env = scripted(tmp_path, POLL_ANSWER)
+    await app.on_message(user_message(text="/q что из этого займы?"))
+    await app.drain()
+    store = app.log_for(7)
+    sent_id, fallback = bot_ids(store)
+    assert app.bot.texts()[-1] == poll_fallback_text(POLL)
+    assert store.entry(fallback).reply_to == sent_id and store.entry(fallback).text == poll_fallback_text(POLL)
+    assert await store.chain_of(7, fallback) == await store.chain_of(7, sent_id) is not None
+    assert store.control(fallback) is None and store.control(sent_id) is None
+
+
+@pytest.mark.parametrize(
+    ("first", "call", "fail"),
+    [
+        (OFFER_ANSWER, "edit_message_reply_markup", 0),
+        (POLL_ANSWER, "stop_poll", 0),
+        (OFFER_ANSWER, "edit_message_reply_markup", 1),
+    ],
+    ids=["offer", "poll", "telegram-refuses"],
+)
+async def test_newer_answer_closes_open_controls_of_its_chain(rig, tmp_path, first, call, fail):
+    """REQ-TURN-13: a reply in the chain answered → the older control is removed and closed as superseded; a Telegram
+    failure removing it is logged and ignored; the newer answer's own control stays open."""
+    app, agent, _ = rig
+    app.bot = FakeBot(fail={call: fail})
+    agent.turn_env = scripted(tmp_path, first)
+    await app.on_message(user_message(text="/q разбери выписку"))
+    await app.drain()
+    store = app.log_for(7)
+    old = bot_ids(store)[-1]  # the answer for an offer, the poll message for a poll
+    assert store.control(old).open
+    agent.turn_env = scripted(tmp_path, OFFER_ANSWER)
+    await app.on_message(user_message(text="а ещё?", message_id=11, reply_to=bot_message(message_id=old, text="?")))
+    await app.drain()
+    [(_, kw)] = [(n, kw) for n, kw in app.bot.calls if n == call]
+    assert kw["message_id"] == old and kw["chat_id"] == 7
+    if call == "edit_message_reply_markup":
+        assert kw["reply_markup"] is None
+    assert not store.control(old).open and store.events(old)[-1].payload == {"how": "superseded"}
+    new = bot_ids(store)[-1]
+    assert store.control(new).open and store.open_controls(await store.chain_of(7, new)) == [store.control(new)]
+
+
+async def test_an_answer_in_another_chain_leaves_controls_alone(rig, tmp_path):
+    """REQ-TURN-13: supersede is per chain: a new question's answer touches no other chain's control."""
+    app, agent, _ = rig
+    agent.turn_env = scripted(tmp_path, OFFER_ANSWER)
+    await app.on_message(user_message(text="/q разбери выписку"))
+    await app.drain()
+    store = app.log_for(7)
+    [old] = bot_ids(store)
+    agent.turn_env = turn_env(tmp_path)
+    await app.on_message(user_message(text="/q сколько такси?", message_id=11))
+    await app.drain()
+    assert store.control(old).open and "edit_message_reply_markup" not in app.bot.names()
+
+
+async def test_pass_digest_never_shows_a_block(rig, tmp_path):
+    """REQ-TURN-14: a digest with a block is posted without it and records no control."""
+    app, agent, _ = rig
+    await app.on_message(user_message(text="4500 такси"))
+    agent.turn_env = {**scripted(tmp_path, "Записала такси.\n\n" + control_block(Offer())), "FAKE_MODE": "pass"}
+    agent.turn_env["FAKE_SLEEP"] = "0.2"
+    await agent.run_pass(7)
+    assert app.bot.texts() == ["Записала такси"]
+    store = app.log_for(7)
+    [digest] = bot_ids(store)
+    assert store.entry(digest).text == "Записала такси" and store.control(digest) is None
+
+
+async def test_say_strips_a_control_block(rig):
+    """REQ-TURN-14: whatever reaches App.say goes out and is stored without its block."""
+    app, _, _ = rig
+    sent = await app.say(7, "Готово\n\n" + control_block(Offer()), None)
+    assert app.bot.texts() == ["Готово"] and app.log_for(7).entry(sent.message_id).text == "Готово"

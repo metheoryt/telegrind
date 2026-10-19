@@ -461,7 +461,30 @@ the person; by contract it runs a pass first (REQ-CONTRACT-6).
   shown. A failed or malformed edit sends the full answer. The entry stores
   the edited text; the full one is a `drafted` event on the same entry, and
   the chain's session still holds it, so «подробнее» is answered from it.
-  `EDIT_ANSWERS=0` turns the editor off. Pass digests are not edited.
+  `EDIT_ANSWERS=0` turns the editor off. Pass digests are not edited. An
+  answer ending in a control block (REQ-TURN-13) reaches the editor without
+  it; the block is put back after the edited text, after the full answer when
+  the edit fails, so the control survives the editor. The `drafted` event keeps
+  the agent's text with its block; the entry stores only the visible text.
+- **REQ-TURN-13** — A question turn's answer may end in one ```` ```control ````
+  block (televibe's format): an offer `[Да]`, a form of tick buttons with
+  `[Готово]`, or a poll. The presenter runs with controls on and telegrind's
+  Russian `ControlTexts`. The sent answer and every stored text are what the
+  person sees, never the block's markup; an answer that is a block alone is
+  sent and stored as the poll's question or «…». For an offer or a form the
+  answer gets a `control` event (REQ-LOG-9) with the block and no poll id; a
+  keyboard Telegram refused records nothing. A poll goes out as its own
+  message replying to the answer: it is stored as a bot entry whose text is
+  the poll as numbered text, linked to the answer's chain, and gets the
+  `control` event with its `poll_id`. A poll Telegram refused goes out as that
+  numbered text instead, stored and linked the same way, with no control. Once
+  an answer is sent, every other open control of its chain is closed as
+  `superseded` and taken off the chat: a poll is stopped, an offer's or a
+  form's keyboard removed. A Telegram failure there is logged and ignored; the
+  log closes it all the same. Controls of other chains are left alone.
+- **REQ-TURN-14** — A pass digest carries no control: a block in it is
+  stripped before it is posted, and no `control` event is recorded. Nothing
+  the bot sends through `App.say` shows a block.
 
 ---
 

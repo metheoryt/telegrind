@@ -20,12 +20,14 @@ from aiogram.types import (
     MessageOriginUser,
     MessageReactionUpdated,
     PhotoSize,
+    PollOption,
     ReactionTypeEmoji,
     Sticker,
     User,
     VideoNote,
     Voice,
 )
+from aiogram.types import Poll as TgPoll
 
 NOW = datetime(2026, 10, 15, 12, 0, tzinfo=UTC)
 
@@ -223,6 +225,38 @@ class FakeBot:
     async def send_message(self, **kwargs) -> Message:
         await self._call("send_message", kwargs)
         return self._sent(kwargs)
+
+    async def send_poll(self, **kwargs) -> Message:
+        """A poll message whose poll id is `poll-<message_id>`."""
+        await self._call("send_poll", kwargs)
+        sent = self._sent(kwargs)
+        poll = TgPoll(
+            id=f"poll-{sent.message_id}",
+            question=kwargs["question"],
+            options=[
+                PollOption(persistent_id=str(i), text=o.text, voter_count=0) for i, o in enumerate(kwargs["options"])
+            ],
+            total_voter_count=0,
+            is_closed=False,
+            is_anonymous=kwargs["is_anonymous"],
+            type="regular",
+            allows_multiple_answers=kwargs["allows_multiple_answers"],
+            allows_revoting=True,
+            members_only=False,
+        )
+        return sent.model_copy(update={"poll": poll})
+
+    async def stop_poll(self, **kwargs) -> bool:
+        await self._call("stop_poll", kwargs)
+        return True
+
+    async def edit_message_reply_markup(self, **kwargs) -> bool:
+        await self._call("edit_message_reply_markup", kwargs)
+        return True
+
+    async def answer_callback_query(self, **kwargs) -> bool:
+        await self._call("answer_callback_query", kwargs)
+        return True
 
     async def get_file(self, file_id: str) -> File:
         await self._call("get_file", {"file_id": file_id})

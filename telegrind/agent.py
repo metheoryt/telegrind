@@ -9,11 +9,22 @@ from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, M
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from aiogram.exceptions import TelegramAPIError
 from aiogram.types import Message
 from televibe import Access, Account, ClaudeCode, Done, Engine, Failed, Limits, Started, TelevibeError
 from televibe.events import Event
 from televibe.events import Message as AgentMessage
-from televibe.telegram import Chains, Presenter, Reactions, Texts
+from televibe.telegram import Chain, Chains, Presenter, Reactions, Texts
+from televibe.telegram.controls import (
+    Control,
+    ControlTexts,
+    Form,
+    Offer,
+    Poll,
+    control_block,
+    poll_fallback_text,
+    split_control,
+)
 
 from telegrind.app import App
 from telegrind.config import Config
@@ -43,6 +54,18 @@ TEXTS = Texts(
 REACTIONS = Reactions(
     working="👀", done=None, failed_when_sent=False
 )  # a reaction or a text, never both; 👀 throughout
+CONTROL_TEXTS = ControlTexts(  # REQ-TURN-13
+    offer_label="Да",
+    done_label="Готово",
+    pressed="Ответ кнопкой: {label}",
+    voted="Выбрано в опросе: {options}",
+    nothing="ничего",
+    form="Анкета: {rows}",
+    unset="не выбрано",
+    typed="Текстом: {text}",
+    answered="✓ {label}",
+    answered_in_text="✓ ответ текстом",
+)
 LONG_TURN_S = 60.0  # REQ-TURN-11: a question still running after this is told it is long
 LONG_TURN_TEXT = "Это надолго. Отвечу сюда, как закончу; записи можно слать дальше"
 MEDIA_WAIT_S = 30.0  # how long a question with a photo or document waits for its own download
@@ -68,13 +91,16 @@ class _Watched:
     """A turn's events, remembering what the presenter will have sent.
 
     With an editor (REQ-TURN-12) the agent's messages never reach the draft, and `Done` carries the edited text;
-    `draft` keeps the agent's own. Without one, the events pass through unchanged."""
+    `draft` keeps the agent's own. The editor sees the answer without its control block, which is put back after
+    it (REQ-TURN-13). Without one, the events pass through unchanged."""
 
     def __init__(self, events: AsyncIterable[Event], editor: Callable[[str], Awaitable[str]] | None = None) -> None:
         self._events, self._editor = events, editor
         self.end: Done | Failed | None = None
         self.limits: Limits | None = None
         self.draft: str | None = None
+        self.control: Control | None = None
+        """The control `Done` carries, whether or not the presenter could send it as one."""
         self.started = asyncio.Event()
 
     async def __aiter__(self) -> AsyncIterator[Event]:
@@ -85,9 +111,15 @@ class _Watched:
                 self.limits = event
             elif isinstance(event, AgentMessage) and self._editor is not None:
                 continue
-            elif isinstance(event, Done) and self._editor is not None and event.text.strip():
-                self.draft = event.text
-                event = dataclasses.replace(event, text=await self._edited(event.text))
+            elif isinstance(event, Done) and self._editor is not None:
+                visible, control = split_control(event.text)
+                if visible.strip():
+                    self.draft = event.text
+                    edited = await self._edited(visible)
+                    block = control_block(control) if control is not None else ""
+                    event = dataclasses.replace(event, text="\n\n".join(p for p in (edited, block) if p))
+            if isinstance(event, Done):
+                self.control = split_control(event.text, quiet=True)[1]
             if isinstance(event, Done | Failed):
                 self.end = event
             yield event
@@ -102,13 +134,18 @@ class _Watched:
             return text
 
     def shown(self, tz: ZoneInfo) -> str:
-        """The text the presenter built from the terminal event (presenter._finish), for the log."""
+        """The text the presenter built from the terminal event (presenter._finish), for the log: the visible
+        text, never the control block (REQ-TURN-13)."""
         if isinstance(self.end, Done):
-            return self.end.text
+            text, control = split_control(self.end.text, quiet=True)
+            if not text.strip() and control is not None:  # a block alone goes out as this (REQ-PRESENT-6)
+                return control.question if isinstance(control, Poll) else "…"
+            return text
         if isinstance(self.end, Failed):
             unix = self.limits.resets_at if self.limits is not None else None
             reason = TEXTS.for_reason(self.end.reason, datetime.fromtimestamp(unix, tz) if unix is not None else None)
-            return f"{self.end.partial}\n\n{reason}" if self.end.partial.strip() else reason
+            partial = split_control(self.end.partial, quiet=True)[0]
+            return f"{partial}\n\n{reason}" if partial.strip() else reason
         return ""
 
 
@@ -224,7 +261,7 @@ class Agent:
                 reply_author = author_of(message.reply_to_message)
         tz = self.tz_of(uid)
         chains = self.chains_for(uid)
-        presenter = Presenter(self.app.bot, message, reactions=REACTIONS, texts=TEXTS, tz=tz)
+        presenter = Presenter(self.app.bot, message, reactions=REACTIONS, texts=TEXTS, tz=tz, controls=CONTROL_TEXTS)
         await presenter.accepted()
         # A question about its own photo or document waits for that file, bounded; the download is not cancelled.
         media = self.app.media if media_of(message) is not None else None
@@ -265,17 +302,54 @@ class Agent:
             await self.app.react(uid, message.message_id, None)
             await self.app.say(uid, FAILED_TEXT, message.message_id)
             return
-        if sent is not None:
-            await chains.link(chain, sent)
-            # A rich message comes back without `text`: store what the presenter sent (REQ-LOG-7).
+        if sent is None:
+            return
+        at = self.app.clock()
+        await chains.link(chain, sent)
+        # A rich message comes back without `text`: store what the presenter sent (REQ-LOG-7).
+        store.record_bot_sent(
+            sent.message_id,
+            sent.text or watched.shown(tz),
+            message.message_id,
+            sent.model_dump(mode="json", exclude_none=True),
+            at,
+            draft=watched.draft if watched.draft != watched.shown(tz) else None,
+        )
+        control = presenter.control
+        if isinstance(control, Offer | Form):  # REQ-TURN-13; a keyboard Telegram refused leaves it None
+            store.record_control(sent.message_id, control_block(control), None, at)
+        follow_up = presenter.follow_up
+        if follow_up is not None and isinstance(watched.control, Poll):  # the poll, or its numbered text
             store.record_bot_sent(
+                follow_up.message_id,
+                poll_fallback_text(watched.control),
                 sent.message_id,
-                sent.text or watched.shown(tz),
-                message.message_id,
-                sent.model_dump(mode="json", exclude_none=True),
-                self.app.clock(),
-                draft=watched.draft if watched.draft != watched.shown(tz) else None,
+                follow_up.model_dump(mode="json", exclude_none=True),
+                at,
             )
+            await chains.link(chain, follow_up)
+            if isinstance(control, Poll) and follow_up.poll is not None:
+                store.record_control(follow_up.message_id, control_block(control), follow_up.poll.id, at)
+        keep = presenter.control_message.message_id if presenter.control_message is not None else None
+        await self._supersede(uid, message.chat.id, chain, keep, at)
+
+    async def _supersede(self, uid: int, chat_id: int, chain: Chain, keep: int | None, at: int) -> None:
+        """REQ-TURN-13: a newer answer in the chain closes every other open control, then takes it off the chat.
+
+        Closed in the log first, so a control a press answered meanwhile is left as the press left it."""
+        store = self.app.log_for(uid)
+        for rec in store.open_controls(chain.id):
+            if rec.message_id == keep or not store.close_control(rec.message_id, "superseded", at):
+                continue
+            try:
+                if rec.poll_id is not None:
+                    await self.app.bot.stop_poll(chat_id=chat_id, message_id=rec.message_id)
+                else:
+                    await self.app.bot.edit_message_reply_markup(
+                        chat_id=chat_id, message_id=rec.message_id, reply_markup=None
+                    )
+            except (TelegramAPIError, OSError, TimeoutError) as exc:
+                log.warning("user %d: removing the control of %d failed: %s", uid, rec.message_id, type(exc).__name__)
 
     def _editor(self, question: str, replied: str | None) -> Callable[[str], Awaitable[str]]:
         """REQ-TURN-12: the full answer rewritten for the person, with the question it answers."""
@@ -351,7 +425,7 @@ class Agent:
             reason = end.reason if isinstance(end, Failed) else "no terminal event"
             log.warning("user %d: pass failed: %s", uid, reason)
             return
-        digest = without_final_period(end.text.strip())
+        digest = without_final_period(split_control(end.text)[0].strip())  # REQ-TURN-14: no control on a digest
         baseline, after = (before if started else at_entry), self._mark(uid, facts, "after")
         if baseline is None or after is None:  # REQ-TURN-7 cannot be decided: post nothing rather than guess
             log.warning("user %d: pass done, change unknown; digest not posted", uid)

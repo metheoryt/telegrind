@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import Chat, Message, MessageReactionUpdated, ReactionTypeEmoji, ReplyParameters, User
 from televibe.telegram import reaction_added
+from televibe.telegram.controls import split_control
 
 from telegrind.config import Config
 from telegrind.incoming import AUTHOR_BOT, AUTHOR_ME, Incoming, incoming
@@ -119,7 +120,9 @@ class App:
         self.log_for(uid).set_receipt(message_id, emoji)
 
     async def say(self, uid: int, text: str, reply_to: int | None) -> Message | None:
-        """Send and store (REQ-LOG-7). Text the model may have written goes out with parse_mode=None."""
+        """Send and store (REQ-LOG-7). Text the model may have written goes out with parse_mode=None, and without
+        a control block: only a question's answer carries a control (REQ-TURN-14)."""
+        text = split_control(text)[0]
         reply = ReplyParameters(message_id=reply_to, allow_sending_without_reply=True) if reply_to is not None else None
         try:
             sent = await self.bot.send_message(chat_id=uid, text=text, parse_mode=None, reply_parameters=reply)
