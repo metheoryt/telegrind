@@ -9,7 +9,7 @@ telegrind is a multi-user Telegram log: Python stores every message in SQLite th
 - `config.py` — configuration from the environment and nothing else.
 - `layout.py` — one data directory, one sub-directory per person.
 - `incoming.py` — what a Telegram message is, lifted into the log's columns.
-- `log.py` — the log (`log.sqlite`): what Telegram sent, nothing derived.
+- `log.py` — the log (`log.sqlite`): what Telegram sent, nothing derived; a control the bot sent and every press or vote on it are `events` on the bot's entry, `polls` maps a poll id to its message (REQ-LOG-9).
 - `receipts.py` — the heart reaction: «stored; tap to delete».
 - `triggers.py` — what is a question by its text (a reply to the bot, a `/command`; a voice note's text is its clean transcript, REQ-VOICE-7); ❤ on any entry addresses it (`App.on_reaction`); a trailing `?` means nothing and no model decides.
 - `facts.py` — read-only reads of the agent's `facts.sqlite`.
@@ -42,6 +42,7 @@ TELEGRIND_LIVE_HOME=~/.claude-telegrind uv run pytest -m live   # live gate: rea
 - **Commit before any network or model call.** aiogram advances the polling offset as it dispatches; an update lost inside a handler is never redelivered. Store, then react, then call out.
 - **`edit_date` arrives as a raw Unix int**, not a datetime; an edit path that assumes otherwise dies on every edit.
 - **A reaction failure is swallowed**, so a wrong emoji looks like nothing happening. Probe each emoji live.
+- **A retracted poll vote is a `poll_answer` with empty `option_ids`** (measured on the dev bot 2026-10-19). It is logged as `voted` and starts nothing; a handler that reads it as «chose nothing» would run a turn on every retract.
 - **The turn's final text is what gets stored**, not `sent.text`: televibe's `Presenter` sends the answer as a rich message.
 - **Record fixtures with `--setting-sources project`.** SessionStart hooks on a dev box inject personal memory into a headless `claude -p` call.
 - **`log.sqlite` is used from the event-loop thread only.** No method is thread-safe.
