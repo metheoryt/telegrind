@@ -518,7 +518,10 @@ the person; by contract it runs a pass first (REQ-CONTRACT-6).
   an answer is sent, every other open control of its chain is closed as
   `superseded` and taken off the chat: a poll is stopped, an offer's or a
   form's keyboard removed. A Telegram failure there is logged and ignored; the
-  log closes it all the same. Controls of other chains are left alone.
+  log closes it all the same. Controls of other chains are left alone. A turn
+  that fails after its answer was sent (the failure text, or a partial answer
+  with it) supersedes the same way: whatever was sent is the chain's newest
+  answer.
 - **REQ-TURN-14** — A pass digest carries no control: a block in it is
   stripped before it is posted, and no `control` event is recorded. Nothing
   the bot sends through `App.say` shows a block.
@@ -611,7 +614,7 @@ The two files and four tables Python depends on.
   a cute but businesslike assistant. She speaks of herself in the feminine
   («записала», «посчитала»), and so do the bot's fixed sentences. The
   feminine is hers only: the person is spoken of as their «О человеке»
-  section says, and as «вы», without gender, until it exists (REQ-CONTRACT-16). Answers are
+  section says (as «ты» when it says nothing about ты/вы), and as «вы», without gender, until it exists (REQ-CONTRACT-16). Answers are
   the way an assistant reports to a boss: the result in the first line, two
   or three lines in all, no headings, tables or account of how she got it
   unless asked, in the person's language; a pass ends with one line saying what it derived («14 записей: 9
@@ -662,9 +665,13 @@ file formats are measured, not specified (section 12).
   the rows `ты | вы` and `он | она`; the name (a name, a name and
   patronymic, or a nickname) is typed as a reply to that message, so it
   comes back as «Текстом: …» beside the form (REQ-TRIGGER-7). The agent
-  writes it into the section and uses it from then on. «вы» holds until the
-  person says otherwise; an unticked row («не выбрано») or no name is not
-  said. This is the turn's one question: anything else waits. An unanswered
+  writes it into the section and uses it from then on. «вы» holds while the
+  section is missing; an unticked row («не выбрано») or no name is not said,
+  and an unticked `ты | вы` row is written into the section as «вы». A
+  «## О человеке» section that says nothing about ты/вы (one written before
+  this form existed) means «ты», and the form is not asked for it. The editor
+  (REQ-TURN-12) keeps whichever the draft uses and, when unsure, does not
+  switch it. This is the turn's one question: anything else waits. An unanswered
   question is not repeated every turn, only on `/start`.
 - **REQ-CONTRACT-17** — Questions by the way. Every fifth question turn
   (`ASIDE_EVERY`, counted over all question turns) says in its
