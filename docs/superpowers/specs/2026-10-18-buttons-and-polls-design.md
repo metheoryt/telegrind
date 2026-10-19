@@ -101,18 +101,23 @@ From the installed aiogram 3.31 (`Bot.send_rich_message`, `Bot.send_poll`,
 - The agent's only channel is `Done.text` (telegrind REQ-CONTRACT-12), so the
   agent declares a control inside its text.
 
-### Not measured yet (measure before relying on it)
+### Measured (2026-10-19, live on the dev bot, private chat)
 
-- Whether a bot may set a reaction on its own message (the 👀 for a turn
-  started by a press). If not, the turn shows its working state some other way
-  (the live draft still runs in a private chat).
-- What update, if any, reports an option the person added with
-  `allow_adding_options`, and whether adding one also counts as a vote. Until
-  measured, polls are sent without it and «something else» is a text reply.
-- Whether a non-anonymous poll in a private chat delivers `poll_answer` to the
-  bot as documented.
-- How a rich message with an inline keyboard renders, and whether editing its
-  keyboard after a press (`edit_message_reply_markup`) works on a rich message.
+- A bot may set a reaction on its own message: `set_message_reaction(👀)` on
+  the bot's rich message returned `true`.
+- A rich message carries an inline keyboard, and `edit_message_reply_markup`
+  on it after a press works (it returns the edited `Message`); the same holds
+  for a plain message. The `callback_query.message` of a rich message comes
+  back with its `rich_message` and `reply_markup`. No separate control message
+  is needed.
+- A non-anonymous poll in a private chat delivers `poll_answer` with
+  `option_ids` (and `option_persistent_ids`, string indices) and the `user`,
+  no chat. A retracted vote arrives as a `poll_answer` with empty `option_ids`.
+- An option added with `allow_adding_options` arrives two ways: a `poll`
+  update listing it (`added_by_user`), and a `poll_option_added` service
+  message in the chat that points at the poll message. Adding it is not a
+  vote. Polls stay without it: a vote for an added option carries an index
+  the stored block cannot name, and «something else» stays a text reply.
 
 ## Decided
 
