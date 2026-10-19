@@ -10,9 +10,11 @@ from pathlib import Path
 
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
+    CallbackQuery,
     Chat,
     Document,
     File,
+    InaccessibleMessage,
     Message,
     MessageOriginChannel,
     MessageOriginChat,
@@ -20,6 +22,7 @@ from aiogram.types import (
     MessageOriginUser,
     MessageReactionUpdated,
     PhotoSize,
+    PollAnswer,
     PollOption,
     ReactionTypeEmoji,
     Sticker,
@@ -149,6 +152,35 @@ def bot_message(uid: int = 7, message_id: int = 500, text: str = "ok", reply_to:
         from_user=bot_user(),
         text=text,
         reply_to_message=reply_to,
+    )
+
+
+def callback(
+    uid: int = 7,
+    message_id: int = 500,
+    data: str | None = "tv:o",
+    *,
+    from_uid: int | None = None,
+    inaccessible: bool = False,
+    query_id: str = "q1",
+) -> CallbackQuery:
+    """A press on a button of the bot message `message_id` in `uid`'s private chat, by `from_uid` (default `uid`)."""
+    chat = Chat(id=uid, type="private")
+    message = (
+        InaccessibleMessage(chat=chat, message_id=message_id, date=0)
+        if inaccessible
+        else Message(message_id=message_id, date=NOW, chat=chat, from_user=bot_user(), text="…")
+    )
+    return CallbackQuery(id=query_id, from_user=user(from_uid or uid), chat_instance="ci", message=message, data=data)
+
+
+def poll_vote(uid: int = 7, poll_id: str = "poll-501", option_ids: tuple[int, ...] = (0,)) -> PollAnswer:
+    """A vote by `uid` (empty `option_ids`: the vote retracted)."""
+    return PollAnswer(
+        poll_id=poll_id,
+        option_ids=list(option_ids),
+        option_persistent_ids=[str(i) for i in option_ids],
+        user=user(uid),
     )
 
 

@@ -8,9 +8,32 @@ from collections.abc import Callable, Coroutine
 from typing import Any, Protocol
 
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import Chat, Message, MessageReactionUpdated, ReactionTypeEmoji, ReplyParameters, User
+from aiogram.types import (
+    CallbackQuery,
+    Chat,
+    Message,
+    MessageReactionUpdated,
+    PollAnswer,
+    ReactionTypeEmoji,
+    ReplyParameters,
+    User,
+)
 from televibe.telegram import reaction_added
-from televibe.telegram.controls import split_control
+from televibe.telegram.controls import (
+    Control,
+    ControlTexts,
+    Form,
+    Offer,
+    Poll,
+    answered_keyboard,
+    form_answer,
+    keyboard,
+    offer_answer,
+    parse_press,
+    poll_answer,
+    split_control,
+    ticks_after,
+)
 
 from telegrind.config import Config
 from telegrind.incoming import AUTHOR_BOT, AUTHOR_ME, Incoming, incoming
@@ -26,10 +49,24 @@ ADDRESSED_EMPTY = "Человек отметил это сообщение ❤, 
 NO_TRANSCRIPT_TEXT = "Это голосовое не получилось расшифровать"
 SLOW_TRANSCRIPT_TEXT = "Голосовое всё ещё расшифровывается. Сними ❤ и поставь снова, когда появится расшифровка"
 VOICE_WAIT_S = 600.0  # Scribe with its retries and the cleanup call; past this, the person is told
+CONTROL_TEXTS = ControlTexts(  # REQ-TURN-13; here, not in agent.py, which imports this module
+    offer_label="Да",
+    done_label="Готово",
+    pressed="Ответ кнопкой: {label}",
+    voted="Выбрано в опросе: {options}",
+    nothing="ничего",
+    form="Анкета: {rows}",
+    unset="не выбрано",
+    typed="Текстом: {text}",
+    answered="✓ {label}",
+    answered_in_text="✓ ответ текстом",
+)
 
 
 class Answerer(Protocol):
-    async def answer(self, uid: int, message: Message, text: str, *, addressed: bool = False) -> None: ...
+    async def answer(
+        self, uid: int, message: Message, text: str, *, addressed: bool = False, answering: int | None = None
+    ) -> None: ...
 
 
 class JobQueue(Protocol):
@@ -119,6 +156,13 @@ class App:
             return
         self.log_for(uid).set_receipt(message_id, emoji)
 
+    async def telegram(self, uid: int, what: str, call: Coroutine[Any, Any, Any]) -> None:
+        """A Telegram call whose failure costs only itself: logged, and the caller goes on (REQ-TRIGGER-6)."""
+        try:
+            await call
+        except (TelegramAPIError, OSError, TimeoutError) as exc:
+            log.warning("user %d: %s failed: %s", uid, what, type(exc).__name__)
+
     async def say(self, uid: int, text: str, reply_to: int | None) -> Message | None:
         """Send and store (REQ-LOG-7). Text the model may have written goes out with parse_mode=None, and without
         a control block: only a question's answer carries a control (REQ-TURN-14)."""
@@ -153,7 +197,9 @@ class App:
         if question is None:
             await self.react(uid, inc.message_id, FIRST)
             self.entry_changed(uid)
-        elif self.answerer is not None:
+            return
+        question = await self._settle_reply(uid, inc.reply_to, question)
+        if self.answerer is not None:
             self.spawn(self.answerer.answer(uid, msg, question))
 
     async def on_edit(self, msg: Message) -> None:
@@ -233,6 +279,7 @@ class App:
         if entry.receipt is not None:
             await self.react(uid, message_id, None)
         self.entry_changed(uid)
+        question = await self._settle_reply(uid, entry.reply_to, question)
         if self.answerer is not None:
             message = Message.model_validate_json(entry.raw)
             self.spawn(self.answerer.answer(uid, message, question))
@@ -269,3 +316,104 @@ class App:
         if self.answerer is not None:
             message = Message.model_validate_json(entry.raw)  # televibe REQ-REACTED-2: a stored message drives a turn
             self.spawn(self.answerer.answer(uid, message, text, addressed=True))
+
+    # -- controls: a press, a vote, or a reply to a control is the person's answer ------------
+
+    async def on_callback(self, query: CallbackQuery) -> None:
+        """REQ-TRIGGER-6, REQ-LOG-1: the press is logged, then the callback answered, then the keyboard edited and,
+        when it closed the control, the answer asked. Only the message's chat and id are read: it may be an
+        InaccessibleMessage. Anything not ours (a stranger, a message the log never saw, no control, foreign data)
+        only stops the spinner."""
+        msg, press = query.message, parse_press(query.data)
+        uid = self.allowed(msg.chat, query.from_user) if msg is not None else None
+        if msg is None or uid is None or press is None or query.data is None:
+            await self.telegram(
+                query.from_user.id, "callback answer", self.bot.answer_callback_query(callback_query_id=query.id)
+            )
+            return
+        store, mid = self.log_for(uid), msg.message_id
+        payload = query.model_dump(mode="json", exclude_none=True)
+        closed = store.record_press(mid, query.data, payload, self.clock(), closes=press.kind in ("offer", "done"))
+        await self.telegram(uid, "callback answer", self.bot.answer_callback_query(callback_query_id=query.id))
+        rec = store.control(mid)
+        if rec is None:
+            return  # no control on that message: record_press stored nothing
+        control = split_control(rec.block, quiet=True)[1]
+        if closed:
+            await self._answered(uid, mid, control, rec.presses)
+        elif rec.open and press.kind == "tick" and isinstance(control, Form):
+            markup = keyboard(control, CONTROL_TEXTS, self._ticks(control, rec.presses))
+            await self.telegram(
+                uid, "tick", self.bot.edit_message_reply_markup(chat_id=uid, message_id=mid, reply_markup=markup)
+            )
+
+    async def _answered(self, uid: int, mid: int, control: Control | None, presses: tuple[str, ...]) -> None:
+        """An offer or a form [Готово] press closed the control: mark the keyboard, then ask the answer."""
+        if isinstance(control, Offer):
+            label, text = control.label or CONTROL_TEXTS.offer_label, offer_answer(control, CONTROL_TEXTS)
+        elif isinstance(control, Form):
+            label = CONTROL_TEXTS.done_label
+            text = form_answer(control, self._ticks(control, presses), CONTROL_TEXTS)
+        else:
+            log.warning("user %d: a press closed %d, whose block is not an offer or a form", uid, mid)
+            return
+        mark = answered_keyboard(CONTROL_TEXTS.answered.format(label=label))
+        await self.telegram(
+            uid, "answered mark", self.bot.edit_message_reply_markup(chat_id=uid, message_id=mid, reply_markup=mark)
+        )
+        self._ask_on(uid, mid, text)
+
+    async def on_poll_answer(self, answer: PollAnswer) -> None:
+        """REQ-TRIGGER-6: a vote by an allowed person is logged; one that closed the poll stops it and is asked.
+        A retracted vote (no options) is logged and starts nothing. A private chat's id is the person's."""
+        uid = answer.user.id if answer.user is not None else None
+        if uid is None or uid not in self.config.allowed_user_ids:
+            return
+        store = self.log_for(uid)
+        payload = answer.model_dump(mode="json", exclude_none=True)
+        voted = store.record_vote(answer.poll_id, payload, self.clock(), closes=bool(answer.option_ids))
+        if voted is None or not voted[1]:
+            return
+        mid = voted[0]
+        await self.telegram(uid, "stop_poll", self.bot.stop_poll(chat_id=uid, message_id=mid))
+        rec = store.control(mid)
+        poll = split_control(rec.block, quiet=True)[1] if rec is not None else None
+        if not isinstance(poll, Poll):
+            log.warning("user %d: a vote closed %d, whose block is not a poll", uid, mid)
+            return
+        chosen = [i for i in answer.option_ids if 0 <= i < len(poll.options)]
+        self._ask_on(uid, mid, poll_answer(poll, chosen, CONTROL_TEXTS))
+
+    def _ask_on(self, uid: int, mid: int, text: str) -> None:
+        """A question turn on the answered bot message itself (REQ-TRIGGER-6)."""
+        entry = self.log_for(uid).entry(mid)
+        if self.answerer is None or entry is None:
+            return
+        message = Message.model_validate_json(entry.raw)
+        self.spawn(self.answerer.answer(uid, message, text, answering=mid))
+
+    async def _settle_reply(self, uid: int, reply_to: int | None, text: str) -> str:
+        """REQ-TRIGGER-7: a text or voice reply to a message with an open control closes it: in the log first, then
+        the poll stopped or the keyboard marked. A form's ticks go with the text. Returns the question's text."""
+        store = self.log_for(uid)
+        rec = store.control(reply_to) if reply_to is not None else None
+        if reply_to is None or rec is None or not store.close_control(reply_to, "text", self.clock()):
+            return text
+        if rec.poll_id is not None:
+            await self.telegram(uid, "stop_poll", self.bot.stop_poll(chat_id=uid, message_id=reply_to))
+        else:
+            mark = answered_keyboard(CONTROL_TEXTS.answered_in_text)
+            await self.telegram(
+                uid,
+                "answered mark",
+                self.bot.edit_message_reply_markup(chat_id=uid, message_id=reply_to, reply_markup=mark),
+            )
+        control = split_control(rec.block, quiet=True)[1]
+        if isinstance(control, Form):
+            return form_answer(control, self._ticks(control, rec.presses), CONTROL_TEXTS, typed=text)
+        return text
+
+    @staticmethod
+    def _ticks(form: Form, presses: tuple[str, ...]) -> tuple[int | None, ...]:
+        """REQ-TRIGGER-6: the ticks replayed from the log's presses, so they survive a restart."""
+        return ticks_after(form, [p for p in map(parse_press, presses) if p is not None])

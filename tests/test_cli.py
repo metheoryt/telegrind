@@ -85,6 +85,8 @@ async def test_run_leaves_sigterm_to_our_handler(tmp_path, monkeypatch):
     cfg = Config.from_env({"BOT_TOKEN": "1:x", "ALLOWED_USER_IDS": "7", "DATA_DIR": str(tmp_path / "data")})
     await cli.run(cfg)
     assert seen.get("handle_signals") is False
+    # REQ-TRIGGER-6: a press and a vote are delivered only when asked for
+    assert {"callback_query", "poll_answer"} <= set(seen["allowed_updates"])
 
 
 def test_sigterm_handler_exits_at_once(monkeypatch):

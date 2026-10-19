@@ -117,7 +117,9 @@ async def run(config: Config) -> None:
             # handle_signals=False: aiogram's own handler would replace _exit_on_sigterm's with a graceful stop and
             # a drain that can outlast the container's grace period (REQ-TURN-9: exit, keep the markers).
             await build_dispatcher(app).start_polling(
-                bot, allowed_updates=["message", "edited_message", "message_reaction"], handle_signals=False
+                bot,
+                allowed_updates=["message", "edited_message", "message_reaction", "callback_query", "poll_answer"],
+                handle_signals=False,
             )
         finally:
             ticker.cancel()

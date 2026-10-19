@@ -13,13 +13,13 @@ telegrind is a multi-user Telegram log: Python stores every message in SQLite th
 - `receipts.py` — the heart reaction: «stored; tap to delete».
 - `triggers.py` — what is a question by its text (a reply to the bot, a `/command`); ❤ on any entry addresses it (`App.on_reaction`); a trailing `?` means nothing and no model decides.
 - `facts.py` — read-only reads of the agent's `facts.sqlite`.
-- `app.py` — the message path: store first, then react, enqueue or ask.
+- `app.py` — the message path: store first, then react, enqueue or ask; a press, a vote or a reply to a control is an answer.
 - `agent.py` — agent turns (a pass over the tail, or an answer) through televibe.
 - `media.py` — photos and documents into `media/<sha256>`, after the commit.
 - `voice.py`, `scribe.py`, `cleanup.py`, `keyterms.py` — voice notes: ElevenLabs Scribe, cleanup, transcript post.
 - `scheduler.py` — when a pass runs: the quiet hour, or a backlog over the limit.
 - `reminders.py` — reminders the person asked for, from the agent's `reminders` table, sent on time, no model.
-- `bot.py` — aiogram wiring: three handlers, each a line.
+- `bot.py` — aiogram wiring: five handlers (message, edit, reaction, press, vote), each a line.
 - `cli.py` — `telegrind run` and `telegrind doctor`.
 
 `agent/` is the agent's working tree (its prompt and settings), copied into the image.

@@ -17,7 +17,6 @@ from televibe.events import Message as AgentMessage
 from televibe.telegram import Chain, Chains, Presenter, Reactions, Texts
 from televibe.telegram.controls import (
     Control,
-    ControlTexts,
     Form,
     Offer,
     Poll,
@@ -26,7 +25,7 @@ from televibe.telegram.controls import (
     split_control,
 )
 
-from telegrind.app import App
+from telegrind.app import CONTROL_TEXTS, App
 from telegrind.config import Config
 from telegrind.editor import EditorError, edit, without_final_period
 from telegrind.facts import Facts, FactsUnavailable
@@ -54,18 +53,6 @@ TEXTS = Texts(
 REACTIONS = Reactions(
     working="👀", done=None, failed_when_sent=False
 )  # a reaction or a text, never both; 👀 throughout
-CONTROL_TEXTS = ControlTexts(  # REQ-TURN-13
-    offer_label="Да",
-    done_label="Готово",
-    pressed="Ответ кнопкой: {label}",
-    voted="Выбрано в опросе: {options}",
-    nothing="ничего",
-    form="Анкета: {rows}",
-    unset="не выбрано",
-    typed="Текстом: {text}",
-    answered="✓ {label}",
-    answered_in_text="✓ ответ текстом",
-)
 LONG_TURN_S = 60.0  # REQ-TURN-11: a question still running after this is told it is long
 LONG_TURN_TEXT = "Это надолго. Отвечу сюда, как закончу; записи можно слать дальше"
 MEDIA_WAIT_S = 30.0  # how long a question with a photo or document waits for its own download
@@ -242,8 +229,11 @@ class Agent:
 
     # -- a question -----------------------------------------------------------------------
 
-    async def answer(self, uid: int, message: Message, text: str, *, addressed: bool = False) -> None:
-        """A question turn. An addressed one (REQ-TRIGGER-4) carries the context around its entry."""
+    async def answer(
+        self, uid: int, message: Message, text: str, *, addressed: bool = False, answering: int | None = None
+    ) -> None:
+        """A question turn. An addressed one (REQ-TRIGGER-4) carries the context around its entry. One `answering` a
+        control (REQ-TRIGGER-6) runs on that bot message itself: it quotes it and continues its chain."""
         store = self.app.log_for(uid)
         if self.engine is None or self.provider is None:
             await self.app.say(uid, NO_AGENT_TEXT, message.message_id)
@@ -252,7 +242,10 @@ class Agent:
             await self.app.say(uid, QUOTA_TEXT.format(quota=self.config.turn_quota), message.message_id)
             return
         reply_text, reply_author = None, AUTHOR_BOT
-        if message.reply_to_message is not None:
+        if answering is not None:
+            if (answered := store.entry(answering)) is not None:
+                reply_text, reply_author = answered.transcript or answered.text, answered.author
+        elif message.reply_to_message is not None:
             replied = store.entry(message.reply_to_message.message_id)
             if replied is not None:
                 reply_text, reply_author = replied.transcript or replied.text, replied.author
@@ -272,7 +265,8 @@ class Agent:
         store.turn_add("question", self.app.clock())
         aside = store.turns_since("question", 0) % ASIDE_EVERY == 0
         try:
-            chain = await chains.find(message) or chains.new()
+            found = await chains.of(message.chat.id, answering) if answering is not None else await chains.find(message)
+            chain = found or chains.new()
             async with chains.turn(
                 self.engine,
                 chain,

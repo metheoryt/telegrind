@@ -265,10 +265,12 @@ the cycle is a heart, because every one of them means the same thing.
 - **REQ-REACT-3** — A deletion takes effect in the facts on the next pass
   (REQ-CONTRACT-5), not at once. Every question starts with a pass
   (REQ-CONTRACT-6), so an answer never counts a deleted entry.
-- **REQ-REACT-4** — Registering the reaction handler is what subscribes the
-  `message_reaction` update type: aiogram derives `allowed_updates` from the
-  handlers present. A test checks the dispatcher's resolved update types
-  include `message_reaction`, so dropping the handler is caught.
+- **REQ-REACT-4** — Polling asks for `message`, `edited_message`,
+  `message_reaction`, `callback_query` and `poll_answer` (`cli.py` passes
+  `allowed_updates`; Telegram sends no reaction, press or vote unasked). Each
+  has its handler in `bot.py`; a test checks the dispatcher's resolved update
+  types include all five, so dropping a handler is caught, and another checks
+  the list polling starts with (REQ-TRIGGER-6).
 
 ---
 
@@ -382,6 +384,37 @@ that storing a log entry costs no model call and no subscription.
   context is taken around the replied entry instead, and the replied text is
   given as for any reply (REQ-TURN-2). When it replies to a bot answer, the
   turn continues that answer's chain (REQ-TURN-3).
+- **REQ-TRIGGER-6** — A press on [Да] or [Готово], or a vote in a poll, is
+  the person's answer to the bot message that carries the control
+  (REQ-TURN-13): a question turn on that message itself. The press is a
+  `pressed` event and the vote a `voted` event on that entry, committed
+  first (REQ-LOG-1); then the callback is answered (`answerCallbackQuery`),
+  then the keyboard is replaced by the mark of what was pressed («✓ Да»,
+  «✓ Готово») or the poll is stopped, then the turn starts. Its prompt is the
+  answer as text («Ответ кнопкой: Да», «Анкета: вы; он», «Выбрано в опросе:
+  …»); its `instructions` quote the answered message as a reply does
+  (REQ-TURN-2), the turn continues that message's chain (REQ-TURN-3), and the
+  answer replies to it. It is a question turn in every other respect: quota,
+  timeout, editor, presenter, whose 👀 on the bot's own message is best
+  effort. A tick on a form only moves the tick in the keyboard and starts no
+  turn; the ticks are replayed from the entry's `pressed` events, so they
+  survive a restart. A second press, or anything on a closed control, is
+  logged and starts nothing. A retracted vote (no options) is logged, leaves
+  the poll open and starts nothing. Only allowed people count: a press by
+  anyone else, on a message the log never saw, on a message with no control,
+  or with data that is not a control's only stops the spinner and stores
+  nothing; a vote by anyone else is not stored. A Telegram failure answering
+  the callback, editing the keyboard or stopping the poll is logged and does
+  not stop the turn.
+- **REQ-TRIGGER-7** — A text or voice reply (REQ-TRIGGER-1, REQ-VOICE-7) to a
+  message whose control is open closes it (`closed {"how": "text"}`), in the
+  log before any Telegram call: a poll is stopped, an offer's or a form's
+  keyboard becomes «✓ ответ текстом». The turn is the ordinary reply turn;
+  for a form its question is the ticks with the text («Анкета: вы; не
+  выбрано» and «Текстом: Максим» on the next line). A voice reply closes the
+  control when its transcript makes it a question, not before. A reply to a
+  closed control, or to a poll's numbered text (which carries none), is an
+  ordinary reply.
 
 ---
 

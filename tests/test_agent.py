@@ -14,7 +14,7 @@ from conftest import FIXTURES, records, turn_env
 from televibe import Engine
 from televibe.telegram import Presenter
 from televibe.telegram.controls import Form, Offer, Poll, control_block, poll_fallback_text
-from tgkit import NOW, FakeBot, bot_message, reaction, user_message
+from tgkit import NOW, FakeBot, bot_message, callback, reaction, user_message
 
 from telegrind import agent as agent_module
 from telegrind import editor
@@ -769,7 +769,10 @@ async def test_newer_answer_closes_open_controls_of_its_chain(rig, tmp_path, fir
     old = bot_ids(store)[-1]  # the answer for an offer, the poll message for a poll
     assert store.control(old).open
     agent.turn_env = scripted(tmp_path, OFFER_ANSWER)
-    await app.on_message(user_message(text="а ещё?", message_id=11, reply_to=bot_message(message_id=old, text="?")))
+    # Continued through the question, which the chain holds too: a reply to the control itself would close it as
+    # answered in text (REQ-TRIGGER-7), not superseded.
+    question = user_message(text="/q разбери выписку")
+    await app.on_message(user_message(text="/q а ещё?", message_id=11, reply_to=question))
     await app.drain()
     [(_, kw)] = [(n, kw) for n, kw in app.bot.calls if n == call]
     assert kw["message_id"] == old and kw["chat_id"] == 7
@@ -812,3 +815,27 @@ async def test_say_strips_a_control_block(rig):
     app, _, _ = rig
     sent = await app.say(7, "Готово\n\n" + control_block(Offer()), None)
     assert app.bot.texts() == ["Готово"] and app.log_for(7).entry(sent.message_id).text == "Готово"
+
+
+async def test_a_press_turn_quotes_the_answer_and_continues_its_chain(rig, tmp_path):
+    """REQ-TRIGGER-6, REQ-TURN-3: answering=<answer id> → the instructions quote the bot's answer, the session
+    resumes."""
+    app, agent, _ = rig
+    agent.turn_env = scripted(tmp_path, OFFER_ANSWER)
+    await app.on_message(user_message(text="/q разбери выписку"))
+    await app.drain()
+    store = app.log_for(7)
+    [answer_id] = bot_ids(store)
+    agent.turn_env = turn_env(tmp_path)
+    await app.on_callback(callback(data="tv:o", message_id=answer_id))
+    await app.drain()
+    first, second = records(tmp_path)
+    assert second["prompt"] == "Ответ кнопкой: Да"
+    assert (
+        first["argv"][first["argv"].index("--session-id") + 1] == second["argv"][second["argv"].index("--resume") + 1]
+    )
+    prompt = system_prompt(second)
+    assert "Человек отвечает на это сообщение бота:" in prompt and "Слить 31 пару?" in prompt
+    new = bot_ids(store)[-1]
+    assert store.entry(new).reply_to == answer_id and await store.chain_of(7, new) == await store.chain_of(7, answer_id)
+    assert store.turns_since("question", 0) == 2

@@ -1,4 +1,4 @@
-"""aiogram wiring: the three update types, each reaching the App (SPEC REQ-REACT-4)."""
+"""aiogram wiring: the five update types, each reaching the App (SPEC REQ-REACT-4, REQ-TRIGGER-6)."""
 
 from tgkit import FakeBot, reaction, user_message
 
@@ -9,10 +9,13 @@ from telegrind.layout import Layout
 
 
 def test_reaction_handler_subscribes_message_reaction(tmp_path):
-    """REQ-REACT-4: the dispatcher's resolved update types include message_reaction, message and edited_message."""
+    """REQ-REACT-4, REQ-TRIGGER-6: the resolved update types include message_reaction, message, edited_message,
+    callback_query and poll_answer."""
     cfg = Config.from_env({"BOT_TOKEN": "t", "ALLOWED_USER_IDS": "7", "DATA_DIR": str(tmp_path)})
     dp = build_dispatcher(App(config=cfg, bot=FakeBot(), layout=Layout(cfg.data_dir)))
-    assert {"message", "edited_message", "message_reaction"} <= set(dp.resolve_used_update_types())
+    assert {"message", "edited_message", "message_reaction", "callback_query", "poll_answer"} <= set(
+        dp.resolve_used_update_types()
+    )
 
 
 async def test_updates_reach_the_app(tmp_path):
