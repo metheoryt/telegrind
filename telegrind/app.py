@@ -276,10 +276,10 @@ class App:
             return
         if (question := self._question_of(uid, entry)) is None:
             return
+        question = await self._settle_reply(uid, entry.reply_to, question)  # REQ-TRIGGER-7: before any other call
         if entry.receipt is not None:
             await self.react(uid, message_id, None)
         self.entry_changed(uid)
-        question = await self._settle_reply(uid, entry.reply_to, question)
         if self.answerer is not None:
             message = Message.model_validate_json(entry.raw)
             self.spawn(self.answerer.answer(uid, message, question))

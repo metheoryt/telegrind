@@ -14,7 +14,7 @@ from conftest import FIXTURES, records, turn_env
 from televibe import Engine
 from televibe.telegram import Presenter
 from televibe.telegram.controls import Form, Offer, Poll, control_block, poll_fallback_text
-from tgkit import NOW, FakeBot, bot_message, callback, reaction, user_message
+from tgkit import NOW, FakeBot, bot_message, callback, poll_vote, reaction, user_message
 
 from telegrind import agent as agent_module
 from telegrind import editor
@@ -836,6 +836,31 @@ async def test_a_press_turn_quotes_the_answer_and_continues_its_chain(rig, tmp_p
     )
     prompt = system_prompt(second)
     assert "Человек отвечает на это сообщение бота:" in prompt and "Слить 31 пару?" in prompt
+    assert agent_module.ABOVE_INTRO not in prompt  # the answer replies to the person's question, not to the bot
     new = bot_ids(store)[-1]
     assert store.entry(new).reply_to == answer_id and await store.chain_of(7, new) == await store.chain_of(7, answer_id)
     assert store.turns_since("question", 0) == 2
+
+
+@pytest.mark.parametrize("how", ["vote", "text"])
+async def test_a_turn_on_a_poll_quotes_the_poll_and_the_answer_above_it(rig, tmp_path, how):
+    """REQ-TRIGGER-6, REQ-TRIGGER-7, REQ-TURN-2: a vote (answering=) or a text reply to the poll message → the
+    instructions quote the poll (question, options) and the answer the poll replies to; the prompt is the choice."""
+    app, agent, _ = rig
+    agent.turn_env = scripted(tmp_path, POLL_ANSWER)
+    await app.on_message(user_message(text="/q что из этого займы?"))
+    await app.drain()
+    store = app.log_for(7)
+    _, poll_msg = bot_ids(store)
+    agent.turn_env = turn_env(tmp_path)
+    if how == "vote":
+        await app.on_poll_answer(poll_vote(poll_id=f"poll-{poll_msg}", option_ids=(0,)))
+    else:
+        await app.on_message(user_message(text="никакие", message_id=11, reply_to=bot_message(message_id=poll_msg)))
+    await app.drain()
+    second = records(tmp_path)[1]
+    assert second["prompt"] == ("Выбрано в опросе: Арман 20 000" if how == "vote" else "никакие")
+    prompt = system_prompt(second)
+    assert POLL.question in prompt and "Арман 20 000" in prompt
+    assert agent_module.ABOVE_INTRO in prompt and "Нашла два перевода" in prompt
+    assert prompt.index("Нашла два перевода") < prompt.index(POLL.question)

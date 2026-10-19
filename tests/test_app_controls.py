@@ -219,7 +219,10 @@ async def test_voice_reply_to_a_form_carries_the_ticks(app):
     await app.on_message(user_message(voice=15, message_id=11, reply_to=bot_message(message_id=500, text="?")))
     assert app.log_for(7).control(500).open  # not settled before the transcript: it is the typed text
     app.log_for(7).record_transcript(11, raw="raw", text="Максим", cleaned=True, at=AT + 1)
+    before = len(app.bot.calls)
     await app.on_transcript(7, 11)
+    # closed and marked before the note's heart comes off: no Telegram call precedes the settle
+    assert app.bot.names()[before:] == ["edit_message_reply_markup", "set_message_reaction"]
     await app.drain()
     assert app.rec.calls == [(7, 11, "Анкета: вы; не выбрано\nТекстом: Максим", None)]
     assert not app.log_for(7).control(500).open and markups(app)[-1] == [["✓ ответ текстом"]]

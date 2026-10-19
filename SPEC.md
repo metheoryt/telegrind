@@ -393,7 +393,9 @@ that storing a log entry costs no model call and no subscription.
   «✓ Готово») or the poll is stopped, then the turn starts. Its prompt is the
   answer as text («Ответ кнопкой: Да», «Анкета: вы; он», «Выбрано в опросе:
   …»); its `instructions` quote the answered message as a reply does
-  (REQ-TURN-2), the turn continues that message's chain (REQ-TURN-3), and the
+  (REQ-TURN-2) — for a poll, also the bot answer the poll stands under,
+  quoted before it, as for any reply to a poll or its numbered text — the
+  turn continues that message's chain (REQ-TURN-3), and the
   answer replies to it. It is a question turn in every other respect: quota,
   timeout, editor, presenter, whose 👀 on the bot's own message is best
   effort. A tick on a form only moves the tick in the keyboard and starts no

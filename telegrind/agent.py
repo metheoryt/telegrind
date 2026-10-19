@@ -30,6 +30,7 @@ from telegrind.config import Config
 from telegrind.editor import EditorError, edit, without_final_period
 from telegrind.facts import Facts, FactsUnavailable
 from telegrind.incoming import AUTHOR_BOT, AUTHOR_ME, author_of, media_of
+from telegrind.log import Entry
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +58,7 @@ LONG_TURN_S = 60.0  # REQ-TURN-11: a question still running after this is told i
 LONG_TURN_TEXT = "Это надолго. Отвечу сюда, как закончу; записи можно слать дальше"
 MEDIA_WAIT_S = 30.0  # how long a question with a photo or document waits for its own download
 REPLY_INTRO = {AUTHOR_BOT: "Человек отвечает на это сообщение бота:", AUTHOR_ME: "Человек отвечает на свою запись:"}
+ABOVE_INTRO = "Ответ бота, под которым стоит сообщение ниже:"  # a poll's answer (REQ-TRIGGER-6, REQ-TRIGGER-7)
 FORWARD_INTRO = "Человек отвечает на пересланное сообщение:"  # any other author is a forward
 ADDRESSED_INTRO = "Человек отметил это сообщение ❤: оно обращено к тебе. Оно написано {when}."
 CONTEXT_INTRO = "Записи журнала перед ним (время, автор, текст):"
@@ -188,13 +190,17 @@ class Agent:
         addressed: Message | None = None,
         *,
         aside: bool = False,
+        above: str | None = None,
     ) -> str:
         """REQ-TURN-2: the current time in the person's zone, and the replied text, introduced by who wrote it.
-        REQ-TRIGGER-5: for a message addressed with ❤, when it was written and the entries before it."""
+        REQ-TRIGGER-5: for a message addressed with ❤, when it was written and the entries before it.
+        REQ-TRIGGER-6/7: `above`, the answer a replied poll stands under, is quoted before it."""
         local = self.local_now(uid)
         lines = [f"Сейчас {local:%Y-%m-%d %H:%M}, {WEEKDAYS[local.weekday()]}, зона {self.tz_of(uid).key}."]
         if addressed is not None:
             lines += self._addressed(uid, addressed)
+        if above and reply_text:
+            lines += [ABOVE_INTRO, "<<<", above, ">>>"]
         if reply_text:
             lines += [REPLY_INTRO.get(reply_author, FORWARD_INTRO), "<<<", reply_text, ">>>"]
         if aside:
@@ -217,6 +223,15 @@ class Agent:
                 lines.append(f"{datetime.fromtimestamp(e.occurred_at, tz):%Y-%m-%d %H:%M} {e.author}: {said}{mark}")
             lines.append(">>>")
         return lines
+
+    def _answer_above(self, uid: int, replied: Entry) -> str | None:
+        """The bot answer a replied bot message stands under: a poll, or its numbered text, replies to its answer
+        (REQ-TRIGGER-6, REQ-TRIGGER-7). None for anything else."""
+        store = self.app.log_for(uid)
+        if replied.author != AUTHOR_BOT or replied.reply_to is None:
+            return None
+        parent = store.entry(replied.reply_to)
+        return (parent.transcript or parent.text) if parent is not None and parent.author == AUTHOR_BOT else None
 
     def quota_left(self, uid: int) -> int:
         used = self.app.log_for(uid).turns_since("question", self.day_start(uid))
@@ -241,17 +256,16 @@ class Agent:
         if self.quota_left(uid) <= 0:
             await self.app.say(uid, QUOTA_TEXT.format(quota=self.config.turn_quota), message.message_id)
             return
-        reply_text, reply_author = None, AUTHOR_BOT
-        if answering is not None:
-            if (answered := store.entry(answering)) is not None:
-                reply_text, reply_author = answered.transcript or answered.text, answered.author
-        elif message.reply_to_message is not None:
-            replied = store.entry(message.reply_to_message.message_id)
-            if replied is not None:
-                reply_text, reply_author = replied.transcript or replied.text, replied.author
-            else:
-                reply_text = message.reply_to_message.text or message.reply_to_message.caption
-                reply_author = author_of(message.reply_to_message)
+        reply_text, reply_author, above = None, AUTHOR_BOT, None
+        reply = message.reply_to_message
+        replied_id = answering if answering is not None else (reply.message_id if reply is not None else None)
+        replied = store.entry(replied_id) if replied_id is not None else None
+        if replied is not None:
+            reply_text, reply_author = replied.transcript or replied.text, replied.author
+            above = self._answer_above(uid, replied)
+        elif answering is None and reply is not None:
+            reply_text = reply.text or reply.caption
+            reply_author = author_of(reply)
         tz = self.tz_of(uid)
         chains = self.chains_for(uid)
         presenter = Presenter(self.app.bot, message, reactions=REACTIONS, texts=TEXTS, tz=tz, controls=CONTROL_TEXTS)
@@ -277,7 +291,7 @@ class Agent:
                 access=Access.FULL,
                 lane=str(uid),
                 instructions=self.instructions(
-                    uid, reply_text, reply_author, message if addressed else None, aside=aside
+                    uid, reply_text, reply_author, message if addressed else None, aside=aside, above=above
                 ),
                 env=self.env(),
                 timeout_s=self.config.question_timeout_s,
