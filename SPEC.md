@@ -117,6 +117,7 @@ one transaction.
 events(id INTEGER PRIMARY KEY, message_id INTEGER NOT NULL, at INTEGER NOT NULL,
        kind TEXT NOT NULL, payload TEXT NOT NULL)
   -- kind: received | edited | stored | transcribed | deleted | restored | bot_sent
+                 --   | control | pressed | voted | answered | closed
   -- payload: JSON; what arrived, verbatim
 
 entries(message_id INTEGER PRIMARY KEY, author TEXT NOT NULL, kind TEXT NOT NULL,
@@ -134,6 +135,7 @@ name, mime, size, status, attempts, last_error)` for downloads,
 `voice_jobs(message_id, file_id, status, attempts, last_error)` for
 transcription, `chain_links(message_id, chain_id)` and
 `chain_sessions(chain_id, session)` for `televibe`'s reply chains, and
+`polls(poll_id, message_id)` for the bot messages that carry a poll, and
 `turns(id, at, kind)` for the quota and the schedule.
 
 ### LOG
@@ -176,6 +178,16 @@ transcription, `chain_links(message_id, chain_id)` and
 - **REQ-LOG-8** — The log implements `televibe.telegram.ChainStore` on
   `chain_links` and `chain_sessions`. A test runs televibe's chain flow
   against it.
+- **REQ-LOG-9** — A control the bot sent (an offer button, a form of tick
+  buttons, a poll) and every press or vote on it are events on the bot's
+  entry: `control` `{"block", "poll_id"}`, `pressed` `{"data", "update"}`,
+  `voted` `{"update"}`, `answered` `{}` and `closed` `{"how": "text" |
+  "superseded"}`. A control is open from its `control` event until an
+  `answered` or `closed` one. A press and the `answered` it causes are written
+  in one transaction, and only the press that finds the control open closes
+  it; a tick is kept as a press and closes nothing. The `polls` table resolves
+  a vote's `poll_id` to the poll's message. A press or vote that matches no
+  control is not stored.
 
 ---
 

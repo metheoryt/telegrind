@@ -894,7 +894,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
-    { name = "televibe", extras = ["telegram"], specifier = ">=0.6,<0.7" },
+    { name = "televibe", extras = ["telegram"], editable = "/home/me/wt/televibe/controls" },
 ]
 
 [package.metadata.requires-dev]
@@ -909,16 +909,24 @@ dev = [
 
 [[package]]
 name = "televibe"
-version = "0.6.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d5/97/2c62fa54efeed875c41f683377f18bb40154aedcff3d86d310f7ad0ca628/televibe-0.6.0.tar.gz", hash = "sha256:f5d912521e7b5cb75df7eefddb9dacf785b432f68ad0fcd686053c236cfa7847", size = 81670, upload-time = "2026-10-17T15:37:28.019Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e8/49/08fa8f5d1bca95baf1b1ce57f8de6cf8eb0180305fac45e25c198a1b79ac/televibe-0.6.0-py3-none-any.whl", hash = "sha256:da870a8910770b3d243c8496f5495a4c109f9aac5e91aa28816417b3e705b573", size = 37748, upload-time = "2026-10-17T15:37:26.159Z" },
-]
+version = "0.7.0"
+source = { editable = "/home/me/wt/televibe/controls" }
 
 [package.optional-dependencies]
 telegram = [
     { name = "aiogram" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "aiogram", marker = "extra == 'telegram'", specifier = ">=3.31,<4" }]
+provides-extras = ["telegram"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "aiogram", specifier = ">=3.31,<4" },
+    { name = "pytest", specifier = ">=8.3" },
+    { name = "pytest-asyncio", specifier = ">=0.24" },
+    { name = "pytest-timeout", specifier = ">=2.3" },
 ]
 
 [[package]]

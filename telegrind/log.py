@@ -13,6 +13,9 @@ from typing import Any
 
 from telegrind.incoming import AUTHOR_BOT, Incoming
 
+# events.kind: received | edited | stored | transcribed | deleted | restored | bot_sent | addressed | unaddressed |
+# drafted, and for a control (REQ-LOG-9): control {"block", "poll_id"} | pressed {"data", "update"} |
+# voted {"update"} | answered {} | closed {"how": "text" | "superseded"}
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events(
     id INTEGER PRIMARY KEY, message_id INTEGER NOT NULL, at INTEGER NOT NULL,
@@ -36,6 +39,7 @@ CREATE TABLE IF NOT EXISTS turns(id INTEGER PRIMARY KEY, at INTEGER NOT NULL, ki
 CREATE TABLE IF NOT EXISTS reminders_sent(
     entry_id INTEGER NOT NULL, what TEXT NOT NULL, day TEXT NOT NULL, at INTEGER NOT NULL,
     PRIMARY KEY(entry_id, what, day));
+CREATE TABLE IF NOT EXISTS polls(poll_id TEXT PRIMARY KEY, message_id INTEGER NOT NULL);
 """
 
 ENTRY_COLUMNS = (
@@ -94,6 +98,17 @@ class Event:
     at: int
     kind: str
     payload: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class ControlRecord:
+    """A control on a bot entry (REQ-LOG-9), read back from the entry's events."""
+
+    message_id: int
+    block: str  # televibe control_block(...) text
+    poll_id: str | None
+    open: bool  # a `control` event and no `answered` or `closed` after it
+    presses: tuple[str, ...]  # callback data of every `pressed` event, in order
 
 
 class Log:
@@ -251,6 +266,83 @@ class Log:
     def set_receipt(self, message_id: int, emoji: str | None) -> None:
         with self._tx():
             self.conn.execute("UPDATE entries SET receipt = ? WHERE message_id = ?", (emoji, message_id))
+
+    # -- controls (REQ-LOG-9): events on the bot's entry; `polls` resolves a vote to its message ---
+
+    def _is_open(self, message_id: int) -> bool:
+        row = self.conn.execute(
+            "SELECT kind FROM events WHERE message_id = ? AND kind IN ('control', 'answered', 'closed')"
+            " ORDER BY id DESC LIMIT 1",
+            (message_id,),
+        ).fetchone()
+        return row is not None and row["kind"] == "control"
+
+    def _has_control(self, message_id: int) -> bool:
+        row = self.conn.execute("SELECT 1 FROM events WHERE message_id = ? AND kind = 'control'", (message_id,))
+        return row.fetchone() is not None
+
+    def record_control(self, message_id: int, block: str, poll_id: str | None, at: int) -> None:
+        with self._tx():
+            if self._exists(message_id) is None:
+                return
+            self._append(message_id, "control", {"block": block, "poll_id": poll_id}, at)
+            if poll_id is not None:
+                self.conn.execute(
+                    "INSERT INTO polls(poll_id, message_id) VALUES (?, ?)"
+                    " ON CONFLICT(poll_id) DO UPDATE SET message_id = excluded.message_id",
+                    (poll_id, message_id),
+                )
+
+    def control(self, message_id: int) -> ControlRecord | None:
+        rows = self.conn.execute(
+            "SELECT kind, payload FROM events WHERE message_id = ? AND kind IN ('control', 'pressed') ORDER BY id",
+            (message_id,),
+        ).fetchall()
+        made = next((json.loads(r["payload"]) for r in rows if r["kind"] == "control"), None)
+        if made is None:
+            return None
+        presses = tuple(json.loads(r["payload"])["data"] for r in rows if r["kind"] == "pressed")
+        return ControlRecord(message_id, made["block"], made["poll_id"], self._is_open(message_id), presses)
+
+    def _answer(self, message_id: int, closes: bool, at: int) -> bool:
+        """Inside a transaction: `answered` when this closes an open control."""
+        if not closes or not self._is_open(message_id):
+            return False
+        self._append(message_id, "answered", {}, at)
+        return True
+
+    def record_press(self, message_id: int, data: str, payload: dict[str, Any], at: int, *, closes: bool) -> bool:
+        """A button press; True when it closed the control. A press on an entry without a control is not stored."""
+        with self._tx():
+            if not self._has_control(message_id):
+                return False
+            self._append(message_id, "pressed", {"data": data, "update": payload}, at)
+            return self._answer(message_id, closes, at)
+
+    def record_vote(self, poll_id: str, payload: dict[str, Any], at: int, *, closes: bool) -> tuple[int, bool] | None:
+        """A poll answer: (the poll's message, whether it closed the control); None for an unknown poll."""
+        with self._tx():
+            row = self.conn.execute("SELECT message_id FROM polls WHERE poll_id = ?", (poll_id,)).fetchone()
+            if row is None:
+                return None
+            message_id = row["message_id"]
+            self._append(message_id, "voted", {"update": payload}, at)
+            return message_id, self._answer(message_id, closes, at)
+
+    def close_control(self, message_id: int, how: str, at: int) -> bool:
+        """`closed` ("text" | "superseded") on an open control; False when there is none or it is closed."""
+        with self._tx():
+            if not self._is_open(message_id):
+                return False
+            self._append(message_id, "closed", {"how": how}, at)
+            return True
+
+    def open_controls(self, chain_id: str) -> list[ControlRecord]:
+        ids = self.conn.execute(
+            "SELECT message_id FROM chain_links WHERE chain_id = ? ORDER BY message_id", (chain_id,)
+        ).fetchall()
+        records = (self.control(r["message_id"]) for r in ids)
+        return [rec for rec in records if rec is not None and rec.open]
 
     # -- reads ------------------------------------------------------------------------
 
