@@ -15,7 +15,7 @@
 ## Global Constraints
 
 - **Never a bare `uv sync`:** always `uv sync -p /usr/bin/python3.12` (or the box's non-freethreaded python3.14).
-- **Dependency during development:** televibe from the local televibe workspace through a `[tool.uv.sources]` path entry (`televibe = { path = "../../televibe/controls", editable = true }` — the path the televibe plan's `wt.sh create` printed). That entry exists only on this branch and is removed in Task 6; a path source on `main` breaks the latitude image build.
+- **Dependency during development:** televibe from the local televibe workspace through a `[tool.uv.sources]` path entry (`televibe = { path = "/home/me/wt/televibe/controls", editable = true }` — the path the televibe plan's `wt.sh create` printed). That entry exists only on this branch and is removed in Task 6; a path source on `main` breaks the latitude image build.
 - REQ-LOG-1: every update the bot acts on is committed before anything else — before `answer_callback_query`, an edit of a keyboard, `stop_poll`, or a queued turn.
 - `log.sqlite` is used from the event-loop thread only. A new table is `CREATE TABLE IF NOT EXISTS` in `SCHEMA`; no new column on `entries`.
 - REQ-TEST-1: every new `REQ-*` in `SPEC.md` appears in a test name or docstring.

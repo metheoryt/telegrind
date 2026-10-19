@@ -65,6 +65,8 @@ Four facts the design marks *not measured* decide the shape of Tasks 3 and 4. Ma
   - `allow_adding_options`: if the added option shows up in `poll_answer.option_ids` (or a `poll` update carries its text) → `Poll` gets `open: bool` and `send_poll` passes `allow_adding_options=poll.open`; otherwise it is never passed, as Task 3 is written.
 - [ ] **Step 5: Commit** the memory and design-doc change in the telegrind workspace: `git commit -m "Controls probe: what Telegram does with keyboards, own reactions and polls"`.
 
+**Task 1 outcome (2026-10-19):** keyboards ride on rich messages and `edit_message_reply_markup` works on them — no separate control message, `form_prompt` stays unused by `Presenter`; own reaction works; `poll_answer` arrives (retract = empty `option_ids`); `allow_adding_options` is **not** used (`Poll` gets no `open`), as Tasks 3–4 are written. Workspace: `/home/me/wt/televibe/controls`.
+
 ### Task 2: Control types, the block, and its parser
 
 **Files:**
