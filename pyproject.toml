@@ -20,9 +20,6 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["telegrind"]
 
-[tool.uv.sources]
-televibe = { path = "/home/me/wt/televibe/controls", editable = true }
-
 [dependency-groups]
 dev = [
     "pytest>=8.3",
