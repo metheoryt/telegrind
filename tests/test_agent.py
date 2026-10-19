@@ -864,3 +864,23 @@ async def test_a_turn_on_a_poll_quotes_the_poll_and_the_answer_above_it(rig, tmp
     assert POLL.question in prompt and "Арман 20 000" in prompt
     assert agent_module.ABOVE_INTRO in prompt and "Нашла два перевода" in prompt
     assert prompt.index("Нашла два перевода") < prompt.index(POLL.question)
+
+
+async def test_a_reply_to_a_press_turn_answer_quotes_only_that_answer(rig, tmp_path):
+    """REQ-TRIGGER-6, REQ-TURN-2: a press turn's answer replies to the pressed bot answer, but it is no poll: a reply
+    to it quotes it alone, with no answer above."""
+    app, agent, _ = rig
+    agent.turn_env = scripted(tmp_path, OFFER_ANSWER)
+    await app.on_message(user_message(text="/q разбери выписку"))
+    await app.drain()
+    store = app.log_for(7)
+    [answer_id] = bot_ids(store)
+    agent.turn_env = turn_env(tmp_path)
+    await app.on_callback(callback(data="tv:o", message_id=answer_id))
+    await app.drain()
+    press_answer = bot_ids(store)[-1]
+    assert store.entry(press_answer).reply_to == answer_id  # a bot entry replying to a bot entry
+    await app.on_message(user_message(text="а ещё?", message_id=11, reply_to=bot_message(message_id=press_answer)))
+    await app.drain()
+    prompt = system_prompt(records(tmp_path)[2])
+    assert ANSWER in prompt and agent_module.ABOVE_INTRO not in prompt and "Слить 31 пару?" not in prompt

@@ -225,10 +225,11 @@ class Agent:
         return lines
 
     def _answer_above(self, uid: int, replied: Entry) -> str | None:
-        """The bot answer a replied bot message stands under: a poll, or its numbered text, replies to its answer
-        (REQ-TRIGGER-6, REQ-TRIGGER-7). None for anything else."""
+        """The bot answer a replied poll message stands under (REQ-TRIGGER-6, REQ-TRIGGER-7). Only a poll: a press
+        turn's answer replies to a bot answer too; a poll's numbered text needs none (its chain wrote it)."""
         store = self.app.log_for(uid)
-        if replied.author != AUTHOR_BOT or replied.reply_to is None:
+        rec = store.control(replied.message_id)
+        if replied.author != AUTHOR_BOT or replied.reply_to is None or rec is None or rec.poll_id is None:
             return None
         parent = store.entry(replied.reply_to)
         return (parent.transcript or parent.text) if parent is not None and parent.author == AUTHOR_BOT else None
