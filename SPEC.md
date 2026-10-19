@@ -776,7 +776,9 @@ vote or form into the next turn's text (REQ-TRIGGER-6, REQ-TRIGGER-7).
   one offer is an `offer` block labelled «Напомнить» and several (at most
   three) are one `poll multiple` with «ничего» among the options
   (REQ-CONTRACT-20); nothing is numbered. A pass's digest (REQ-TURN-7)
-  carries no control (REQ-TURN-14), so there the offer is in plain words.
+  carries no control (REQ-TURN-14) and stays one line (REQ-CONTRACT-11), so
+  there the offer is in plain words inside that line («…, Арман вернёт
+  20 ноября — напомнить?»), never on a line of its own.
   An offer is a row with `proposed = 1`, written in the turn that makes it,
   which Python never sends. The person's answer (a press, a vote, a reply)
   is a question (REQ-TRIGGER-1, REQ-TRIGGER-6): an accepted offer becomes

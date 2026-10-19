@@ -383,16 +383,9 @@ def test_each_entry_lands_as_the_corpus_expects(runs, case):
     _rate([ok for ok, _ in results], [rows for _, rows in results])
 
 
-def _digest_ok(digest: str) -> bool:
-    """One line naming counts, and at most a line after it offering reminders in plain words (REQ-REMIND-5)."""
-    lines = digest.strip().splitlines()
-    offer = lines[1:] == [] or (len(lines) == 2 and bool(re.search(r"напомн", lines[1], re.I)))
-    return bool(lines) and bool(re.search(r"\d", lines[0])) and offer and "```" not in digest
-
-
 def test_pass_ends_with_one_line_digest(runs):
-    """REQ-CONTRACT-11, REQ-TURN-7, REQ-REMIND-5: the digest is one line naming counts, then maybe a reminder offer."""
-    checks = [_digest_ok(r["digest"]) for r in runs]
+    """REQ-CONTRACT-11, REQ-TURN-7: the posted digest is one line naming counts."""
+    checks = [bool(r["digest"]) and "\n" not in r["digest"].strip() and re.search(r"\d", r["digest"]) for r in runs]
     _rate([bool(c) for c in checks], [r["digest"] for r in runs])
 
 
