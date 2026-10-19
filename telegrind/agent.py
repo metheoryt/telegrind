@@ -81,7 +81,8 @@ class _Watched:
 
     With an editor (REQ-TURN-12) the agent's messages never reach the draft, and `Done` carries the edited text;
     `draft` keeps the agent's own. The editor sees the answer without its control block, which is put back after
-    it (REQ-TURN-13). Without one, the events pass through unchanged."""
+    it (REQ-TURN-13); a block in the editor's own text is dropped first, so the answer carries the agent's one.
+    Without one, the events pass through unchanged."""
 
     def __init__(self, events: AsyncIterable[Event], editor: Callable[[str], Awaitable[str]] | None = None) -> None:
         self._events, self._editor = events, editor
@@ -104,7 +105,8 @@ class _Watched:
                 visible, control = split_control(event.text)
                 if visible.strip():
                     self.draft = event.text
-                    edited = await self._edited(visible)
+                    # A fence the editor wrote itself would make two blocks, and both would be dropped.
+                    edited = split_control(await self._edited(visible), quiet=True)[0].strip() or visible
                     block = control_block(control) if control is not None else ""
                     event = dataclasses.replace(event, text="\n\n".join(p for p in (edited, block) if p))
             if isinstance(event, Done):

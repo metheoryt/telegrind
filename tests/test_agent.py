@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
+from aiogram.types import Message
 from conftest import FIXTURES, records, turn_env
 from televibe import Engine
 from televibe.telegram import Presenter
@@ -717,6 +718,29 @@ async def test_a_failed_edit_keeps_the_control(rig, tmp_path, monkeypatch):
     assert store.entry(sent_id).text == "Слить 31 пару?" and store.control(sent_id).open
 
 
+@pytest.mark.parametrize(
+    "edited", ["Сливаю 31 пару?\n\n" + control_block(POLL), control_block(POLL)], ids=["text", "alone"]
+)
+async def test_a_block_the_editor_writes_is_dropped_and_the_agents_put_back(edited):
+    """REQ-TURN-12, REQ-TURN-13: a control fence in the editor's own output is dropped before the agent's block is put
+    back: one block, the agent's; an edit that was only a fence leaves the agent's visible text."""
+    from televibe.events import Done
+    from televibe.telegram.controls import split_control
+
+    async def events():
+        yield Done(session=None, text=OFFER_ANSWER, usage={})
+
+    async def rogue(text):
+        return edited
+
+    watched = _Watched(events(), rogue)
+    [done] = [e async for e in watched]
+    visible = "Сливаю 31 пару?" if edited.startswith("Сливаю") else "Слить 31 пару?"
+    assert done.text == visible + "\n\n" + control_block(Offer())
+    assert done.text.count("```control") == 1
+    assert watched.control == split_control(OFFER_ANSWER)[1] and isinstance(watched.control, Offer)
+
+
 async def test_poll_message_is_stored_linked_and_mapped(rig, tmp_path):
     """REQ-TURN-13: the poll message is a bot entry replying to the answer, in the chain, and in polls."""
     app, agent, _ = rig
@@ -750,6 +774,23 @@ async def test_a_refused_poll_is_stored_as_its_text_in_the_chain(rig, tmp_path):
     assert store.control(fallback) is None and store.control(sent_id) is None
 
 
+async def chain_with_open_control(app, agent, tmp_path, second: str) -> tuple[Message, int]:
+    """A1, an answer with no control; a reply to it answered with `second`. Returns A1 as Telegram shows it and the
+    message holding A2's open control (A2 for an offer, its poll message for a poll)."""
+    await app.on_message(user_message(text="/q разбери выписку"))
+    await app.drain()
+    store = app.log_for(7)
+    [a1] = bot_ids(store)
+    assert store.control(a1) is None
+    a1_msg = bot_message(message_id=a1, text=ANSWER)
+    agent.turn_env = scripted(tmp_path, second)
+    await app.on_message(user_message(text="а что с июлем?", message_id=11, reply_to=a1_msg))
+    await app.drain()
+    old = bot_ids(store)[-1]
+    assert store.control(old).open
+    return a1_msg, old
+
+
 @pytest.mark.parametrize(
     ("first", "call", "fail"),
     [
@@ -760,21 +801,17 @@ async def test_a_refused_poll_is_stored_as_its_text_in_the_chain(rig, tmp_path):
     ids=["offer", "poll", "telegram-refuses"],
 )
 async def test_newer_answer_closes_open_controls_of_its_chain(rig, tmp_path, first, call, fail):
-    """REQ-TURN-13: a reply in the chain answered → the older control is removed and closed as superseded; a Telegram
-    failure removing it is logged and ignored; the newer answer's own control stays open."""
+    """REQ-TURN-13: A1 has no control, a reply to it got A2 with one; a second reply to A1 continues the chain, and
+    its answer removes A2's control and closes it as superseded; a Telegram failure removing it is logged and ignored;
+    the newer answer's own control stays open."""
     app, agent, _ = rig
     app.bot = FakeBot(fail={call: fail})
-    agent.turn_env = scripted(tmp_path, first)
-    await app.on_message(user_message(text="/q разбери выписку"))
-    await app.drain()
+    a1_msg, old = await chain_with_open_control(app, agent, tmp_path, first)
     store = app.log_for(7)
-    old = bot_ids(store)[-1]  # the answer for an offer, the poll message for a poll
-    assert store.control(old).open
     agent.turn_env = scripted(tmp_path, OFFER_ANSWER)
-    # Continued through the question, which the chain holds too: a reply to the control itself would close it as
-    # answered in text (REQ-TRIGGER-7), not superseded.
-    question = user_message(text="/q разбери выписку")
-    await app.on_message(user_message(text="/q а ещё?", message_id=11, reply_to=question))
+    # A reply to A1, which has no control: a reply to A2's control itself would close it as answered in text
+    # (REQ-TRIGGER-7), not superseded.
+    await app.on_message(user_message(text="а ещё?", message_id=12, reply_to=a1_msg))
     await app.drain()
     [(_, kw)] = [(n, kw) for n, kw in app.bot.calls if n == call]
     assert kw["message_id"] == old and kw["chat_id"] == 7
@@ -782,7 +819,40 @@ async def test_newer_answer_closes_open_controls_of_its_chain(rig, tmp_path, fir
         assert kw["reply_markup"] is None
     assert not store.control(old).open and store.events(old)[-1].payload == {"how": "superseded"}
     new = bot_ids(store)[-1]
+    assert store.entry(new).reply_to == 12 and await store.chain_of(7, new) == await store.chain_of(7, old)
     assert store.control(new).open and store.open_controls(await store.chain_of(7, new)) == [store.control(new)]
+
+
+async def test_supersede_leaves_the_new_answers_own_poll_alone(rig, tmp_path):
+    """REQ-TURN-13: when the newer answer asks with a poll, that poll is the control it keeps: never stopped, still
+    open, the only open control of the chain; the older offer is closed as superseded."""
+    app, agent, _ = rig
+    a1_msg, old = await chain_with_open_control(app, agent, tmp_path, OFFER_ANSWER)
+    store = app.log_for(7)
+    agent.turn_env = scripted(tmp_path, POLL_ANSWER)
+    await app.on_message(user_message(text="а ещё?", message_id=12, reply_to=a1_msg))
+    await app.drain()
+    assert "stop_poll" not in app.bot.names()
+    assert store.events(old)[-1].payload == {"how": "superseded"}
+    poll_msg = bot_ids(store)[-1]
+    rec = store.control(poll_msg)
+    assert rec.open and rec.poll_id == f"poll-{poll_msg}"
+    assert store.open_controls(await store.chain_of(7, poll_msg)) == [rec]
+
+
+async def test_a_failed_turn_still_supersedes_the_chains_controls(rig, tmp_path):
+    """REQ-TURN-13: a turn that fails after it sent its failure text is the chain's newest answer all the same: the
+    older open control is closed as superseded and taken off the chat."""
+    app, agent, _ = rig
+    a1_msg, old = await chain_with_open_control(app, agent, tmp_path, OFFER_ANSWER)
+    store = app.log_for(7)
+    agent.turn_env = turn_env(tmp_path, turn="limit.jsonl", exit=1)
+    await app.on_message(user_message(text="а ещё?", message_id=12, reply_to=a1_msg))
+    await app.drain()
+    assert any("Лимит" in t for t in app.bot.texts())
+    assert not store.control(old).open and store.events(old)[-1].payload == {"how": "superseded"}
+    [(_, kw)] = [(n, kw) for n, kw in app.bot.calls if n == "edit_message_reply_markup"]
+    assert kw["message_id"] == old and kw["reply_markup"] is None
 
 
 async def test_an_answer_in_another_chain_leaves_controls_alone(rig, tmp_path):
@@ -888,9 +958,49 @@ async def test_a_reply_to_a_press_turn_answer_quotes_only_that_answer(rig, tmp_p
     assert ANSWER in prompt and agent_module.ABOVE_INTRO not in prompt and "Слить 31 пару?" not in prompt
 
 
+async def test_an_offer_end_to_end_through_app_and_agent(rig, tmp_path):
+    """REQ-TURN-13, REQ-TRIGGER-6, REQ-LOG-9, REQ-TURN-3: a real App with a real Agent. The answer with an offer is
+    sent with [Да] and recorded with its control; the press is logged, answered, marked «✓ Да», and starts a turn
+    that resumes the chain's session and replies to the pressed message."""
+    app, agent, _ = rig
+    agent.turn_env = scripted(tmp_path, OFFER_ANSWER)
+    await app.on_message(user_message(text="/q разбери выписку"))
+    await app.drain()
+    store = app.log_for(7)
+    [answer_id] = bot_ids(store)
+    [(_, sent_kw)] = app.bot.sends()
+    assert sent_kw["reply_markup"].inline_keyboard[0][0].text == "Да"
+    assert store.entry(answer_id).text == "Слить 31 пару?" and store.control(answer_id).open
+    agent.turn_env = turn_env(tmp_path)
+    await app.on_callback(callback(data="tv:o", message_id=answer_id))
+    await app.drain()
+    assert [e.kind for e in store.events(answer_id)] == ["bot_sent", "control", "pressed", "answered"]
+    assert not store.control(answer_id).open
+    assert "answer_callback_query" in app.bot.names()
+    [(_, mark)] = [(n, kw) for n, kw in app.bot.calls if n == "edit_message_reply_markup"]
+    assert mark["message_id"] == answer_id and mark["reply_markup"].inline_keyboard[0][0].text == "✓ Да"
+    first, second = records(tmp_path)
+    assert second["prompt"] == "Ответ кнопкой: Да"
+    assert (
+        first["argv"][first["argv"].index("--session-id") + 1] == second["argv"][second["argv"].index("--resume") + 1]
+    )
+    _, reply_kw = app.bot.sends()[-1]
+    assert reply_kw["reply_parameters"].message_id == answer_id and ANSWER in app.bot.texts()[-1]
+    new = bot_ids(store)[-1]
+    assert store.entry(new).reply_to == answer_id
+    assert await store.chain_of(7, new) == await store.chain_of(7, answer_id) is not None
+    assert store.turns_since("question", 0) == 2
+
+
 def test_contract_asks_with_controls_and_numbered_offers_are_gone():
-    """REQ-CONTRACT-20, REQ-REMIND-5: the contract shows all three blocks; no «1 и 3» left in contract or editor."""
+    """REQ-CONTRACT-20, REQ-REMIND-5, REQ-CONTRACT-16: the contract shows all three blocks; no «1 и 3» left in contract
+    or editor. The generic form example is not the acquaintance form, which never ticks in advance; a section silent
+    about ты/вы means «ты», «вы» only while it is missing; the editor keeps the draft's address when unsure."""
     contract = (ROOT / "agent" / "CLAUDE.md").read_text()
     assert all(f"```control\n{kind}" in contract for kind in ("offer", "poll", "form"))
     assert "Как к вам обращаться?" in contract
     assert "1 и 3" not in contract and "1 и 3" not in editor.SYSTEM
+    assert "*вы" not in contract and "```control\nform\n- такси | *еда | связь" in contract
+    assert "о «ты» или «вы» в нём ничего не сказано — на «ты»" in contract
+    assert "пока раздела нет —\nна «вы»" in contract and "запиши в раздел «на вы»" in contract
+    assert "«ты» или «вы» не меняй" in editor.SYSTEM and "не переводи ни туда, ни обратно" in editor.SYSTEM
