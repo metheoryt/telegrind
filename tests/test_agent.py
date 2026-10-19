@@ -8,6 +8,7 @@ import subprocess
 import sys
 import textwrap
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 from conftest import FIXTURES, records, turn_env
@@ -35,6 +36,7 @@ from telegrind.layout import Layout
 from telegrind.log import Log
 from telegrind.media import MediaJobs
 
+ROOT = Path(__file__).resolve().parents[1]
 ANSWER = "televibe fixture"  # the `result` text of tests/fixtures/claude/turn.jsonl
 
 
@@ -884,3 +886,11 @@ async def test_a_reply_to_a_press_turn_answer_quotes_only_that_answer(rig, tmp_p
     await app.drain()
     prompt = system_prompt(records(tmp_path)[2])
     assert ANSWER in prompt and agent_module.ABOVE_INTRO not in prompt and "Слить 31 пару?" not in prompt
+
+
+def test_contract_asks_with_controls_and_numbered_offers_are_gone():
+    """REQ-CONTRACT-20, REQ-REMIND-5: the contract shows all three blocks; no «1 и 3» left in contract or editor."""
+    contract = (ROOT / "agent" / "CLAUDE.md").read_text()
+    assert all(f"```control\n{kind}" in contract for kind in ("offer", "poll", "form"))
+    assert "Как к вам обращаться?" in contract
+    assert "1 и 3" not in contract and "1 и 3" not in editor.SYSTEM

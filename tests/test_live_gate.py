@@ -11,7 +11,7 @@ scenarios run once each. Every run's directory is left under pytest's basetemp w
 Claims section 8: REQ-FACTS-1, REQ-FACTS-2, REQ-FACTS-3, REQ-CONTRACT-1, REQ-CONTRACT-2, REQ-CONTRACT-3,
 REQ-CONTRACT-4, REQ-CONTRACT-5, REQ-CONTRACT-6, REQ-CONTRACT-7, REQ-CONTRACT-8, REQ-CONTRACT-9, REQ-CONTRACT-10,
 REQ-CONTRACT-11, REQ-CONTRACT-12, REQ-CONTRACT-13, REQ-CONTRACT-14, REQ-CONTRACT-15, REQ-CONTRACT-16,
-REQ-CONTRACT-18, REQ-CONTRACT-19, REQ-DEPLOY-5, and REQ-REACT-3.
+REQ-CONTRACT-18, REQ-CONTRACT-19, REQ-CONTRACT-20, REQ-DEPLOY-5, and REQ-REACT-3.
 The ones no run below checks yet (CONTRACT-9, 13, 14, 15, 16, 18, 19, DEPLOY-5) are listed so REQ-TEST-1 holds and
 are marked `xfail(run=False)` below until a fixture exists: claimed, not exercised.
 """
@@ -29,9 +29,11 @@ from zoneinfo import ZoneInfo
 
 import pytest
 import yaml
-from televibe import Account, ClaudeCode, Engine
+from televibe import Account, ClaudeCode, Done, Engine
+from televibe.telegram.controls import split_control
 from tgkit import FakeBot, reaction, user_message
 
+from telegrind import agent as agent_module
 from telegrind.agent import Agent, make_provider
 from telegrind.app import App
 from telegrind.config import Config
@@ -486,6 +488,46 @@ def test_correction_becomes_a_rule(tmp_path):
     added = [line for line in after.splitlines() if line.strip() and line not in before.splitlines()]
     assert added, "the correction added nothing to the person's CLAUDE.md"
     assert any("Вас" in line for line in added), f"the added rule does not name Вася: {added}"
+
+
+def test_live_offer_block(tmp_path, monkeypatch):
+    """REQ-CONTRACT-20: a debt with a date ahead and a question about debts — the answer ends in a control block
+    (a reminder offer: `offer` or `poll multiple`), which `split_control` takes off `Done.text` whole. The person is
+    already acquainted, so the turn's one question is the offer, not «Как к вам обращаться?» (REQ-CONTRACT-16)."""
+    home = _home()
+    ends: list = []
+
+    class Recorded(agent_module._Watched):
+        async def __aiter__(self):
+            async for event in super().__aiter__():
+                yield event
+            ends.append(self.end)
+
+    monkeypatch.setattr(agent_module, "_Watched", Recorded)
+
+    async def run() -> None:
+        cfg = _config(tmp_path, home)
+        layout = Layout(cfg.data_dir)
+        layout.install_contract()
+        layout.ensure_user(UID)
+        (layout.user_dir(UID) / "CLAUDE.md").write_text("## О человеке\n\n- Макс, на «ты», он\n")
+        async with Engine(tmp_path / "state") as engine:
+            app = App(config=cfg, bot=FakeBot(), layout=layout)
+            app.answerer = Agent(config=cfg, app=app, engine=engine, provider=_provider(cfg, home))
+            now = datetime.now(TZ)
+            for i, text in enumerate(("Арман вернёт 15000 20 ноября", "что у меня по долгам?")):
+                await app.on_message(user_message(uid=UID, message_id=FIRST_ID + i, text=text, date=now))
+            await app.on_reaction(reaction(uid=UID, message_id=FIRST_ID + 1, emoji="❤"))
+            await app.drain()
+            app.close()
+
+    asyncio.run(run())
+    texts = [getattr(end, "text", None) for end in ends]
+    (tmp_path / "summary.json").write_text(json.dumps({"done": texts}, ensure_ascii=False, indent=1))
+    assert ends and isinstance(ends[-1], Done), f"the turn did not end in Done: {ends}"
+    visible, control = split_control(ends[-1].text)
+    assert control is not None, f"no control block at the end of the answer: {ends[-1].text!r}"
+    assert "```" not in visible, f"a fence is left in the text: {visible!r}"
 
 
 @pytest.mark.xfail(run=False, reason="needs a receipt photo fixture; REQ-CONTRACT-9 is measured on the dev bot first")

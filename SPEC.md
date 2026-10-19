@@ -491,7 +491,7 @@ the person; by contract it runs a pass first (REQ-CONTRACT-6).
   question and the text it replies to, the way Aicha would tell her boss:
   the result in a line, then only what needs him (a question, a decision, a
   doubt, an assumption he can refute), warm, no lists or table names. It
-  keeps every question and numbered proposal word for word and adds no
+  keeps every question to him word for word and adds no
   number, fact or reason the full answer lacks. The edited text never ends in a period
   (an ellipsis stays): the code drops it, whatever the model wrote. The agent's messages never
   reach the live draft while the editor is on, so the full answer is never
@@ -611,7 +611,7 @@ The two files and four tables Python depends on.
   a cute but businesslike assistant. She speaks of herself in the feminine
   («записала», «посчитала»), and so do the bot's fixed sentences. The
   feminine is hers only: the person is spoken of as their «О человеке»
-  section says, and without gender until it exists (REQ-CONTRACT-16). Answers are
+  section says, and as «вы», without gender, until it exists (REQ-CONTRACT-16). Answers are
   the way an assistant reports to a boss: the result in the first line, two
   or three lines in all, no headings, tables or account of how she got it
   unless asked, in the person's language; a pass ends with one line saying what it derived («14 записей: 9
@@ -658,9 +658,13 @@ file formats are measured, not specified (section 12).
   never an expense or an income. A sum over expenses never includes it.
 - **REQ-CONTRACT-16** — Getting acquainted. While the person's `CLAUDE.md`
   has no «## О человеке» section, a question turn first does what was asked
-  and then asks one thing: how to address them (name, he or she). The person
-  replies to that message, so the answer continues the chain; the agent
-  writes it into the section and uses it from then on. An unanswered
+  and then asks «Как к вам обращаться?» as a `form` (REQ-CONTRACT-20) with
+  the rows `ты | вы` and `он | она`; the name (a name, a name and
+  patronymic, or a nickname) is typed as a reply to that message, so it
+  comes back as «Текстом: …» beside the form (REQ-TRIGGER-7). The agent
+  writes it into the section and uses it from then on. «вы» holds until the
+  person says otherwise; an unticked row («не выбрано») or no name is not
+  said. This is the turn's one question: anything else waits. An unanswered
   question is not repeated every turn, only on `/start`.
 - **REQ-CONTRACT-17** — Questions by the way. Every fifth question turn
   (`ASIDE_EVERY`, counted over all question turns) says in its
@@ -668,7 +672,7 @@ file formats are measured, not specified (section 12).
   end of the answer, answerable in a couple of words and easy to ignore —
   who someone in the records is, which account, what an unclear entry
   meant. The agent asks nothing it already knows, and nothing when it has
-  nothing to ask.
+  nothing to ask, or when the answer already asks something (REQ-CONTRACT-20).
 
 ### TABLES
 
@@ -698,6 +702,29 @@ mean was the owner's to say, and is in their `CLAUDE.md`, not here.
   `UPDATE` of the imported row: re-deriving the document's entry
   (REQ-CONTRACT-3) would put the old values back. The current state is a
   query over both.
+
+### ASKING
+
+Settled with the owner on 2026-10-18 over a dialogue where Aicha asked three
+or four things at once and numbered her offers («Напомнить? 1) … 2) …»,
+answered «1 и 3»): tiring to read and to answer. The bot turns a block at the
+end of the answer into Telegram controls (REQ-TURN-13) and the person's press,
+vote or form into the next turn's text (REQ-TRIGGER-6, REQ-TRIGGER-7).
+
+- **REQ-CONTRACT-20** — One question per answer, asked with a control. An
+  answer asks the person at most one thing; the next waits for a later turn,
+  after this one is answered. An offer the agent can simply carry out ends
+  with an `offer` block, one button «Да» or a label of its own: not pressing
+  is «нет», so there is never a «Нет» button. A question whose «нет» carries
+  a signal, or a choice from a list, is a `poll` (`poll multiple` when
+  several may be right) whose options include the negative answer and,
+  where it fits, «не помню» or «пропустить», with context for the options
+  in `>` lines; it is a poll, never a quiz. Several independent short
+  choices are a `form`. The block is written exactly as televibe's
+  `split_control` reads it, at most one, and last in the answer; a text reply
+  is always accepted. The contract shows all three kinds and tells the agent
+  how the answer comes back: «Ответ кнопкой: …», «Выбрано в опросе: …»,
+  «Анкета: …; …» with «Текстом: …» on its own line.
 
 ---
 
@@ -745,12 +772,17 @@ mean was the owner's to say, and is in their `CLAUDE.md`, not here.
   the bot (REQ-TRIGGER-1): «перенеси на завтра», «отмени», «оплатил» reach
   the agent, which updates the row in that turn.
 - **REQ-REMIND-5** — The agent may offer a reminder where one would help —
-  a payment, a return or a deadline with a date still ahead — at the end of
-  an answer or in a pass's digest (REQ-TURN-7), numbered, one line each. An
-  offer is a row with `proposed = 1`, which Python never sends. The
-  person's reply («да», «1 и 3», «нет») is a question (REQ-TRIGGER-1): an
-  accepted offer becomes `proposed = 0`, a declined one `done = 1`. Nothing
-  is offered twice: an entry with any row in `reminders` gets no new offer.
+  a payment, a return or a deadline with a date still ahead. In an answer,
+  one offer is an `offer` block labelled «Напомнить» and several (at most
+  three) are one `poll multiple` with «ничего» among the options
+  (REQ-CONTRACT-20); nothing is numbered. A pass's digest (REQ-TURN-7)
+  carries no control (REQ-TURN-14), so there the offer is in plain words.
+  An offer is a row with `proposed = 1`, written in the turn that makes it,
+  which Python never sends. The person's answer (a press, a vote, a reply)
+  is a question (REQ-TRIGGER-1, REQ-TRIGGER-6): an accepted offer becomes
+  `proposed = 0`, a declined one or an option left unchosen `done = 1`; an
+  offer ignored keeps its row. Nothing is offered twice: an entry with any
+  row in `reminders` gets no new offer.
 
 ---
 
@@ -851,6 +883,8 @@ becomes one.
 - Deletion of a Telegram message: the Bot API does not report it to a plain
   bot; the reaction gesture is the deletion.
 - Rollups, exports. A calendar is not built yet: reminders go out as Telegram messages.
+- A reply keyboard, Mini Apps, quizzes and inline mode: the agent asks with an
+  inline button, a form of tick buttons or a plain poll (REQ-CONTRACT-20).
 
 ## 14. Tests
 
