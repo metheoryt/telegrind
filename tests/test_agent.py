@@ -1004,3 +1004,11 @@ def test_contract_asks_with_controls_and_numbered_offers_are_gone():
     assert "о «ты» или «вы» в нём ничего не сказано — на «ты»" in contract
     assert "пока раздела нет —\nна «вы»" in contract and "запиши в раздел «на вы»" in contract
     assert "«ты» или «вы» не меняй" in editor.SYSTEM and "не переводи ни туда, ни обратно" in editor.SYSTEM
+
+
+def test_contract_names_rows_so_the_person_knows_them_and_offers_lasting_things():
+    """REQ-CONTRACT-21: a row from a statement is named by date, amount and what it was, never a bare label; a
+    spending found to be a lasting thing is offered into the person's things, the model asked by reply."""
+    contract = (ROOT / "agent" / "CLAUDE.md").read_text()
+    assert "дата, сумма\n  и что это" in contract and "будто вы смотрите в одну выписку" in contract
+    assert "вещь надолго" in contract and "«Записать утюг в твои\n  вещи? Если помнишь модель, напиши»" in contract

@@ -732,6 +732,16 @@ vote or form into the next turn's text (REQ-TRIGGER-6, REQ-TRIGGER-7).
   is always accepted. The contract shows all three kinds and tells the agent
   how the answer comes back: «Ответ кнопкой: …», «Выбрано в опросе: …»,
   «Анкета: …; …» with «Текстом: …» on its own line.
+- **REQ-CONTRACT-21** — An answer speaks to someone who sees neither the
+  statement nor the tables. A row named from them carries what lets the
+  person recognise it on their own — its date, its amount, and what it was in
+  their words or by the merchant — never a bare merchant or payee label, as
+  if both were looking at one screen. When an answer learns that a spending
+  was a lasting thing (an iron, a phone, a bike) that is not among the
+  person's things yet, its one question (REQ-CONTRACT-20) offers to record
+  it there with an `offer` block, asking for the model by reply when unknown.
+  Settled with the owner on 2026-10-20 over «IP ERSULTAN … — это я купил
+  утюг», after which Aicha filed the iron under «техника» and offered nothing.
 
 ---
 
