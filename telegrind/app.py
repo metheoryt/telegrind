@@ -193,7 +193,9 @@ class App:
             self.media.enqueue(uid, inc)
         if inc.voice is not None and self.voice is not None:
             self.voice.enqueue(uid, inc)
-        question = question_text(inc.text, reply_to_author=store.author_of(inc.reply_to), author=inc.author)
+        question = question_text(
+            inc.text, reply_to_author=store.author_of(inc.reply_to), author=inc.author, wordless=inc.voice is None
+        )
         if question is None:
             await self.react(uid, inc.message_id, FIRST)
             self.entry_changed(uid)
@@ -259,8 +261,11 @@ class App:
 
     def _question_of(self, uid: int, entry: Entry) -> str | None:
         """REQ-TRIGGER-1, REQ-VOICE-7: an entry is a question by its text, and a voice note's text is its transcript."""
-        text = entry.transcript if entry.kind in VOICE_KINDS else entry.text
-        return question_text(text, reply_to_author=self.log_for(uid).author_of(entry.reply_to), author=entry.author)
+        voice = entry.kind in VOICE_KINDS
+        text = entry.transcript if voice else entry.text
+        return question_text(
+            text, reply_to_author=self.log_for(uid).author_of(entry.reply_to), author=entry.author, wordless=not voice
+        )
 
     async def on_transcript(self, uid: int, message_id: int) -> None:
         """REQ-VOICE-7: a transcribed note that would be a question as text is asked now; its heart comes off,

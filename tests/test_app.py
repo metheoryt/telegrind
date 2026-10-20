@@ -7,6 +7,7 @@ from telegrind.app import ADDRESSED_EMPTY, NO_TRANSCRIPT_TEXT, SLOW_TRANSCRIPT_T
 from telegrind.config import Config
 from telegrind.layout import Layout
 from telegrind.media import MediaJobs
+from telegrind.triggers import WORDLESS_REPLY
 
 
 class Recorder:
@@ -104,6 +105,17 @@ async def test_reply_to_bot_is_a_question(app):
     )
     await app.drain()
     assert app.rec.answers == [(7, 11, "а за сентябрь")]
+
+
+async def test_a_wordless_reply_to_bot_is_a_question(app):
+    """REQ-TRIGGER-1: a photo without a caption replying to the bot is asked with the fixed sentence, no heart;
+    the same photo not replying to the bot is a log entry."""
+    sent = await app.say(7, "Что ты купил в Technodom за 10 030 ₸?", reply_to=None)
+    await app.on_message(user_message(photo=True, message_id=11, reply_to=bot_message(message_id=sent.message_id)))
+    await app.on_message(user_message(photo=True, message_id=12))
+    await app.drain()
+    assert app.rec.answers == [(7, 11, WORDLESS_REPLY)]
+    assert app.log_for(7).entry(11).receipt is None and app.log_for(7).entry(12).receipt is not None
 
 
 async def test_q_is_an_ordinary_command(app):

@@ -353,9 +353,13 @@ that storing a log entry costs no model call and no subscription.
 - **REQ-TRIGGER-1** — A text message (or a caption, or a voice note's
   clean transcript, REQ-VOICE-7) is a question when it
   replies to a message whose entry has `author = 'bot'`, or when it starts
-  with `/`. Nothing else in a message makes it a question: not a trailing
-  `?`, not the words. Everything else is a log entry, and it may be
-  addressed later (REQ-TRIGGER-4).
+  with `/`. A message with no text that never gets one (a photo or a
+  document without a caption, a sticker — not a voice note, which waits for
+  its transcript) is a question when it replies to the bot, asked with a
+  fixed sentence telling the agent to look at what was sent. Nothing else in
+  a message makes it a question: not a trailing `?`, not the words.
+  Everything else is a log entry, and it may be addressed later
+  (REQ-TRIGGER-4).
 - **REQ-TRIGGER-2** — A `/command` is a question whose text is the whole
   message, so `/start` reaches the agent and is answered under the contract.
   No command has a meaning of its own: `/q` is gone (❤ replaced it), and a
