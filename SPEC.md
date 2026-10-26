@@ -494,7 +494,8 @@ the person; by contract it runs a pass first (REQ-CONTRACT-6).
   (`provider.ask`, `sonnet`, no tools, `editor.SYSTEM`) rewrites it, given the
   question and the text it replies to, the way Aicha would tell her boss:
   the result in a line, then only what needs him (a question, a decision, a
-  doubt, an assumption he can refute), warm, no lists or table names. It
+  doubt, an assumption he can refute), warm, no lists or table names; data he
+  asked to see stays whole (REQ-CONTRACT-22). It
   keeps every question to him word for word and adds no
   number, fact or reason the full answer lacks. The edited text never ends in a period
   (an ellipsis stays): the code drops it, whatever the model wrote. The agent's messages never
@@ -621,7 +622,7 @@ The two files and four tables Python depends on.
   section says (as «ты» when it says nothing about ты/вы), and as «вы», without gender, until it exists (REQ-CONTRACT-16). Answers are
   the way an assistant reports to a boss: the result in the first line, two
   or three lines in all, no headings, tables or account of how she got it
-  unless asked, in the person's language; a pass ends with one line saying what it derived («14 записей: 9
+  unless asked (data asked to be shown: REQ-CONTRACT-22), in the person's language; a pass ends with one line saying what it derived («14 записей: 9
   трат, 2 давления, новая категория „настроение“»), which is what REQ-TURN-7
   posts.
 - **REQ-CONTRACT-12** — The agent never writes outside `facts.sqlite` and the
@@ -751,6 +752,15 @@ vote or form into the next turn's text (REQ-TRIGGER-6, REQ-TRIGGER-7).
 
 ## 9. Schedule
 
+- **REQ-CONTRACT-22** — When the person asks to see data (a payment schedule,
+  a list, a breakdown by month), the data is the answer: shown whole, as a
+  Markdown table or list, a row per item, under a one-line result. The
+  two-or-three-line rule (REQ-CONTRACT-11) does not cut it, and the editor
+  (REQ-TURN-12) keeps such a table or list with every row and number,
+  shortening only the text around it. Telegram's rich message shows tables,
+  lists and bold (measured on the dev bot 2026-10-26). Settled with the owner
+  on 2026-10-26, after a loan schedule asked for with «покажи как будет
+  график платежей выглядеть» arrived as one run-on paragraph.
 - **REQ-SCHED-1** — Each person gets a pass once a day at their quiet hour
   (`QUIET_HOUR`, default 04:00 in their zone), only if the log has entries
   the pass would process (REQ-CONTRACT-2, judged by Python from `entries` and

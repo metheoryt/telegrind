@@ -1006,6 +1006,15 @@ def test_contract_asks_with_controls_and_numbered_offers_are_gone():
     assert "«ты» или «вы» не меняй" in editor.SYSTEM and "не переводи ни туда, ни обратно" in editor.SYSTEM
 
 
+def test_data_asked_to_be_shown_is_the_answer_and_the_editor_keeps_it():
+    """REQ-CONTRACT-22: data the person asks to see comes whole as a table or list; the editor keeps every row."""
+    contract = (ROOT / "agent" / "CLAUDE.md").read_text()
+    assert "сами\n  данные и есть ответ: целиком, таблицей Markdown или списком" in contract
+    assert "Правило двух-трёх строк к ним не относится" in contract
+    assert "таблицу или список оставь как\nесть, все строки и числа" in editor.SYSTEM
+    assert "кроме данных,\nкоторые он попросил показать" in editor.SYSTEM
+
+
 def test_contract_names_rows_so_the_person_knows_them_and_offers_lasting_things():
     """REQ-CONTRACT-21: a row from a statement is named by date, amount and what it was, never a bare label; a
     spending found to be a lasting thing is offered into the person's things, the model asked by reply."""
