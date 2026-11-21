@@ -1021,3 +1021,12 @@ def test_contract_names_rows_so_the_person_knows_them_and_offers_lasting_things(
     contract = (ROOT / "agent" / "CLAUDE.md").read_text()
     assert "дата, сумма\n  и что это" in contract and "будто вы смотрите в одну выписку" in contract
     assert "вещь надолго" in contract and "«Записать утюг в твои\n  вещи? Если помнишь модель, напиши»" in contract
+
+
+def test_start_is_a_briefing_the_editor_keeps_whole():
+    """REQ-CONTRACT-23: /start answers with a short how-to list; the editor keeps every point."""
+    contract = (ROOT / "agent" / "CLAUDE.md").read_text()
+    assert "ответь коротким брифингом, списком из\n  пяти-шести пунктов" in contract
+    assert "двойной тап (❤)" in contract and "Любая другая команда — тоже вопрос" in contract
+    assert "Если он написал /start, черновик — брифинг" in editor.SYSTEM
+    assert "и брифинга на /start" in editor.SYSTEM

@@ -761,6 +761,16 @@ vote or form into the next turn's text (REQ-TRIGGER-6, REQ-TRIGGER-7).
   lists and bold (measured on the dev bot 2026-10-26). Settled with the owner
   on 2026-10-26, after a loan schedule asked for with «покажи как будет
   график платежей выглядеть» arrived as one run-on paragraph.
+- **REQ-CONTRACT-23** — `/start` is a short briefing: one line saying who
+  the agent is, then a list of five or six points on how to use the bot —
+  write expenses and income in your own words or by voice, send receipt
+  photos and bank statements here, 💔 means stored and tapping it deletes,
+  ask with a double tap (❤) on your message or a reply to the bot, ask for a
+  reminder. The two-or-three-line rule (REQ-CONTRACT-11) does not cut it, and
+  the editor (REQ-TURN-12) keeps every point. Any other command is still
+  answered in two lines. Settled with the owner on 2026-11-21, when a second
+  person (his stepfather) was let in and the old two-line /start would not
+  have told him how to use it.
 - **REQ-SCHED-1** — Each person gets a pass once a day at their quiet hour
   (`QUIET_HOUR`, default 04:00 in their zone), only if the log has entries
   the pass would process (REQ-CONTRACT-2, judged by Python from `entries` and
